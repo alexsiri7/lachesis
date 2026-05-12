@@ -1,4 +1,5 @@
 """FastMCP bootstrap for Lachesis: tool registration, OAuth routes, ASGI middleware."""
+
 from __future__ import annotations
 
 import logging
@@ -144,21 +145,26 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
             base = settings.mcp_base_url.rstrip("/")
             resource_uri = _RESOURCE_METADATA_URI.format(base=base)
             body = b'{"error":"unauthorized"}'
-            await send({
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [
-                    [b"content-type", b"application/json"],
-                    [b"www-authenticate", f'Bearer resource_metadata="{resource_uri}"'.encode()],
-                ],
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        [b"content-type", b"application/json"],
+                        [
+                            b"www-authenticate",
+                            f'Bearer resource_metadata="{resource_uri}"'.encode(),
+                        ],
+                    ],
+                }
+            )
             await send({"type": "http.response.body", "body": body})
             return
 
         current_user_id.set(user_id)
         await app(scope, receive, send)
 
-    return wrapper  # type: ignore[return-value]
+    return wrapper
 
 
 def build_app() -> ASGIApp:

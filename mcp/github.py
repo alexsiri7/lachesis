@@ -3,7 +3,10 @@
 Real implementation in issue #3. This stub exposes the interface that
 tools/requirements.py will call.
 """
+
 from __future__ import annotations
+
+from typing import Any
 
 from settings import settings
 
@@ -14,15 +17,15 @@ class GitHubClient:
     def __init__(self) -> None:
         self._pat = settings.github_pat
 
-    async def list_files(self, repo: str, path: str) -> list[dict]:
+    async def list_files(self, repo: str, path: str) -> list[dict[str, Any]]:
         raise NotImplementedError("Implemented in issue #3")
 
-    async def get_file(self, repo: str, path: str) -> dict:
+    async def get_file(self, repo: str, path: str) -> dict[str, Any]:
         raise NotImplementedError("Implemented in issue #3")
 
     async def create_or_update_file(
         self, repo: str, path: str, content: str, message: str, sha: str | None = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         raise NotImplementedError("Implemented in issue #3")
 
     async def delete_file(self, repo: str, path: str, message: str, sha: str) -> None:
@@ -30,7 +33,7 @@ class GitHubClient:
 
     async def create_issue(
         self, repo: str, title: str, body: str, labels: list[str] | None = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         raise NotImplementedError("Implemented in issue #3")
 
 

@@ -4,6 +4,7 @@ Single-user: token must be a valid HS256 JWT whose 'sub' matches the
 ALLOWED_EMAIL env var. The resolved user_id is stored in a ContextVar
 populated by the ASGI middleware in main.py.
 """
+
 from __future__ import annotations
 
 from contextvars import ContextVar

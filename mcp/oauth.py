@@ -77,7 +77,7 @@ def _create_jwt(user_id: str, email: str | None) -> str:
     }
     if email:
         payload["email"] = email
-    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+    return str(jwt.encode(payload, settings.secret_key, algorithm="HS256"))
 
 
 def _pkce_s256(verifier: str) -> str:
@@ -103,8 +103,7 @@ def _issue_token_response(
             "email": email,
             "client_id": client_id,
             "scope": scope,
-            "expires_at": datetime.now(UTC)
-            + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
+            "expires_at": datetime.now(UTC) + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
         },
     )
     return JSONResponse(
@@ -255,9 +254,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
         response_type = qp.get("response_type", "code")
 
         if response_type != "code":
-            raise HTTPException(
-                status_code=400, detail="Only response_type=code is supported"
-            )
+            raise HTTPException(status_code=400, detail="Only response_type=code is supported")
         if code_challenge_method != "S256":
             raise HTTPException(
                 status_code=400,
@@ -291,8 +288,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
                 "code_challenge_method": code_challenge_method,
                 "client_id": client_id,
                 "scope": scope,
-                "expires_at": datetime.now(UTC)
-                + timedelta(seconds=SESSION_TTL_SECONDS),
+                "expires_at": datetime.now(UTC) + timedelta(seconds=SESSION_TTL_SECONDS),
             },
         )
         logger.info(
@@ -377,8 +373,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
                 "redirect_uri": session["redirect_uri"],
                 "scope": session.get("scope", "mcp"),
                 "client_id": session["client_id"],
-                "expires_at": datetime.now(UTC)
-                + timedelta(seconds=AUTH_CODE_TTL_SECONDS),
+                "expires_at": datetime.now(UTC) + timedelta(seconds=AUTH_CODE_TTL_SECONDS),
             },
         )
 
@@ -405,14 +400,10 @@ def register_routes(mcp_obj: FastMCP) -> None:
         if grant_type == "refresh_token":
             refresh_token = str(form.get("refresh_token", ""))
             if not refresh_token:
-                raise HTTPException(
-                    status_code=400, detail="refresh_token is required"
-                )
+                raise HTTPException(status_code=400, detail="refresh_token is required")
             session = cleanup_and_pop(refresh_tokens, refresh_token)
             if not session:
-                raise HTTPException(
-                    status_code=400, detail="Invalid or expired refresh_token"
-                )
+                raise HTTPException(status_code=400, detail="Invalid or expired refresh_token")
             return _issue_token_response(
                 session["user_id"],
                 session.get("email"),
@@ -430,17 +421,13 @@ def register_routes(mcp_obj: FastMCP) -> None:
 
         session = cleanup_and_pop(auth_codes, code)
         if not session:
-            raise HTTPException(
-                status_code=400, detail="Invalid or expired authorization code"
-            )
+            raise HTTPException(status_code=400, detail="Invalid or expired authorization code")
         if redirect_uri != session["redirect_uri"]:
             raise HTTPException(status_code=400, detail="redirect_uri mismatch")
 
         if session.get("code_challenge_method") == "S256":
             if not code_verifier:
-                raise HTTPException(
-                    status_code=400, detail="code_verifier is required"
-                )
+                raise HTTPException(status_code=400, detail="code_verifier is required")
             if _pkce_s256(code_verifier) != session["code_challenge"]:
                 raise HTTPException(status_code=400, detail="PKCE verification failed")
 

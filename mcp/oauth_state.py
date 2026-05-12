@@ -83,9 +83,7 @@ def cleanup_and_store(store: dict[str, Entry], key: str, value: Entry) -> None:
     with _state_lock:
         _cleanup_expired(store)
         if len(store) >= MAX_ENTRIES_PER_DICT:
-            raise StoreFullError(
-                f"OAuth state store is full ({MAX_ENTRIES_PER_DICT} entries)"
-            )
+            raise StoreFullError(f"OAuth state store is full ({MAX_ENTRIES_PER_DICT} entries)")
         store[key] = value
 
 
