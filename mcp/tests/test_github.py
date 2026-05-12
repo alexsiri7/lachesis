@@ -61,7 +61,7 @@ async def test_get_file_handles_github_chunked_base64(httpx_mock: HTTPXMock) -> 
     """GitHub inserts newlines every 60 chars in base64 content."""
     raw = "x" * 200
     encoded_clean = base64.b64encode(raw.encode()).decode("ascii")
-    chunked = "\n".join(encoded_clean[i:i + 60] for i in range(0, len(encoded_clean), 60)) + "\n"
+    chunked = "\n".join(encoded_clean[i : i + 60] for i in range(0, len(encoded_clean), 60)) + "\n"
     httpx_mock.add_response(json={"content": chunked, "sha": "abc"})
     content, _ = await get_file("owner/repo", "big.md")
     assert content == raw
