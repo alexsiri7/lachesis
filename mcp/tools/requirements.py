@@ -5,7 +5,13 @@ Real implementations are delivered in issues #4-#10.
 
 from __future__ import annotations
 
+import re
+from datetime import date
 from typing import Any
+
+import frontmatter
+
+import github
 
 
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
@@ -35,7 +41,49 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
 
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
-    raise NotImplementedError("Implemented in issue #9")
+    # Locate the requirement file
+    files = await github.list_files(repo, "requirements")
+    matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    if not matching:
+        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+
+    path = matching[0]["path"]
+    content, sha = await github.get_file(repo, path)
+
+    # Parse frontmatter
+    post = frontmatter.loads(content)
+
+    # Update metadata
+    if issues:
+        post["github_issue"] = issues[0]["number"]
+    post["updated"] = date.today().isoformat()
+
+    # Build new ## Issues section body
+    bullet_block = "\n".join(f"- #{i['number']} \u2014 {i['title']}" for i in issues)
+    new_section = f"## Issues\n\n{bullet_block}\n" if bullet_block else "## Issues\n"
+
+    # Replace existing ## Issues section in the body, or append if absent
+    body = post.content
+    body, n = re.subn(
+        r"^## Issues\b[^\n]*\n(?:(?!^## )[^\n]*\n?)*",
+        new_section,
+        body,
+        flags=re.MULTILINE,
+    )
+    if n == 0:
+        body = body.rstrip("\n") + "\n\n" + new_section
+    post.content = body
+
+    # Serialize and write back
+    updated_content = frontmatter.dumps(post)
+    await github.update_file(
+        repo,
+        path,
+        updated_content,
+        sha,
+        f"chore: link issues to requirement {id}",
+    )
+    return updated_content
 
 
 async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
