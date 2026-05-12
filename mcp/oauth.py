@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from jose import jwt
+from jose import JWTError, jwt
 from mcp.server.fastmcp import FastMCP
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
@@ -123,7 +123,18 @@ async def _exchange_google_code(code: str, redirect_uri: str) -> dict[str, Any] 
                 },
             )
         if resp.status_code != 200:
-            logger.warning("MCP OAuth: Google token exchange returned %s", resp.status_code)
+            try:
+                err_body = resp.json()
+                logger.warning(
+                    "MCP OAuth: Google token exchange returned %s: %s — %s",
+                    resp.status_code,
+                    err_body.get("error", "unknown"),
+                    err_body.get("error_description", ""),
+                )
+            except ValueError:
+                logger.warning(
+                    "MCP OAuth: Google token exchange returned %s (non-JSON body)", resp.status_code
+                )
             return None
         payload = resp.json()
     except httpx.HTTPError as exc:
@@ -140,13 +151,17 @@ async def _exchange_google_code(code: str, redirect_uri: str) -> dict[str, Any] 
     try:
         # Decode without verification — we just exchanged the code server-side
         claims = jwt.get_unverified_claims(id_token_raw)
-    except Exception as exc:
+    except JWTError as exc:
         logger.warning("MCP OAuth: failed to decode id_token: %s", exc)
         return None
     email = claims.get("email")
     user_id = claims.get("sub")
+    email_verified = claims.get("email_verified")
     if not email or not user_id:
         logger.warning("MCP OAuth: missing email or sub in id_token claims")
+        return None
+    if not email_verified:
+        logger.warning("MCP OAuth: email not verified by Google for email=%s", email)
         return None
     if settings.allowed_email and email != settings.allowed_email:
         logger.warning("MCP OAuth: rejected email=%s (not in allowlist)", email)
@@ -252,6 +267,8 @@ def register_routes(mcp_obj: FastMCP) -> None:
             raise HTTPException(status_code=501, detail="SECRET_KEY not configured")
         if not settings.google_client_id:
             raise HTTPException(status_code=501, detail="GOOGLE_CLIENT_ID not configured")
+        if not settings.google_client_secret:
+            raise HTTPException(status_code=501, detail="GOOGLE_CLIENT_SECRET not configured")
 
         qp = request.query_params
         client_id = qp.get("client_id", "")
@@ -418,9 +435,14 @@ def register_routes(mcp_obj: FastMCP) -> None:
             if _pkce_s256(code_verifier) != session["code_challenge"]:
                 raise HTTPException(status_code=400, detail="PKCE verification failed")
 
+        form_client_id = str(form.get("client_id", ""))
+        session_client_id = session.get("client_id", "")
+        if form_client_id and form_client_id != session_client_id:
+            raise HTTPException(status_code=400, detail="client_id mismatch")
+
         return _issue_token_response(
             session["user_id"],
             session.get("email"),
-            client_id or session.get("client_id", ""),
+            session_client_id,
             session.get("scope", "mcp"),
         )

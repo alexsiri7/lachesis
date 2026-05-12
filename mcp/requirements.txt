@@ -9,3 +9,7 @@ python-frontmatter>=1.0
 pyyaml>=6.0
 python-dotenv>=1.0
 python-json-logger>=3.2,<5
+# dev / test
+pytest>=8.0
+pytest-asyncio>=0.24
+respx>=0.21

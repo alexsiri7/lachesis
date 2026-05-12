@@ -50,7 +50,7 @@ See `.env.example`. Key ones:
 - `GITHUB_PAT` — server-side GitHub token with `repo` scope
 - `ALLOWED_EMAIL` — the single authorized Google account email
 - `SECRET_KEY` — JWT signing key
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (**both required**; register `{MCP_BASE_URL}/oauth/callback` as an authorized redirect URI in the Google OAuth Console)
 - `MCP_BASE_URL` — public URL, e.g. `https://lachesis.interstellarai.net`
 
 ## Running locally
