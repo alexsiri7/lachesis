@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 import secrets
 import uuid
@@ -34,6 +35,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from oauth_state import (
+    StoreFullError,
     auth_codes,
     cleanup_and_pop,
     cleanup_and_store,
@@ -50,7 +52,8 @@ SESSION_TTL_SECONDS = 60 * 10  # 10 minutes
 JWT_EXPIRY_SECONDS = 60 * 60 * 24 * 7  # 7 days
 REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
 
-# Placeholder — configure to the web-app relay URL when one exists.
+# Relay origin for /mcp-auth — the web-app page that handles Google OAuth.
+# Hardcoded to the production domain; move to an env var if the relay moves.
 WEB_APP_ORIGIN = "https://lachesis.interstellarai.net"
 
 _CORS_HEADERS = {
@@ -95,17 +98,21 @@ def _issue_token_response(
 
     access_token = _create_jwt(user_id, email)
     refresh_token = secrets.token_urlsafe(32)
-    cleanup_and_store(
-        refresh_tokens,
-        refresh_token,
-        {
-            "user_id": user_id,
-            "email": email,
-            "client_id": client_id,
-            "scope": scope,
-            "expires_at": datetime.now(UTC) + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
-        },
-    )
+    try:
+        cleanup_and_store(
+            refresh_tokens,
+            refresh_token,
+            {
+                "user_id": user_id,
+                "email": email,
+                "client_id": client_id,
+                "scope": scope,
+                "expires_at": datetime.now(UTC) + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
+            },
+        )
+    except StoreFullError:
+        logger.error("MCP OAuth: refresh_tokens store full — cannot issue token")
+        raise HTTPException(status_code=503, detail="server_error: token store full")
     return JSONResponse(
         {
             "access_token": access_token,
@@ -139,8 +146,15 @@ async def _verify_google_token(access_token: str) -> dict[str, Any] | None:
     except ValueError as exc:
         logger.warning("MCP OAuth: Google tokeninfo returned non-JSON: %s", exc)
         return None
+    aud = payload.get("aud")
+    if settings.google_client_id and aud != settings.google_client_id:
+        logger.warning("MCP OAuth: tokeninfo aud mismatch: %s", aud)
+        return None
     email = payload.get("email")
-    if not email or (settings.allowed_email and email != settings.allowed_email):
+    if not email:
+        logger.warning("MCP OAuth: rejected email=%s", email)
+        return None
+    if not settings.allowed_email or email != settings.allowed_email:
         logger.warning("MCP OAuth: rejected email=%s", email)
         return None
     user_id = payload.get("sub") or payload.get("user_id")
@@ -197,7 +211,8 @@ def register_routes(mcp_obj: FastMCP) -> None:
     async def oauth_register(request: Request) -> Response:
         try:
             body = await request.json()
-        except Exception:
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.debug("MCP OAuth: /register body parse error: %s", exc)
             body = {}
         if not isinstance(body, dict):
             body = {}
@@ -216,7 +231,11 @@ def register_routes(mcp_obj: FastMCP) -> None:
             ),
             "scope": body.get("scope", "mcp"),
         }
-        cleanup_and_store(registered_clients, client_id, client)
+        try:
+            cleanup_and_store(registered_clients, client_id, client)
+        except StoreFullError:
+            logger.error("MCP OAuth: registered_clients store full — cannot register client")
+            raise HTTPException(status_code=503, detail="server_error: OAuth state store full")
         logger.info(
             "MCP OAuth: registered client %s (%s)",
             client_id,
@@ -278,19 +297,23 @@ def register_routes(mcp_obj: FastMCP) -> None:
             )
 
         flow_key = secrets.token_urlsafe(32)
-        cleanup_and_store(
-            oauth_sessions,
-            flow_key,
-            {
-                "client_state": client_state,
-                "redirect_uri": redirect_uri,
-                "code_challenge": code_challenge,
-                "code_challenge_method": code_challenge_method,
-                "client_id": client_id,
-                "scope": scope,
-                "expires_at": datetime.now(UTC) + timedelta(seconds=SESSION_TTL_SECONDS),
-            },
-        )
+        try:
+            cleanup_and_store(
+                oauth_sessions,
+                flow_key,
+                {
+                    "client_state": client_state,
+                    "redirect_uri": redirect_uri,
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": code_challenge_method,
+                    "client_id": client_id,
+                    "scope": scope,
+                    "expires_at": datetime.now(UTC) + timedelta(seconds=SESSION_TTL_SECONDS),
+                },
+            )
+        except StoreFullError:
+            logger.error("MCP OAuth: oauth_sessions store full — cannot start authorization flow")
+            raise HTTPException(status_code=503, detail="server_error: OAuth state store full")
         logger.info(
             "MCP OAuth: authorize → web-app relay for client %s (flow %s…)",
             client_id,
@@ -311,7 +334,8 @@ def register_routes(mcp_obj: FastMCP) -> None:
 
         try:
             body = await request.json()
-        except Exception:
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.debug("MCP OAuth: /code-from-session body parse error: %s", exc)
             return JSONResponse(
                 {"error": "invalid_request", "error_description": "JSON body required"},
                 status_code=400,
@@ -362,20 +386,28 @@ def register_routes(mcp_obj: FastMCP) -> None:
             )
 
         lachesis_auth_code = secrets.token_urlsafe(32)
-        cleanup_and_store(
-            auth_codes,
-            lachesis_auth_code,
-            {
-                "user_id": str(user_id),
-                "email": email,
-                "code_challenge": session["code_challenge"],
-                "code_challenge_method": session["code_challenge_method"],
-                "redirect_uri": session["redirect_uri"],
-                "scope": session.get("scope", "mcp"),
-                "client_id": session["client_id"],
-                "expires_at": datetime.now(UTC) + timedelta(seconds=AUTH_CODE_TTL_SECONDS),
-            },
-        )
+        try:
+            cleanup_and_store(
+                auth_codes,
+                lachesis_auth_code,
+                {
+                    "user_id": str(user_id),
+                    "email": email,
+                    "code_challenge": session["code_challenge"],
+                    "code_challenge_method": session["code_challenge_method"],
+                    "redirect_uri": session["redirect_uri"],
+                    "scope": session.get("scope", "mcp"),
+                    "client_id": session["client_id"],
+                    "expires_at": datetime.now(UTC) + timedelta(seconds=AUTH_CODE_TTL_SECONDS),
+                },
+            )
+        except StoreFullError:
+            logger.error("MCP OAuth: auth_codes store full — cannot issue authorization code")
+            return JSONResponse(
+                {"error": "server_error", "error_description": "OAuth state store full"},
+                status_code=503,
+                headers=_CORS_HEADERS,
+            )
 
         params = {"code": lachesis_auth_code, "state": session["client_state"]}
         redirect_url = f"{session['redirect_uri']}?{urlencode(params)}"

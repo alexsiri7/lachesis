@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 
 MAX_ENTRIES_PER_DICT = 10_000
 
-# Lock protecting all mutable state dicts below against concurrent access
-# from threadpool-dispatched sync endpoints.
+# Lock protecting all mutable state dicts for defensive thread-safety.
+# Async handlers in a single-worker process don't need it today, but it
+# guards against future multi-worker or run_in_executor usage.
 _state_lock = threading.Lock()
 
 Entry = dict[str, Any]
@@ -32,7 +33,8 @@ Entry = dict[str, Any]
 oauth_sessions: dict[str, Entry] = {}
 
 # auth_code -> {
-#   user_id, email, code_challenge, code_challenge_method, redirect_uri, expires_at
+#   user_id, email, code_challenge, code_challenge_method,
+#   redirect_uri, scope, client_id, expires_at
 # }
 auth_codes: dict[str, Entry] = {}
 

@@ -11,7 +11,7 @@ See [docs/PRD.md](docs/PRD.md) for the full product spec.
 `alexsiri7/kindred` is the canonical reference for this project's MCP/OAuth patterns:
 - FastMCP with Streamable HTTP transport
 - MCP OAuth 2.1 (`oauth.py`, `oauth_state.py`) — adapt to Google OAuth (Kindred uses Supabase; replace the Supabase token exchange with Google's)
-- `settings.py` extending a `CoreSettings` base (pydantic-settings)
+- `settings.py` using pydantic-settings `BaseSettings` (Kindred uses a `CoreSettings` base; simplified here since Lachesis has a single settings module)
 - Railway via `mcp/Dockerfile` + `railway.toml`
 - Sentry integration via `sentry_sdk`
 
@@ -26,8 +26,8 @@ See [docs/PRD.md](docs/PRD.md) for the full product spec.
 
 ```
 mcp/               FastMCP app (mirrors kindred/mcp/)
-  main.py          FastMCP instance, tool registration, OAuth routes
-  auth.py          Bearer token middleware, user resolution
+  main.py          FastMCP instance, tool registration, OAuth routes, ASGI bearer-token middleware
+  auth.py          JWT decode helper (resolve_user_id_from_jwt), current_user_id ContextVar
   oauth.py         OAuth 2.1 endpoints (Google variant)
   oauth_state.py   In-memory state stores (auth codes, sessions, refresh tokens)
   settings.py      Pydantic-settings config
@@ -52,6 +52,8 @@ See `.env.example`. Key ones:
 - `SECRET_KEY` — JWT signing key
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials
 - `MCP_BASE_URL` — public URL, e.g. `https://lachesis.interstellarai.net`
+- `MCP_ALLOWED_HOSTS` — comma-separated hostnames for DNS rebinding protection (set to the Railway domain in production)
+- `SENTRY_DSN` — optional; enables Sentry error tracking
 
 ## Running locally
 
