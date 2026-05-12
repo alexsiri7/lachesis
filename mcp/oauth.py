@@ -72,11 +72,11 @@ def _base_url() -> str:
 
 def _create_jwt(user_id: str, email: str | None) -> str:
     """Mint an HS256 JWT signed with ``settings.secret_key``."""
-    now = datetime.now(UTC)
+    now_ts = int(datetime.now(UTC).timestamp())
     payload: dict[str, Any] = {
         "sub": user_id,
-        "iat": int(now.timestamp()),
-        "exp": int(now.timestamp()) + JWT_EXPIRY_SECONDS,
+        "iat": now_ts,
+        "exp": now_ts + JWT_EXPIRY_SECONDS,
     }
     if email:
         payload["email"] = email
@@ -241,19 +241,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
             client_id,
             client["client_name"],
         )
-        return JSONResponse(
-            {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uris": client["redirect_uris"],
-                "client_name": client["client_name"],
-                "grant_types": client["grant_types"],
-                "response_types": client["response_types"],
-                "token_endpoint_auth_method": client["token_endpoint_auth_method"],
-                "scope": client["scope"],
-            },
-            status_code=201,
-        )
+        return JSONResponse(client, status_code=201)
 
     # -----------------------------------------------------------------------
     # Authorization endpoint — redirects to web-app OAuth relay
