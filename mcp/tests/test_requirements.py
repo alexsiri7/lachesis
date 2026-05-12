@@ -14,7 +14,9 @@ from tools.requirements import (
     create_github_issues,
     create_requirement,
     delete_requirement,
+    get_requirement,
     link_issues,
+    list_requirements,
 )
 
 _NAME = "001-user-auth.md"
@@ -425,3 +427,116 @@ async def test_create_requirement_increments_past_highest_id(httpx_mock: HTTPXMo
 
     assert result["id"] == "006"
     assert result["path"] == "requirements/006-new-feature.md"
+
+
+# ---------------------------------------------------------------------------
+# list_requirements tests
+# ---------------------------------------------------------------------------
+
+
+async def test_list_requirements_returns_metadata(httpx_mock: HTTPXMock) -> None:
+    """Returns list of dicts with id, title, status, github_issue."""
+    httpx_mock.add_response(json=_LIST_RESP)  # list_files
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))  # get_file
+
+    result = await list_requirements("owner/repo")
+
+    assert result == [
+        {"id": "001", "title": "User authentication", "status": "planned", "github_issue": None},
+    ]
+
+
+async def test_list_requirements_empty_repo(httpx_mock: HTTPXMock) -> None:
+    """Returns [] when requirements/ is empty or absent."""
+    httpx_mock.add_response(json=[])  # list_files → no files
+
+    result = await list_requirements("owner/repo")
+
+    assert result == []
+    assert len(httpx_mock.get_requests()) == 1  # only list_files, no get_file
+
+
+async def test_list_requirements_multiple_files(httpx_mock: HTTPXMock) -> None:
+    """Returns metadata for all .md files."""
+    second_md = """\
+---
+id: "002"
+title: "Data export"
+status: "idea"
+github_issue: 99
+created: "2026-05-12"
+updated: "2026-05-12"
+---
+
+## Why
+
+Need exports.
+
+## What
+
+CSV export.
+"""
+    httpx_mock.add_response(json=[
+        {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+        {"name": "002-data-export.md", "path": "requirements/002-data-export.md"},
+    ])
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(json={
+        "name": "002-data-export.md",
+        "path": "requirements/002-data-export.md",
+        "content": base64.b64encode(second_md.encode()).decode("ascii"),
+        "sha": "sha2",
+        "type": "file",
+    })
+
+    result = await list_requirements("owner/repo")
+
+    assert len(result) == 2
+    assert result[0]["id"] == "001"
+    assert result[1]["id"] == "002"
+    assert result[1]["github_issue"] == 99
+
+
+# ---------------------------------------------------------------------------
+# get_requirement tests
+# ---------------------------------------------------------------------------
+
+
+async def test_get_requirement_returns_raw_content(httpx_mock: HTTPXMock) -> None:
+    """Returns the raw markdown string including frontmatter."""
+    httpx_mock.add_response(json=_LIST_RESP)  # list_files
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))  # get_file
+
+    result = await get_requirement("owner/repo", "001")
+
+    assert result == _SAMPLE_MD
+
+
+async def test_get_requirement_raises_when_not_found(httpx_mock: HTTPXMock) -> None:
+    """FileNotFoundError if no file starts with the id prefix."""
+    httpx_mock.add_response(
+        json=[{"name": "002-other.md", "path": "requirements/002-other.md"}]
+    )
+
+    with pytest.raises(FileNotFoundError, match="001"):
+        await get_requirement("owner/repo", "001")
+
+
+async def test_get_requirement_matches_by_id_prefix(httpx_mock: HTTPXMock) -> None:
+    """Correctly finds a file by its numeric id prefix."""
+    second_md = "---\nid: '002'\ntitle: Other\nstatus: idea\n---\nBody\n"
+    httpx_mock.add_response(json=[
+        {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+        {"name": "002-other.md", "path": "requirements/002-other.md"},
+    ])
+    httpx_mock.add_response(json={
+        "name": "002-other.md",
+        "path": "requirements/002-other.md",
+        "content": base64.b64encode(second_md.encode()).decode("ascii"),
+        "sha": "sha2",
+        "type": "file",
+    })
+
+    result = await get_requirement("owner/repo", "002")
+
+    assert result == second_md
