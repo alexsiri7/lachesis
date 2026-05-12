@@ -10,7 +10,7 @@ import frontmatter
 import pytest
 from pytest_httpx import HTTPXMock
 
-from tools.requirements import delete_requirement, link_issues
+from tools.requirements import create_github_issues, delete_requirement, link_issues
 
 _NAME = "001-user-auth.md"
 _PATH = "requirements/001-user-auth.md"
@@ -258,3 +258,94 @@ async def test_delete_requirement_sends_correct_commit_message(
     delete_request = httpx_mock.get_requests()[2]
     body = _json.loads(delete_request.content)
     assert "001" in body["message"]
+
+
+# ---------------------------------------------------------------------------
+# create_github_issues tests
+# ---------------------------------------------------------------------------
+
+_ISSUES_URL = "https://api.github.com/repos/owner/repo/issues"
+
+
+async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
+    """Single issue is created and result returned."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"number": 42, "title": "Fix bug", "html_url": "https://github.com/owner/repo/issues/42"},
+    )
+
+    result = await create_github_issues(
+        "owner/repo",
+        [{"title": "Fix bug", "body": "Details here"}],
+    )
+
+    assert result == [{"number": 42, "title": "Fix bug", "url": "https://github.com/owner/repo/issues/42"}]
+
+
+async def test_create_github_issues_multiple(httpx_mock: HTTPXMock) -> None:
+    """Multiple issues are created sequentially."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"number": 1, "title": "First", "html_url": "https://github.com/owner/repo/issues/1"},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"number": 2, "title": "Second", "html_url": "https://github.com/owner/repo/issues/2"},
+    )
+
+    result = await create_github_issues(
+        "owner/repo",
+        [
+            {"title": "First", "body": "Body 1"},
+            {"title": "Second", "body": "Body 2"},
+        ],
+    )
+
+    assert len(result) == 2
+    assert result[0]["number"] == 1
+    assert result[1]["number"] == 2
+
+
+async def test_create_github_issues_empty_list(httpx_mock: HTTPXMock) -> None:
+    """Empty input returns empty list without any API calls."""
+    result = await create_github_issues("owner/repo", [])
+
+    assert result == []
+    assert len(httpx_mock.get_requests()) == 0
+
+
+async def test_create_github_issues_with_labels(httpx_mock: HTTPXMock) -> None:
+    """Labels are passed through to the API call."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"number": 10, "title": "Labeled", "html_url": "https://github.com/owner/repo/issues/10"},
+    )
+
+    await create_github_issues(
+        "owner/repo",
+        [{"title": "Labeled", "body": "Body", "labels": ["bug", "urgent"]}],
+    )
+
+    request = httpx_mock.get_requests()[0]
+    body = json.loads(request.content)
+    assert body["labels"] == ["bug", "urgent"]
+
+
+async def test_create_github_issues_without_labels(httpx_mock: HTTPXMock) -> None:
+    """Missing labels key does not cause KeyError."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"number": 11, "title": "No labels", "html_url": "https://github.com/owner/repo/issues/11"},
+    )
+
+    result = await create_github_issues(
+        "owner/repo",
+        [{"title": "No labels", "body": "Body"}],
+    )
+
+    assert result[0]["number"] == 11
