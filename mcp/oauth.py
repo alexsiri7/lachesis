@@ -6,8 +6,8 @@ Implements the MCP Authorization spec
   - GET  /.well-known/oauth-protected-resource     (RFC 9728)
   - GET  /.well-known/oauth-authorization-server   (RFC 8414)
   - POST /oauth/register                            (RFC 7591)
-  - GET  /oauth/authorize  → 302 to web app /mcp-auth relay page
-  - POST /oauth/code-from-session ← web app posts Google token after OAuth
+  - GET  /oauth/authorize  → 302 to Google consent screen
+  - GET  /oauth/callback   ← Google redirects back with auth code
   - POST /oauth/token      → issues HS256 JWT (and refresh token)
 
 Routes are registered as ``@mcp.custom_route()`` on the FastMCP instance via
@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from jose import jwt
+from jose import JWTError, jwt
 from mcp.server.fastmcp import FastMCP
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
@@ -49,15 +49,6 @@ AUTH_CODE_TTL_SECONDS = 60 * 10  # 10 minutes
 SESSION_TTL_SECONDS = 60 * 10  # 10 minutes
 JWT_EXPIRY_SECONDS = 60 * 60 * 24 * 7  # 7 days
 REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
-
-# Placeholder — configure to the web-app relay URL when one exists.
-WEB_APP_ORIGIN = "https://lachesis.interstellarai.net"
-
-_CORS_HEADERS = {
-    "Access-Control-Allow-Origin": WEB_APP_ORIGIN,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-}
 
 
 def _base_url() -> str:
@@ -117,33 +108,64 @@ def _issue_token_response(
     )
 
 
-async def _verify_google_token(access_token: str) -> dict[str, Any] | None:
-    """Verify a Google access token via the tokeninfo endpoint.
-
-    Returns a dict with ``id`` and ``email`` on success, or ``None`` if the
-    token is invalid or the email is not in the allowlist.
-    """
+async def _exchange_google_code(code: str, redirect_uri: str) -> dict[str, Any] | None:
+    """Exchange a Google auth code for tokens. Returns {id, email} or None."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
-            resp = await http.get(
-                "https://oauth2.googleapis.com/tokeninfo",
-                params={"access_token": access_token},
+            resp = await http.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": settings.google_client_id,
+                    "client_secret": settings.google_client_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                },
             )
         if resp.status_code != 200:
-            logger.warning("MCP OAuth: Google tokeninfo returned %s", resp.status_code)
+            try:
+                err_body = resp.json()
+                logger.warning(
+                    "MCP OAuth: Google token exchange returned %s: %s — %s",
+                    resp.status_code,
+                    err_body.get("error", "unknown"),
+                    err_body.get("error_description", ""),
+                )
+            except ValueError:
+                logger.warning(
+                    "MCP OAuth: Google token exchange returned %s (non-JSON body)", resp.status_code
+                )
             return None
         payload = resp.json()
     except httpx.HTTPError as exc:
-        logger.warning("MCP OAuth: Google tokeninfo failed: %s", exc)
+        logger.warning("MCP OAuth: Google token exchange failed: %s", exc)
         return None
     except ValueError as exc:
-        logger.warning("MCP OAuth: Google tokeninfo returned non-JSON: %s", exc)
+        logger.warning("MCP OAuth: Google token exchange returned non-JSON: %s", exc)
         return None
-    email = payload.get("email")
-    if not email or (settings.allowed_email and email != settings.allowed_email):
-        logger.warning("MCP OAuth: rejected email=%s", email)
+    # Decode id_token to get email without another round-trip
+    id_token_raw = payload.get("id_token", "")
+    if not id_token_raw:
+        logger.warning("MCP OAuth: no id_token in Google response")
         return None
-    user_id = payload.get("sub") or payload.get("user_id")
+    try:
+        # Decode without verification — we just exchanged the code server-side
+        claims = jwt.get_unverified_claims(id_token_raw)
+    except JWTError as exc:
+        logger.warning("MCP OAuth: failed to decode id_token: %s", exc)
+        return None
+    email = claims.get("email")
+    user_id = claims.get("sub")
+    email_verified = claims.get("email_verified")
+    if not email or not user_id:
+        logger.warning("MCP OAuth: missing email or sub in id_token claims")
+        return None
+    if not email_verified:
+        logger.warning("MCP OAuth: email not verified by Google for email=%s", email)
+        return None
+    if settings.allowed_email and email != settings.allowed_email:
+        logger.warning("MCP OAuth: rejected email=%s (not in allowlist)", email)
+        return None
     return {"id": user_id, "email": email}
 
 
@@ -237,12 +259,16 @@ def register_routes(mcp_obj: FastMCP) -> None:
         )
 
     # -----------------------------------------------------------------------
-    # Authorization endpoint — redirects to web-app OAuth relay
+    # Authorization endpoint — redirects to Google consent screen
     # -----------------------------------------------------------------------
     @mcp_obj.custom_route("/oauth/authorize", methods=["GET"])  # type: ignore[untyped-decorator]
     async def oauth_authorize(request: Request) -> Response:
         if not settings.secret_key:
             raise HTTPException(status_code=501, detail="SECRET_KEY not configured")
+        if not settings.google_client_id:
+            raise HTTPException(status_code=501, detail="GOOGLE_CLIENT_ID not configured")
+        if not settings.google_client_secret:
+            raise HTTPException(status_code=501, detail="GOOGLE_CLIENT_SECRET not configured")
 
         qp = request.query_params
         client_id = qp.get("client_id", "")
@@ -292,74 +318,52 @@ def register_routes(mcp_obj: FastMCP) -> None:
             },
         )
         logger.info(
-            "MCP OAuth: authorize → web-app relay for client %s (flow %s…)",
+            "MCP OAuth: authorize → Google consent for client %s (flow %s…)",
             client_id,
             flow_key[:12],
         )
-        return RedirectResponse(
-            url=f"{WEB_APP_ORIGIN}/mcp-auth?flow={flow_key}",
-            status_code=302,
-        )
+        google_params = {
+            "client_id": settings.google_client_id,
+            "redirect_uri": f"{_base_url()}/oauth/callback",
+            "response_type": "code",
+            "scope": "openid email",
+            "state": flow_key,
+            "access_type": "offline",
+            "prompt": "consent",
+        }
+        google_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(google_params)}"
+        return RedirectResponse(url=google_url, status_code=302)
 
     # -----------------------------------------------------------------------
-    # Code-from-session — called by the web-app relay after Google OAuth
+    # OAuth callback — Google redirects here after user consent
     # -----------------------------------------------------------------------
-    @mcp_obj.custom_route("/oauth/code-from-session", methods=["POST", "OPTIONS"])  # type: ignore[untyped-decorator]
-    async def oauth_code_from_session(request: Request) -> Response:
-        if request.method == "OPTIONS":
-            return Response(headers=_CORS_HEADERS)
+    @mcp_obj.custom_route("/oauth/callback", methods=["GET"])  # type: ignore[untyped-decorator]
+    async def oauth_callback(request: Request) -> Response:
+        qp = request.query_params
+        code = qp.get("code", "")
+        state = qp.get("state", "")  # this is our flow_key
+        error = qp.get("error", "")
 
-        try:
-            body = await request.json()
-        except Exception:
-            return JSONResponse(
-                {"error": "invalid_request", "error_description": "JSON body required"},
-                status_code=400,
-                headers=_CORS_HEADERS,
-            )
+        if error:
+            logger.warning("MCP OAuth: Google returned error=%s", error)
+            raise HTTPException(status_code=400, detail=f"Google OAuth error: {error}")
+        if not code or not state:
+            raise HTTPException(status_code=400, detail="code and state required")
 
-        flow_id = str(body.get("flow_id", ""))
-        access_token = str(body.get("access_token", ""))
-
-        logger.info(
-            "MCP OAuth: code-from-session received flow_id=%r len=%d",
-            flow_id[:12] if flow_id else "",
-            len(flow_id),
-        )
-
-        if not flow_id or not access_token:
-            return JSONResponse(
-                {
-                    "error": "invalid_request",
-                    "error_description": "flow_id and access_token required",
-                },
-                status_code=400,
-                headers=_CORS_HEADERS,
-            )
-
-        session = cleanup_and_pop(oauth_sessions, flow_id)
+        session = cleanup_and_pop(oauth_sessions, state)
         if not session:
-            return JSONResponse(
-                {"error": "invalid_request", "error_description": "Invalid or expired flow_id"},
-                status_code=400,
-                headers=_CORS_HEADERS,
+            raise HTTPException(status_code=400, detail="Invalid or expired state")
+
+        callback_uri = f"{_base_url()}/oauth/callback"
+        user_data = await _exchange_google_code(code, callback_uri)
+        if user_data is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Google token exchange or email verification failed",
             )
 
-        user_data = await _verify_google_token(access_token)
-        if user_data is None:
-            return JSONResponse(
-                {"error": "server_error", "error_description": "Token verification failed"},
-                status_code=400,
-                headers=_CORS_HEADERS,
-            )
-        user_id = user_data.get("id")
-        email = user_data.get("email")
-        if not user_id:
-            return JSONResponse(
-                {"error": "server_error", "error_description": "No user ID in token"},
-                status_code=400,
-                headers=_CORS_HEADERS,
-            )
+        user_id = user_data["id"]
+        email = user_data["email"]
 
         lachesis_auth_code = secrets.token_urlsafe(32)
         cleanup_and_store(
@@ -380,11 +384,11 @@ def register_routes(mcp_obj: FastMCP) -> None:
         params = {"code": lachesis_auth_code, "state": session["client_state"]}
         redirect_url = f"{session['redirect_uri']}?{urlencode(params)}"
         logger.info(
-            "MCP OAuth: code-from-session complete for client %s → %s",
+            "MCP OAuth: callback complete for client %s → %s",
             session["client_id"],
             session["redirect_uri"],
         )
-        return JSONResponse({"redirect_url": redirect_url}, headers=_CORS_HEADERS)
+        return RedirectResponse(url=redirect_url, status_code=302)
 
     # -----------------------------------------------------------------------
     # Token endpoint
@@ -431,9 +435,13 @@ def register_routes(mcp_obj: FastMCP) -> None:
             if _pkce_s256(code_verifier) != session["code_challenge"]:
                 raise HTTPException(status_code=400, detail="PKCE verification failed")
 
+        session_client_id = session.get("client_id", "")
+        if client_id and client_id != session_client_id:
+            raise HTTPException(status_code=400, detail="client_id mismatch")
+
         return _issue_token_response(
             session["user_id"],
             session.get("email"),
-            client_id or session.get("client_id", ""),
+            session_client_id,
             session.get("scope", "mcp"),
         )
