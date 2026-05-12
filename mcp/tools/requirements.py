@@ -60,7 +60,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
 
     # Build new ## Issues section body
     bullet_block = "\n".join(f"- #{i['number']} \u2014 {i['title']}" for i in issues)
-    new_section = f"## Issues\n\n{bullet_block}\n" if bullet_block else "## Issues\n"
+    new_section = f"## Issues\n\n{bullet_block}\n" if issues else "## Issues\n"
 
     # Replace existing ## Issues section in the body, or append if absent
     body = post.content
