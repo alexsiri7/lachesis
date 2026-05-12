@@ -64,9 +64,7 @@ _ISSUES = [
 ]
 
 
-def _mock_full_flow(
-    httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1"
-) -> None:
+def _mock_full_flow(httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1") -> None:
     """Register list_files → get_file → update_file responses."""
     httpx_mock.add_response(json=_LIST_RESP)
     httpx_mock.add_response(json=_make_file_response(content, sha))
@@ -115,9 +113,7 @@ async def test_link_issues_raises_when_requirement_not_found(
     httpx_mock: HTTPXMock,
 ) -> None:
     """FileNotFoundError if no file in requirements/ starts with the id."""
-    httpx_mock.add_response(
-        json=[{"name": "002-other.md", "path": "requirements/002-other.md"}]
-    )
+    httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
 
     with pytest.raises(FileNotFoundError, match="001"):
         await link_issues("owner/repo", "001", _ISSUES)
@@ -194,9 +190,7 @@ Implement JWT auth.
 """
 
 
-def _mock_delete_flow(
-    httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1"
-) -> None:
+def _mock_delete_flow(httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1") -> None:
     """Register list_files \u2192 get_file \u2192 delete_file responses."""
     httpx_mock.add_response(json=_LIST_RESP)
     httpx_mock.add_response(json=_make_file_response(content, sha))
@@ -229,9 +223,7 @@ async def test_delete_requirement_raises_when_not_found(
     httpx_mock: HTTPXMock,
 ) -> None:
     """FileNotFoundError if no file starts with the id prefix."""
-    httpx_mock.add_response(
-        json=[{"name": "002-other.md", "path": "requirements/002-other.md"}]
-    )
+    httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
 
     with pytest.raises(FileNotFoundError, match="001"):
         await delete_requirement("owner/repo", "001")
@@ -279,7 +271,11 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"number": 42, "title": "Fix bug", "html_url": "https://github.com/owner/repo/issues/42"},
+        json={
+            "number": 42,
+            "title": "Fix bug",
+            "html_url": "https://github.com/owner/repo/issues/42",
+        },
     )
 
     result = await create_github_issues(
@@ -287,7 +283,9 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
         [{"title": "Fix bug", "body": "Details here"}],
     )
 
-    assert result == [{"number": 42, "title": "Fix bug", "url": "https://github.com/owner/repo/issues/42"}]
+    assert result == [
+        {"number": 42, "title": "Fix bug", "url": "https://github.com/owner/repo/issues/42"}
+    ]
 
 
 async def test_create_github_issues_multiple(httpx_mock: HTTPXMock) -> None:
@@ -329,7 +327,11 @@ async def test_create_github_issues_with_labels(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"number": 10, "title": "Labeled", "html_url": "https://github.com/owner/repo/issues/10"},
+        json={
+            "number": 10,
+            "title": "Labeled",
+            "html_url": "https://github.com/owner/repo/issues/10",
+        },
     )
 
     await create_github_issues(
@@ -347,7 +349,11 @@ async def test_create_github_issues_without_labels(httpx_mock: HTTPXMock) -> Non
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"number": 11, "title": "No labels", "html_url": "https://github.com/owner/repo/issues/11"},
+        json={
+            "number": 11,
+            "title": "No labels",
+            "html_url": "https://github.com/owner/repo/issues/11",
+        },
     )
 
     result = await create_github_issues(
@@ -476,18 +482,22 @@ Need exports.
 
 CSV export.
 """
-    httpx_mock.add_response(json=[
-        {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
-        {"name": "002-data-export.md", "path": "requirements/002-data-export.md"},
-    ])
+    httpx_mock.add_response(
+        json=[
+            {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+            {"name": "002-data-export.md", "path": "requirements/002-data-export.md"},
+        ]
+    )
     httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
-    httpx_mock.add_response(json={
-        "name": "002-data-export.md",
-        "path": "requirements/002-data-export.md",
-        "content": base64.b64encode(second_md.encode()).decode("ascii"),
-        "sha": "sha2",
-        "type": "file",
-    })
+    httpx_mock.add_response(
+        json={
+            "name": "002-data-export.md",
+            "path": "requirements/002-data-export.md",
+            "content": base64.b64encode(second_md.encode()).decode("ascii"),
+            "sha": "sha2",
+            "type": "file",
+        }
+    )
 
     result = await list_requirements("owner/repo")
 
@@ -514,9 +524,7 @@ async def test_get_requirement_returns_raw_content(httpx_mock: HTTPXMock) -> Non
 
 async def test_get_requirement_raises_when_not_found(httpx_mock: HTTPXMock) -> None:
     """FileNotFoundError if no file starts with the id prefix."""
-    httpx_mock.add_response(
-        json=[{"name": "002-other.md", "path": "requirements/002-other.md"}]
-    )
+    httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
 
     with pytest.raises(FileNotFoundError, match="001"):
         await get_requirement("owner/repo", "001")
@@ -525,17 +533,21 @@ async def test_get_requirement_raises_when_not_found(httpx_mock: HTTPXMock) -> N
 async def test_get_requirement_matches_by_id_prefix(httpx_mock: HTTPXMock) -> None:
     """Correctly finds a file by its numeric id prefix."""
     second_md = "---\nid: '002'\ntitle: Other\nstatus: idea\n---\nBody\n"
-    httpx_mock.add_response(json=[
-        {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
-        {"name": "002-other.md", "path": "requirements/002-other.md"},
-    ])
-    httpx_mock.add_response(json={
-        "name": "002-other.md",
-        "path": "requirements/002-other.md",
-        "content": base64.b64encode(second_md.encode()).decode("ascii"),
-        "sha": "sha2",
-        "type": "file",
-    })
+    httpx_mock.add_response(
+        json=[
+            {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+            {"name": "002-other.md", "path": "requirements/002-other.md"},
+        ]
+    )
+    httpx_mock.add_response(
+        json={
+            "name": "002-other.md",
+            "path": "requirements/002-other.md",
+            "content": base64.b64encode(second_md.encode()).decode("ascii"),
+            "sha": "sha2",
+            "type": "file",
+        }
+    )
 
     result = await get_requirement("owner/repo", "002")
 

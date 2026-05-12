@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 import frontmatter
 
@@ -23,12 +23,14 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
             continue
         content, _ = await github.get_file(repo, f["path"])
         post = frontmatter.loads(content)
-        results.append({
-            "id": post["id"],
-            "title": post["title"],
-            "status": post["status"],
-            "github_issue": post.get("github_issue"),
-        })
+        results.append(
+            {
+                "id": post["id"],
+                "title": post["title"],
+                "status": post["status"],
+                "github_issue": post.get("github_issue"),
+            }
+        )
     return results
 
 
@@ -162,7 +164,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
         sha,
         f"chore: link issues to requirement {id}",
     )
-    return updated_content
+    return cast(str, updated_content)
 
 
 async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
