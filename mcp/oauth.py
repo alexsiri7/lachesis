@@ -244,19 +244,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
             client_id,
             client["client_name"],
         )
-        return JSONResponse(
-            {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uris": client["redirect_uris"],
-                "client_name": client["client_name"],
-                "grant_types": client["grant_types"],
-                "response_types": client["response_types"],
-                "token_endpoint_auth_method": client["token_endpoint_auth_method"],
-                "scope": client["scope"],
-            },
-            status_code=201,
-        )
+        return JSONResponse(client, status_code=201)
 
     # -----------------------------------------------------------------------
     # Authorization endpoint — redirects to Google consent screen
