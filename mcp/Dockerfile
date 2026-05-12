@@ -12,4 +12,7 @@ COPY mcp/ /app/
 ENV PYTHONPATH=/app
 EXPOSE 8080
 
+RUN adduser --disabled-password --gecos '' --uid 1000 appuser
+USER appuser
+
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
