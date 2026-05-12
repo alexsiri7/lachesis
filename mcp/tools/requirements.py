@@ -56,7 +56,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
 
     # 5. Build frontmatter + body
     post = frontmatter.Post(
-        f"## Why\n\n{why}\n\n## What\n\n{what}\n\n## Issues\n",
+        f"## Why\n\n{why}\n\n## What\n\n{what}\n\n## Issues\n\n_None yet._\n",
         id=id_str,
         title=title,
         status="idea",
