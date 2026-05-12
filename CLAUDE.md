@@ -35,6 +35,8 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   tools/
     __init__.py
     requirements.py  All 7 MCP tool implementations
+  tests/
+    test_requirements.py  Unit tests for tool implementations (pytest + pytest-httpx)
   Dockerfile
   pyproject.toml
   requirements.txt
@@ -59,4 +61,10 @@ See `.env.example`. Key ones:
 cd mcp
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
+```
+
+```bash
+# Run tests
+cd mcp
+pytest
 ```

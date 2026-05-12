@@ -1,10 +1,13 @@
-"""Stub implementations for all 7 Lachesis MCP tools.
+"""MCP tool implementations for Lachesis requirements management.
 
-Real implementations are delivered in issues #4-#10.
+Remaining stubs (list_requirements, get_requirement, create_requirement,
+update_requirement, delete_requirement, create_github_issues) are tracked
+in issues #4-#8 and #10.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from typing import Any
@@ -12,6 +15,8 @@ from typing import Any
 import frontmatter
 
 import github
+
+logger = logging.getLogger(__name__)
 
 
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
@@ -40,12 +45,29 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
 
 
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
-    """Write GitHub issue numbers into the requirement's Issues section."""
+    """Write GitHub issue numbers into the requirement's Issues section.
+
+    Updates the ``github_issue`` frontmatter key to the first issue's number,
+    or ``null`` when ``issues`` is empty, and rewrites ``updated`` to today.
+
+    Returns:
+        The full serialized Markdown string (frontmatter + body) as written to GitHub.
+
+    Raises:
+        FileNotFoundError: If no file in ``requirements/`` starts with ``{id}-``.
+    """
     # Locate the requirement file
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
         raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+    if len(matching) > 1:
+        logger.warning(
+            "link_issues: multiple files match id=%r in %r, using %s",
+            id,
+            repo,
+            matching[0]["name"],
+        )
 
     path = matching[0]["path"]
     content, sha = await github.get_file(repo, path)
@@ -54,13 +76,12 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     post = frontmatter.loads(content)
 
     # Update metadata
-    if issues:
-        post["github_issue"] = issues[0]["number"]
+    post["github_issue"] = issues[0]["number"] if issues else None
     post["updated"] = date.today().isoformat()
 
     # Build new ## Issues section body
     bullet_block = "\n".join(f"- #{i['number']} \u2014 {i['title']}" for i in issues)
-    new_section = f"## Issues\n\n{bullet_block}\n" if bullet_block else "## Issues\n"
+    new_section = f"## Issues\n\n{bullet_block}\n\n" if bullet_block else "## Issues\n\n"
 
     # Replace existing ## Issues section in the body, or append if absent
     body = post.content

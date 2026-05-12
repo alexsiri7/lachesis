@@ -102,6 +102,7 @@ async def test_link_issues_sends_correct_sha_to_update(
     update_request = httpx_mock.get_requests()[2]
     body = json.loads(update_request.content)
     assert body["sha"] == "abc999"
+    assert body["message"] == "chore: link issues to requirement 001"
 
 
 async def test_link_issues_raises_when_requirement_not_found(
@@ -131,6 +132,73 @@ async def test_link_issues_empty_issues_list(
     lines = result.splitlines()
     issue_lines = [line for line in lines if line.startswith("- #")]
     assert issue_lines == []
+
+
+async def test_link_issues_empty_clears_existing_github_issue(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Empty issues list resets github_issue to null even if previously set."""
+    md_with_issue = _SAMPLE_MD.replace("github_issue: null", "github_issue: 42")
+    _mock_full_flow(httpx_mock, content=md_with_issue)
+
+    result = await link_issues("owner/repo", "001", [])
+
+    post = frontmatter.loads(result)
+    assert post.get("github_issue") is None
+
+
+_SAMPLE_MD_WITH_NOTES = """\
+---
+id: "001"
+title: "User authentication"
+status: "planned"
+github_issue: null
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Why
+
+Users need to save their rankings.
+
+## What
+
+Implement JWT auth.
+
+## Issues
+
+- #10 \u2014 Old issue
+
+## Notes
+
+Keep this section intact.
+"""
+
+
+async def test_link_issues_does_not_clobber_subsequent_sections(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """## Issues replacement must not remove sections that follow it."""
+    _mock_full_flow(httpx_mock, content=_SAMPLE_MD_WITH_NOTES)
+
+    result = await link_issues("owner/repo", "001", _ISSUES)
+
+    assert "## Notes" in result
+    assert "Keep this section intact." in result
+    assert "- #42 \u2014 Set up JWT middleware" in result
+
+
+async def test_link_issues_empty_does_not_clobber_subsequent_sections(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Clearing issues with [] must not remove sections that follow ## Issues."""
+    _mock_full_flow(httpx_mock, content=_SAMPLE_MD_WITH_NOTES)
+
+    result = await link_issues("owner/repo", "001", [])
+
+    assert "## Notes" in result
+    assert "Keep this section intact." in result
+    assert "- #10" not in result  # old bullet gone
 
 
 async def test_link_issues_appends_section_when_missing(
