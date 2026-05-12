@@ -1,6 +1,8 @@
-"""Stub implementations for all 7 Lachesis MCP tools.
+"""MCP tool implementations for the 7 Lachesis requirements-management tools.
 
-Real implementations are delivered in issues #4-#10.
+create_requirement, delete_requirement, link_issues, and create_github_issues
+are fully implemented. list_requirements, get_requirement, and update_requirement
+are stubs delivered in issues #4, #5, and #7 respectively.
 """
 
 from __future__ import annotations
@@ -121,7 +123,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
 
     # Build new ## Issues section body
     bullet_block = "\n".join(f"- #{i['number']} \u2014 {i['title']}" for i in issues)
-    new_section = f"## Issues\n\n{bullet_block}\n" if bullet_block else "## Issues\n"
+    new_section = f"## Issues\n\n{bullet_block}\n" if bullet_block else "## Issues\n\n_None yet._\n"
 
     # Replace existing ## Issues section in the body, or append if absent
     body = post.content

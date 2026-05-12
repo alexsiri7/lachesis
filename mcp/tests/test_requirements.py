@@ -56,6 +56,29 @@ Implement JWT auth.
 
 """
 
+_SAMPLE_MD_WITH_PLACEHOLDER = """\
+---
+id: "001"
+title: "User authentication"
+status: "planned"
+github_issue: null
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Why
+
+Users need to save their rankings.
+
+## What
+
+Implement JWT auth.
+
+## Issues
+
+_None yet._
+"""
+
 _ISSUES = [
     {"number": 42, "title": "Set up JWT middleware"},
     {"number": 43, "title": "Build login endpoints"},
@@ -124,7 +147,7 @@ async def test_link_issues_raises_when_requirement_not_found(
 async def test_link_issues_empty_issues_list(
     httpx_mock: HTTPXMock,
 ) -> None:
-    """Empty issues list clears ## Issues section."""
+    """Empty issues list resets ## Issues section to _None yet._ placeholder."""
     _mock_full_flow(httpx_mock)
 
     result = await link_issues("owner/repo", "001", [])
@@ -132,10 +155,24 @@ async def test_link_issues_empty_issues_list(
     post = frontmatter.loads(result)
     assert post.get("github_issue") is None
     assert "## Issues" in result
+    assert "_None yet._" in result
     # No bullet lines
     lines = result.splitlines()
     issue_lines = [line for line in lines if line.startswith("- #")]
     assert issue_lines == []
+
+
+async def test_link_issues_replaces_none_yet_placeholder(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """link_issues replaces the _None yet._ placeholder body with real issue links."""
+    _mock_full_flow(httpx_mock, content=_SAMPLE_MD_WITH_PLACEHOLDER)
+
+    result = await link_issues("owner/repo", "001", _ISSUES)
+
+    assert "_None yet._" not in result
+    assert "- #42 \u2014 Set up JWT middleware" in result
+    assert result.count("## Issues") == 1
 
 
 async def test_link_issues_appends_section_when_missing(
@@ -394,7 +431,7 @@ async def test_create_requirement_slug_derived_from_title(httpx_mock: HTTPXMock)
 
 
 async def test_create_requirement_sends_idea_status(httpx_mock: HTTPXMock) -> None:
-    """Created file has status 'idea' and github_issue null."""
+    """Created file has status 'idea', github_issue null, and Issues body placeholder."""
     httpx_mock.add_response(json=[])
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
