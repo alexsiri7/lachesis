@@ -8,7 +8,9 @@ import json
 import pytest
 from pytest_httpx import HTTPXMock
 
-from github import create_file, create_issue, get_file, list_files, update_file
+import httpx
+
+from github import create_file, create_issue, delete_file, get_file, list_files, update_file
 
 # ---------------------------------------------------------------------------
 # list_files
@@ -122,6 +124,29 @@ async def test_update_file_sends_base64_encoded_content(httpx_mock: HTTPXMock) -
     request = httpx_mock.get_requests()[0]
     body = json.loads(request.content)
     assert base64.b64decode(body["content"]).decode() == raw
+
+
+# ---------------------------------------------------------------------------
+# delete_file
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_file_sends_delete_with_sha_and_message(httpx_mock: HTTPXMock) -> None:
+    """delete_file uses DELETE method and passes sha and message in request body."""
+    httpx_mock.add_response(status_code=200, json={"commit": {}, "content": None})
+    await delete_file("owner/repo", "requirements/001-foo.md", "abc123", "chore: delete req 001")
+    request = httpx_mock.get_requests()[0]
+    assert request.method == "DELETE"
+    body = json.loads(request.content)
+    assert body["sha"] == "abc123"
+    assert "001" in body["message"]
+
+
+async def test_delete_file_raises_on_non_2xx(httpx_mock: HTTPXMock) -> None:
+    """delete_file raises HTTPStatusError on non-2xx response."""
+    httpx_mock.add_response(status_code=422, json={"message": "Unprocessable"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await delete_file("owner/repo", "requirements/001-foo.md", "sha1", "msg")
 
 
 # ---------------------------------------------------------------------------

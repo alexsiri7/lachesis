@@ -1,6 +1,8 @@
-"""Stub implementations for all 7 Lachesis MCP tools.
+"""MCP tool implementations for Lachesis.
 
-Real implementations are delivered in issues #4-#10.
+Stubs (raise NotImplementedError): list_requirements (#4), get_requirement (#5),
+create_requirement (#6), update_requirement (#7), create_github_issues (#10).
+Implemented: delete_requirement, link_issues.
 """
 
 from __future__ import annotations
@@ -49,8 +51,8 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     post = frontmatter.loads(content)
     if post.get("status") == "done":
         raise ValueError(
-            "Cannot delete a done requirement — it represents implemented code. "
-            "Create a new requirement to remove the feature."
+            f"Cannot delete requirement {id!r} — status is 'done', which represents "
+            "implemented code. Create a new requirement to remove the feature."
         )
 
     # Delete the file

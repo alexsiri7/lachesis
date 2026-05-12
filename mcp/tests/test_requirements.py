@@ -1,4 +1,4 @@
-"""Unit tests for mcp/tools/requirements.py — link_issues."""
+"""Unit tests for mcp/tools/requirements.py."""
 
 from __future__ import annotations
 
@@ -214,7 +214,7 @@ async def test_delete_requirement_refuses_done_status(
     httpx_mock.add_response(json=_LIST_RESP)
     httpx_mock.add_response(json=_make_file_response(_DONE_MD, "sha1"))
 
-    with pytest.raises(ValueError, match="done requirement"):
+    with pytest.raises(ValueError, match=r"Cannot delete.*done"):
         await delete_requirement("owner/repo", "001")
 
 
@@ -234,14 +234,12 @@ async def test_delete_requirement_sends_correct_sha(
     httpx_mock: HTTPXMock,
 ) -> None:
     """delete_file is called with the sha returned by get_file."""
-    import json as _json
-
     _mock_delete_flow(httpx_mock, sha="deadbeef")
 
     await delete_requirement("owner/repo", "001")
 
     delete_request = httpx_mock.get_requests()[2]
-    body = _json.loads(delete_request.content)
+    body = json.loads(delete_request.content)
     assert body["sha"] == "deadbeef"
 
 
@@ -249,12 +247,28 @@ async def test_delete_requirement_sends_correct_commit_message(
     httpx_mock: HTTPXMock,
 ) -> None:
     """Commit message references the requirement id."""
-    import json as _json
-
     _mock_delete_flow(httpx_mock)
 
     await delete_requirement("owner/repo", "001")
 
     delete_request = httpx_mock.get_requests()[2]
-    body = _json.loads(delete_request.content)
+    body = json.loads(delete_request.content)
     assert "001" in body["message"]
+
+
+async def test_delete_requirement_selects_first_match_when_ambiguous(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Documents that first matching file is used when id prefix is ambiguous."""
+    httpx_mock.add_response(
+        json=[
+            {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+            {"name": "001-user-auth-v2.md", "path": "requirements/001-user-auth-v2.md"},
+        ]
+    )
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(status_code=200, json={"commit": {}, "content": None})
+
+    result = await delete_requirement("owner/repo", "001")
+
+    assert result == {"deleted": "requirements/001-user-auth.md"}
