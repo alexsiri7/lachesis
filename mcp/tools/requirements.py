@@ -16,6 +16,17 @@ import frontmatter
 import github
 
 
+async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str]:
+    """Return (path, content, sha) for requirement *id*. Raises FileNotFoundError if absent."""
+    files = await github.list_files(repo, "requirements")
+    matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    if not matching:
+        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+    path = matching[0]["path"]
+    content, sha = await github.get_file(repo, path)
+    return path, content, sha
+
+
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
     """Return all requirements for a given repo (id, title, status, github_issue)."""
     raise NotImplementedError("Implemented in issue #4")
@@ -38,16 +49,8 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
-    # Locate the requirement file
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+    path, content, sha = await _locate_requirement(repo, id)
 
-    path = matching[0]["path"]
-    content, sha = await github.get_file(repo, path)
-
-    # Parse frontmatter to check status
     post = frontmatter.loads(content)
     if post.get("status") == "done":
         raise ValueError(
@@ -55,23 +58,14 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
             "implemented code. Create a new requirement to remove the feature."
         )
 
-    # Delete the file
     await github.delete_file(repo, path, sha, f"chore: delete requirement {id}")
     return {"deleted": path}
 
 
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
-    # Locate the requirement file
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+    path, content, sha = await _locate_requirement(repo, id)
 
-    path = matching[0]["path"]
-    content, sha = await github.get_file(repo, path)
-
-    # Parse frontmatter
     post = frontmatter.loads(content)
 
     # Update metadata
@@ -95,7 +89,6 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
         body = body.rstrip("\n") + "\n\n" + new_section
     post.content = body
 
-    # Serialize and write back
     updated_content = frontmatter.dumps(post)
     await github.update_file(
         repo,

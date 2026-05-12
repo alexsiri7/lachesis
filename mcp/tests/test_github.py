@@ -5,10 +5,9 @@ from __future__ import annotations
 import base64
 import json
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
-
-import httpx
 
 from github import create_file, create_issue, delete_file, get_file, list_files, update_file
 
