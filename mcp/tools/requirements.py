@@ -26,7 +26,49 @@ async def get_requirement(repo: str, id: str) -> str:
 
 async def create_requirement(repo: str, title: str, why: str, what: str) -> dict[str, Any]:
     """Create a new requirement file and return its path and auto-assigned id."""
-    raise NotImplementedError("Implemented in issue #6")
+    # 1. List existing files to determine next ID and detect slug collisions
+    files = await github.list_files(repo, "requirements")
+
+    # 2. Assign next ID
+    ids = []
+    for f in files:
+        name = f["name"]
+        prefix = name.split("-")[0]
+        if prefix.isdigit():
+            ids.append(int(prefix))
+    next_id = max(ids, default=0) + 1
+    id_str = f"{next_id:03d}"
+
+    # 3. Build slug from title
+    slug = re.sub(r"[^a-z0-9-]+", "", title.lower().replace(" ", "-"))
+    slug = slug.strip("-")
+
+    # 4. Handle slug collisions
+    existing_names = {f["name"] for f in files}
+    candidate = f"{id_str}-{slug}.md"
+    suffix = 2
+    while candidate in existing_names:
+        candidate = f"{id_str}-{slug}-{suffix}.md"
+        suffix += 1
+
+    path = f"requirements/{candidate}"
+    today = date.today().isoformat()
+
+    # 5. Build frontmatter + body
+    post = frontmatter.Post(
+        f"## Why\n\n{why}\n\n## What\n\n{what}\n\n## Issues\n",
+        id=id_str,
+        title=title,
+        status="idea",
+        github_issue=None,
+        created=today,
+        updated=today,
+    )
+    content = frontmatter.dumps(post)
+
+    # 6. Create file in GitHub
+    await github.create_file(repo, path, content, f"feat: add requirement {id_str}")
+    return {"id": id_str, "path": path}
 
 
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
