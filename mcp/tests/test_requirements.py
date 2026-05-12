@@ -1,4 +1,4 @@
-"""Unit tests for mcp/tools/requirements.py — link_issues."""
+"""Unit tests for mcp/tools/requirements.py."""
 
 from __future__ import annotations
 
@@ -505,6 +505,51 @@ CSV export.
     assert result[0]["id"] == "001"
     assert result[1]["id"] == "002"
     assert result[1]["github_issue"] == 99
+
+
+async def test_list_requirements_skips_non_md_files(httpx_mock: HTTPXMock) -> None:
+    """Non-.md files in requirements/ are silently ignored."""
+    httpx_mock.add_response(
+        json=[
+            {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+            {"name": "README.txt", "path": "requirements/README.txt"},
+        ]
+    )  # list_files
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))  # get_file
+
+    result = await list_requirements("owner/repo")
+
+    assert len(result) == 1
+    assert result[0]["id"] == "001"
+    # Only one get_file call — README.txt was not fetched
+    assert len(httpx_mock.get_requests()) == 2  # list_files + one get_file
+
+
+async def test_list_requirements_skips_malformed_frontmatter(httpx_mock: HTTPXMock) -> None:
+    """Files missing required frontmatter fields are skipped with a warning."""
+    malformed_md = "---\ntitle: No id here\n---\nBody\n"
+    httpx_mock.add_response(
+        json=[
+            {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+            {"name": "002-bad.md", "path": "requirements/002-bad.md"},
+        ]
+    )  # list_files
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))  # get_file valid
+    httpx_mock.add_response(
+        json={
+            "name": "002-bad.md",
+            "path": "requirements/002-bad.md",
+            "content": base64.b64encode(malformed_md.encode()).decode("ascii"),
+            "sha": "sha2",
+            "type": "file",
+        }
+    )  # get_file malformed
+
+    result = await list_requirements("owner/repo")
+
+    # Only the valid file is returned; malformed one is skipped
+    assert len(result) == 1
+    assert result[0]["id"] == "001"
 
 
 # ---------------------------------------------------------------------------

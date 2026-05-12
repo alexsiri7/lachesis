@@ -1,10 +1,11 @@
-"""Stub implementations for all 7 Lachesis MCP tools.
+"""MCP tool implementations for the Lachesis requirements management server.
 
-Real implementations are delivered in issues #4-#10.
+All tools are implemented except ``update_requirement`` (tracked in issue #7).
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from typing import Any, cast
@@ -12,6 +13,8 @@ from typing import Any, cast
 import frontmatter
 
 import github
+
+logger = logging.getLogger(__name__)
 
 
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
@@ -23,11 +26,20 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
             continue
         content, _ = await github.get_file(repo, f["path"])
         post = frontmatter.loads(content)
+        req_id = post.get("id")
+        req_title = post.get("title")
+        req_status = post.get("status")
+        if req_id is None or req_title is None or req_status is None:
+            logger.warning(
+                "list_requirements: skipping %s — missing required frontmatter fields",
+                f["path"],
+            )
+            continue
         results.append(
             {
-                "id": post["id"],
-                "title": post["title"],
-                "status": post["status"],
+                "id": req_id,
+                "title": req_title,
+                "status": req_status,
                 "github_issue": post.get("github_issue"),
             }
         )
@@ -93,7 +105,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
 
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     """Update fields (title, why, what, status) in an existing requirement."""
-    raise NotImplementedError("Implemented in issue #7")
+    raise NotImplementedError("Not yet implemented — tracked in issue #7")
 
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
