@@ -10,7 +10,7 @@ import frontmatter
 import pytest
 from pytest_httpx import HTTPXMock
 
-from tools.requirements import link_issues
+from tools.requirements import delete_requirement, link_issues
 
 _NAME = "001-user-auth.md"
 _PATH = "requirements/001-user-auth.md"
@@ -161,3 +161,100 @@ Other text.
 
     assert "## Issues" in result
     assert "- #42 \u2014 Set up JWT middleware" in result
+
+
+# ---------------------------------------------------------------------------
+# delete_requirement tests
+# ---------------------------------------------------------------------------
+
+_DONE_MD = """\
+---
+id: "001"
+title: "User authentication"
+status: "done"
+github_issue: 42
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Why
+
+Users need to save their rankings.
+
+## What
+
+Implement JWT auth.
+"""
+
+
+def _mock_delete_flow(
+    httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1"
+) -> None:
+    """Register list_files \u2192 get_file \u2192 delete_file responses."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(content, sha))
+    httpx_mock.add_response(status_code=200, json={"commit": {}, "content": None})
+
+
+async def test_delete_requirement_returns_deleted_path(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Returns {"deleted": path} on successful deletion."""
+    _mock_delete_flow(httpx_mock)
+
+    result = await delete_requirement("owner/repo", "001")
+
+    assert result == {"deleted": _PATH}
+
+
+async def test_delete_requirement_refuses_done_status(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Raises ValueError with explanation when status is 'done'."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_DONE_MD, "sha1"))
+
+    with pytest.raises(ValueError, match="done requirement"):
+        await delete_requirement("owner/repo", "001")
+
+
+async def test_delete_requirement_raises_when_not_found(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """FileNotFoundError if no file starts with the id prefix."""
+    httpx_mock.add_response(
+        json=[{"name": "002-other.md", "path": "requirements/002-other.md"}]
+    )
+
+    with pytest.raises(FileNotFoundError, match="001"):
+        await delete_requirement("owner/repo", "001")
+
+
+async def test_delete_requirement_sends_correct_sha(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """delete_file is called with the sha returned by get_file."""
+    import json as _json
+
+    _mock_delete_flow(httpx_mock, sha="deadbeef")
+
+    await delete_requirement("owner/repo", "001")
+
+    delete_request = httpx_mock.get_requests()[2]
+    body = _json.loads(delete_request.content)
+    assert body["sha"] == "deadbeef"
+
+
+async def test_delete_requirement_sends_correct_commit_message(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Commit message references the requirement id."""
+    import json as _json
+
+    _mock_delete_flow(httpx_mock)
+
+    await delete_requirement("owner/repo", "001")
+
+    delete_request = httpx_mock.get_requests()[2]
+    body = _json.loads(delete_request.content)
+    assert "001" in body["message"]

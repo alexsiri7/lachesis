@@ -124,7 +124,8 @@ async def update_file(repo: str, path: str, content: str, sha: str, message: str
 async def delete_file(repo: str, path: str, sha: str, message: str) -> None:
     """Delete the file at *path* (requires current *sha*)."""
     async with httpx.AsyncClient(timeout=10.0) as http:
-        resp = await http.delete(  # type: ignore[call-arg]
+        resp = await http.request(
+            "DELETE",
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
             json={"message": message, "sha": sha},
