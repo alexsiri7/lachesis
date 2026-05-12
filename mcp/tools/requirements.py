@@ -107,4 +107,13 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
 
 async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Create one or more GitHub issues and return their numbers/titles/urls."""
-    raise NotImplementedError("Implemented in issue #10")
+    results = []
+    for issue in issues:
+        result = await github.create_issue(
+            repo,
+            issue["title"],
+            issue["body"],
+            issue.get("labels"),
+        )
+        results.append(result)
+    return results
