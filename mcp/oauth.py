@@ -435,9 +435,8 @@ def register_routes(mcp_obj: FastMCP) -> None:
             if _pkce_s256(code_verifier) != session["code_challenge"]:
                 raise HTTPException(status_code=400, detail="PKCE verification failed")
 
-        form_client_id = str(form.get("client_id", ""))
         session_client_id = session.get("client_id", "")
-        if form_client_id and form_client_id != session_client_id:
+        if client_id and client_id != session_client_id:
             raise HTTPException(status_code=400, detail="client_id mismatch")
 
         return _issue_token_response(
