@@ -62,9 +62,7 @@ async def test_exchange_google_code_rejects_wrong_email(monkeypatch: pytest.Monk
 
     with respx.mock:
         respx.post("https://oauth2.googleapis.com/token").mock(
-            return_value=httpx.Response(
-                200, json={"id_token": _make_id_token("attacker@evil.com")}
-            )
+            return_value=httpx.Response(200, json={"id_token": _make_id_token("attacker@evil.com")})
         )
         result = await _exchange_google_code("authcode", "https://server/oauth/callback")
 
@@ -168,7 +166,8 @@ def seeded_session() -> str:
 @pytest.mark.asyncio
 async def test_callback_missing_code_returns_400(app: object) -> None:
     async with httpx.AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"  # type: ignore[arg-type]
+        transport=ASGITransport(app=app),
+        base_url="http://test",  # type: ignore[arg-type]
     ) as client:
         resp = await client.get("/oauth/callback?state=somestate")
     assert resp.status_code == 400
@@ -177,7 +176,8 @@ async def test_callback_missing_code_returns_400(app: object) -> None:
 @pytest.mark.asyncio
 async def test_callback_google_error_returns_400(app: object) -> None:
     async with httpx.AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"  # type: ignore[arg-type]
+        transport=ASGITransport(app=app),
+        base_url="http://test",  # type: ignore[arg-type]
     ) as client:
         resp = await client.get("/oauth/callback?error=access_denied&state=somestate")
     assert resp.status_code == 400
@@ -186,7 +186,8 @@ async def test_callback_google_error_returns_400(app: object) -> None:
 @pytest.mark.asyncio
 async def test_callback_invalid_state_returns_400(app: object) -> None:
     async with httpx.AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"  # type: ignore[arg-type]
+        transport=ASGITransport(app=app),
+        base_url="http://test",  # type: ignore[arg-type]
     ) as client:
         resp = await client.get("/oauth/callback?code=gc&state=nonexistent_state_xyz")
     assert resp.status_code == 400
@@ -249,7 +250,8 @@ async def test_authorize_missing_google_client_id_returns_501(
     monkeypatch.setattr("oauth.settings.google_client_id", "")
     monkeypatch.setattr("oauth.settings.secret_key", "s3cr3t")
     async with httpx.AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"  # type: ignore[arg-type]
+        transport=ASGITransport(app=app),
+        base_url="http://test",  # type: ignore[arg-type]
     ) as client:
         resp = await client.get("/oauth/authorize", params=_AUTHORIZE_PARAMS)
     assert resp.status_code == 501
@@ -263,7 +265,8 @@ async def test_authorize_missing_google_client_secret_returns_501(
     monkeypatch.setattr("oauth.settings.google_client_secret", "")
     monkeypatch.setattr("oauth.settings.secret_key", "s3cr3t")
     async with httpx.AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"  # type: ignore[arg-type]
+        transport=ASGITransport(app=app),
+        base_url="http://test",  # type: ignore[arg-type]
     ) as client:
         resp = await client.get("/oauth/authorize", params=_AUTHORIZE_PARAMS)
     assert resp.status_code == 501

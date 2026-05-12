@@ -39,7 +39,9 @@ async def list_files(repo: str, path: str) -> list[dict[str, Any]]:
     if not resp.is_success:
         logger.warning(
             "github.list_files failed repo=%s path=%s status=%s",
-            repo, path, resp.status_code,
+            repo,
+            path,
+            resp.status_code,
         )
     resp.raise_for_status()
     data = resp.json()
@@ -58,7 +60,9 @@ async def get_file(repo: str, path: str) -> tuple[str, str]:
     if not resp.is_success:
         logger.warning(
             "github.get_file failed repo=%s path=%s status=%s",
-            repo, path, resp.status_code,
+            repo,
+            path,
+            resp.status_code,
         )
     resp.raise_for_status()
     data = resp.json()
@@ -74,9 +78,7 @@ async def get_file(repo: str, path: str) -> tuple[str, str]:
     return content, data["sha"]
 
 
-async def create_file(
-    repo: str, path: str, content: str, message: str
-) -> dict[str, Any]:
+async def create_file(repo: str, path: str, content: str, message: str) -> dict[str, Any]:
     """Create a new file at *path* in *repo*. Returns the raw GitHub Contents API response."""
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     async with httpx.AsyncClient(timeout=10.0) as http:
@@ -88,15 +90,15 @@ async def create_file(
     if not resp.is_success:
         logger.warning(
             "github.create_file failed repo=%s path=%s status=%s",
-            repo, path, resp.status_code,
+            repo,
+            path,
+            resp.status_code,
         )
     resp.raise_for_status()
     return resp.json()  # type: ignore[no-any-return]
 
 
-async def update_file(
-    repo: str, path: str, content: str, sha: str, message: str
-) -> dict[str, Any]:
+async def update_file(repo: str, path: str, content: str, sha: str, message: str) -> dict[str, Any]:
     """Update an existing file at *path* (requires current *sha*).
 
     Returns the raw GitHub Contents API response.
@@ -111,7 +113,9 @@ async def update_file(
     if not resp.is_success:
         logger.warning(
             "github.update_file failed repo=%s path=%s status=%s",
-            repo, path, resp.status_code,
+            repo,
+            path,
+            resp.status_code,
         )
     resp.raise_for_status()
     return resp.json()  # type: ignore[no-any-return]
@@ -128,7 +132,9 @@ async def delete_file(repo: str, path: str, sha: str, message: str) -> None:
     if not resp.is_success:
         logger.warning(
             "github.delete_file failed repo=%s path=%s status=%s",
-            repo, path, resp.status_code,
+            repo,
+            path,
+            resp.status_code,
         )
     resp.raise_for_status()
 
@@ -149,7 +155,8 @@ async def create_issue(
     if not resp.is_success:
         logger.warning(
             "github.create_issue failed repo=%s status=%s",
-            repo, resp.status_code,
+            repo,
+            resp.status_code,
         )
     resp.raise_for_status()
     data = resp.json()
