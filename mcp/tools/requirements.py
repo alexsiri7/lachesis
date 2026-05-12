@@ -107,6 +107,12 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
 
 async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Create one or more GitHub issues and return their numbers/titles/urls."""
+    for i, issue in enumerate(issues):
+        if "title" not in issue or "body" not in issue:
+            raise ValueError(
+                f"Issue at index {i} is missing required fields. "
+                "Each issue must have 'title' and 'body' keys."
+            )
     results = []
     for issue in issues:
         result = await github.create_issue(

@@ -336,7 +336,7 @@ async def test_create_github_issues_with_labels(httpx_mock: HTTPXMock) -> None:
 
 
 async def test_create_github_issues_without_labels(httpx_mock: HTTPXMock) -> None:
-    """Missing labels key does not cause KeyError."""
+    """Missing labels key does not cause KeyError and labels is omitted from request."""
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
@@ -349,3 +349,53 @@ async def test_create_github_issues_without_labels(httpx_mock: HTTPXMock) -> Non
     )
 
     assert result[0]["number"] == 11
+    request = httpx_mock.get_requests()[0]
+    body = json.loads(request.content)
+    assert "labels" not in body
+
+
+async def test_create_github_issues_http_error_propagates(httpx_mock: HTTPXMock) -> None:
+    """HTTP error from GitHub API propagates as HTTPStatusError."""
+    import httpx
+
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"number": 1, "title": "First", "html_url": "https://github.com/owner/repo/issues/1"},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        status_code=422,
+        json={"message": "Validation Failed"},
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await create_github_issues(
+            "owner/repo",
+            [
+                {"title": "First", "body": "Body 1"},
+                {"title": "Second", "body": "Body 2"},
+            ],
+        )
+
+
+async def test_create_github_issues_missing_body_raises(httpx_mock: HTTPXMock) -> None:
+    """Issue dict missing 'body' raises ValueError with clear message."""
+    with pytest.raises(ValueError, match="index 0"):
+        await create_github_issues(
+            "owner/repo",
+            [{"title": "No body"}],
+        )
+
+
+async def test_create_github_issues_missing_title_raises(httpx_mock: HTTPXMock) -> None:
+    """Issue dict missing 'title' raises ValueError with clear message."""
+    with pytest.raises(ValueError, match="index 1"):
+        await create_github_issues(
+            "owner/repo",
+            [
+                {"title": "Valid", "body": "Body"},
+                {"body": "Missing title"},
+            ],
+        )
