@@ -26,7 +26,7 @@ async def get_requirement(repo: str, id: str) -> str:
 
 async def create_requirement(repo: str, title: str, why: str, what: str) -> dict[str, Any]:
     """Create a new requirement file and return its path and auto-assigned id."""
-    # 1. List existing files to determine next ID and detect slug collisions
+    # 1. List existing files to determine next ID
     files = await github.list_files(repo, "requirements")
 
     # 2. Assign next ID
@@ -40,18 +40,12 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     id_str = f"{next_id:03d}"
 
     # 3. Build slug from title
-    slug = re.sub(r"[^a-z0-9-]+", "", title.lower().replace(" ", "-"))
-    slug = slug.strip("-")
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    if not slug:
+        raise ValueError(f"Title {title!r} produced an empty slug — use a title with alphanumeric characters")
 
-    # 4. Handle slug collisions
-    existing_names = {f["name"] for f in files}
-    candidate = f"{id_str}-{slug}.md"
-    suffix = 2
-    while candidate in existing_names:
-        candidate = f"{id_str}-{slug}-{suffix}.md"
-        suffix += 1
-
-    path = f"requirements/{candidate}"
+    # 4. Build candidate filename
+    path = f"requirements/{id_str}-{slug}.md"
     today = date.today().isoformat()
 
     # 5. Build frontmatter + body

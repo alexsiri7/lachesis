@@ -384,7 +384,7 @@ async def test_create_requirement_empty_repo_assigns_001(httpx_mock: HTTPXMock) 
 
 
 async def test_create_requirement_slug_derived_from_title(httpx_mock: HTTPXMock) -> None:
-    """Slug lowercases and hyphenates title."""
+    """Slug lowercases, hyphenates spaces, and strips non-alphanumeric characters from title."""
     httpx_mock.add_response(json=[])
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
@@ -406,6 +406,8 @@ async def test_create_requirement_sends_idea_status(httpx_mock: HTTPXMock) -> No
     post = frontmatter.loads(decoded)
     assert post["status"] == "idea"
     assert post["github_issue"] is None
+    assert post["created"] == date.today().isoformat()
+    assert post["updated"] == date.today().isoformat()
     assert "## Why" in post.content
     assert "## What" in post.content
     assert "## Issues" in post.content
