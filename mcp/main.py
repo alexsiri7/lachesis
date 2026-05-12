@@ -173,7 +173,8 @@ def build_app() -> ASGIApp:
     async def _app(scope: MutableMapping[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") == "http" and scope.get("path") == "/healthz":
             body = b'{"status":"ok"}'
-            await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"application/json"]]})
+            headers = [[b"content-type", b"application/json"]]
+            await send({"type": "http.response.start", "status": 200, "headers": headers})
             await send({"type": "http.response.body", "body": body})
             return
         await inner(scope, receive, send)
