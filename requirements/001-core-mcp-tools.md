@@ -21,4 +21,5 @@ Seven MCP tools: `list_requirements` (all requirements for a repo), `get_require
 - #5 — [Tool] create_requirement
 - #6 — [Tool] update_requirement
 - #7 — [Tool] delete_requirement
+- #8 — [Tool] link_issues
 - #9 — [Tool] create_github_issues
