@@ -239,14 +239,12 @@ async def test_delete_requirement_sends_correct_sha(
     httpx_mock: HTTPXMock,
 ) -> None:
     """delete_file is called with the sha returned by get_file."""
-    import json as _json
-
     _mock_delete_flow(httpx_mock, sha="deadbeef")
 
     await delete_requirement("owner/repo", "001")
 
     delete_request = httpx_mock.get_requests()[2]
-    body = _json.loads(delete_request.content)
+    body = json.loads(delete_request.content)
     assert body["sha"] == "deadbeef"
 
 
@@ -254,14 +252,12 @@ async def test_delete_requirement_sends_correct_commit_message(
     httpx_mock: HTTPXMock,
 ) -> None:
     """Commit message references the requirement id."""
-    import json as _json
-
     _mock_delete_flow(httpx_mock)
 
     await delete_requirement("owner/repo", "001")
 
     delete_request = httpx_mock.get_requests()[2]
-    body = _json.loads(delete_request.content)
+    body = json.loads(delete_request.content)
     assert "001" in body["message"]
 
 

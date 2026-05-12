@@ -30,12 +30,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     files = await github.list_files(repo, "requirements")
 
     # 2. Assign next ID
-    ids = []
-    for f in files:
-        name = f["name"]
-        prefix = name.split("-")[0]
-        if prefix.isdigit():
-            ids.append(int(prefix))
+    ids = [int(f["name"].split("-")[0]) for f in files if f["name"].split("-")[0].isdigit()]
     next_id = max(ids, default=0) + 1
     id_str = f"{next_id:03d}"
 
@@ -145,11 +140,10 @@ async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[
     """Create one or more GitHub issues and return their numbers/titles/urls."""
     results = []
     for issue in issues:
-        result = await github.create_issue(
+        results.append(await github.create_issue(
             repo,
             issue["title"],
             issue["body"],
             issue.get("labels"),
-        )
-        results.append(result)
+        ))
     return results
