@@ -93,7 +93,47 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
 
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     """Update fields (title, why, what, status) in an existing requirement."""
-    raise NotImplementedError("Implemented in issue #7")
+    files = await github.list_files(repo, "requirements")
+    matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    if not matching:
+        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+
+    path = matching[0]["path"]
+    content, sha = await github.get_file(repo, path)
+    post = frontmatter.loads(content)
+
+    allowed = {"title", "why", "what", "status"}
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"Unknown fields: {unknown!r}. Allowed: {allowed!r}")
+
+    valid_statuses = {"idea", "planned", "in-progress", "done"}
+    if "status" in fields and fields["status"] not in valid_statuses:
+        raise ValueError(f"Invalid status {fields['status']!r}. Must be one of {valid_statuses}")
+
+    for key in ("title", "status"):
+        if key in fields:
+            post[key] = fields[key]
+
+    body = post.content
+    for section, key in (("Why", "why"), ("What", "what")):
+        if key not in fields:
+            continue
+        new_block = f"## {section}\n\n{fields[key]}\n"
+        body, n = re.subn(
+            rf"^## {section}\b[^\n]*\n(?:(?!^## )[^\n]*\n?)*",
+            new_block,
+            body,
+            flags=re.MULTILINE,
+        )
+        if n == 0:
+            body = body.rstrip("\n") + f"\n\n{new_block}"
+    post.content = body
+    post["updated"] = date.today().isoformat()
+
+    updated_content = frontmatter.dumps(post)
+    await github.update_file(repo, path, updated_content, sha, f"chore: update requirement {id}")
+    return cast(str, updated_content)
 
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
