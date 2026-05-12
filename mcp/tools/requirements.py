@@ -36,7 +36,26 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
-    raise NotImplementedError("Implemented in issue #8")
+    # Locate the requirement file
+    files = await github.list_files(repo, "requirements")
+    matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    if not matching:
+        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+
+    path = matching[0]["path"]
+    content, sha = await github.get_file(repo, path)
+
+    # Parse frontmatter to check status
+    post = frontmatter.loads(content)
+    if post.get("status") == "done":
+        raise ValueError(
+            "Cannot delete a done requirement — it represents implemented code. "
+            "Create a new requirement to remove the feature."
+        )
+
+    # Delete the file
+    await github.delete_file(repo, path, sha, f"chore: delete requirement {id}")
+    return {"deleted": path}
 
 
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
