@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 import frontmatter
 
@@ -16,12 +16,32 @@ import github
 
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
     """Return all requirements for a given repo (id, title, status, github_issue)."""
-    raise NotImplementedError("Implemented in issue #4")
+    files = await github.list_files(repo, "requirements")
+    results: list[dict[str, Any]] = []
+    for f in files:
+        if not f["name"].endswith(".md"):
+            continue
+        content, _ = await github.get_file(repo, f["path"])
+        post = frontmatter.loads(content)
+        results.append(
+            {
+                "id": post["id"],
+                "title": post["title"],
+                "status": post["status"],
+                "github_issue": post.get("github_issue"),
+            }
+        )
+    return results
 
 
 async def get_requirement(repo: str, id: str) -> str:
     """Return the full markdown content of a single requirement file."""
-    raise NotImplementedError("Implemented in issue #5")
+    files = await github.list_files(repo, "requirements")
+    matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    if not matching:
+        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+    content, _ = await github.get_file(repo, matching[0]["path"])
+    return content
 
 
 async def create_requirement(repo: str, title: str, why: str, what: str) -> dict[str, Any]:
@@ -144,7 +164,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
         sha,
         f"chore: link issues to requirement {id}",
     )
-    return updated_content
+    return cast(str, updated_content)
 
 
 async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
