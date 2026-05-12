@@ -10,7 +10,12 @@ import frontmatter
 import pytest
 from pytest_httpx import HTTPXMock
 
-from tools.requirements import create_github_issues, delete_requirement, link_issues
+from tools.requirements import (
+    create_github_issues,
+    create_requirement,
+    delete_requirement,
+    link_issues,
+)
 
 _NAME = "001-user-auth.md"
 _PATH = "requirements/001-user-auth.md"
@@ -349,3 +354,73 @@ async def test_create_github_issues_without_labels(httpx_mock: HTTPXMock) -> Non
     )
 
     assert result[0]["number"] == 11
+
+
+# ---------------------------------------------------------------------------
+# create_requirement tests
+# ---------------------------------------------------------------------------
+
+
+async def test_create_requirement_returns_id_and_path(httpx_mock: HTTPXMock) -> None:
+    """Returns id and path for the created requirement."""
+    httpx_mock.add_response(json=_LIST_RESP)  # list_files → existing [001-user-auth.md]
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file
+
+    result = await create_requirement("owner/repo", "New Feature", "Because X", "Do Y")
+
+    assert result["id"] == "002"
+    assert result["path"] == "requirements/002-new-feature.md"
+
+
+async def test_create_requirement_empty_repo_assigns_001(httpx_mock: HTTPXMock) -> None:
+    """When requirements/ is empty or absent, first ID is 001."""
+    httpx_mock.add_response(json=[])  # list_files → no files
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    result = await create_requirement("owner/repo", "First req", "Why", "What")
+
+    assert result["id"] == "001"
+    assert result["path"].startswith("requirements/001-")
+
+
+async def test_create_requirement_slug_derived_from_title(httpx_mock: HTTPXMock) -> None:
+    """Slug lowercases and hyphenates title."""
+    httpx_mock.add_response(json=[])
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    result = await create_requirement("owner/repo", "Hello World!", "Why", "What")
+
+    assert "hello-world" in result["path"]
+
+
+async def test_create_requirement_sends_idea_status(httpx_mock: HTTPXMock) -> None:
+    """Created file has status 'idea' and github_issue null."""
+    httpx_mock.add_response(json=[])
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    await create_requirement("owner/repo", "Test req", "Why text", "What text")
+
+    create_request = httpx_mock.get_requests()[1]
+    body = json.loads(create_request.content)
+    decoded = base64.b64decode(body["content"]).decode("utf-8")
+    post = frontmatter.loads(decoded)
+    assert post["status"] == "idea"
+    assert post["github_issue"] is None
+    assert "## Why" in post.content
+    assert "## What" in post.content
+    assert "## Issues" in post.content
+
+
+async def test_create_requirement_increments_past_highest_id(httpx_mock: HTTPXMock) -> None:
+    """ID increments past the highest existing numeric prefix, even with gaps."""
+    existing = [
+        {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+        {"name": "005-deploy.md", "path": "requirements/005-deploy.md"},
+    ]
+    httpx_mock.add_response(json=existing)
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    result = await create_requirement("owner/repo", "New Feature", "Why", "What")
+
+    assert result["id"] == "006"
+    assert result["path"] == "requirements/006-new-feature.md"
