@@ -409,6 +409,7 @@ async def test_create_requirement_sends_idea_status(httpx_mock: HTTPXMock) -> No
     assert "## Why" in post.content
     assert "## What" in post.content
     assert "## Issues" in post.content
+    assert "_None yet._" in post.content
 
 
 async def test_create_requirement_increments_past_highest_id(httpx_mock: HTTPXMock) -> None:
