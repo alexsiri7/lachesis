@@ -169,6 +169,17 @@ async def create_issue(
     }
 
 
+async def get_issue_id(repo: str, number: int) -> int:
+    """Return the database id of issue *number*."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/issues/{number}",
+            headers=_headers(),
+        )
+    resp.raise_for_status()
+    return int(resp.json()["id"])
+
+
 async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int) -> None:
     """Mark issue_number as blocked by the issue with database id blocked_by_id."""
     async with httpx.AsyncClient(timeout=10.0) as http:

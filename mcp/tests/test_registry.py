@@ -11,7 +11,10 @@ from tools import registry
 
 async def test_register_repo_returns_db_row() -> None:
     expected = {"id": "r1", "user_id": "uid", "repo_name": "owner/repo", "created_at": "2026-05-14"}
-    with patch.object(registry, "current_db_user_id") as mock_ctx, patch("db.register_repo", return_value=expected) as mock_db:
+    with (
+        patch.object(registry, "current_db_user_id") as mock_ctx,
+        patch("db.register_repo", return_value=expected) as mock_db,
+    ):
         mock_ctx.get.return_value = "uid"
         result = await registry.register_repo("owner/repo")
     mock_db.assert_called_once_with("uid", "owner/repo")
@@ -26,7 +29,10 @@ async def test_register_repo_raises_if_unauthenticated() -> None:
 
 
 async def test_unregister_repo_returns_confirmation() -> None:
-    with patch.object(registry, "current_db_user_id") as mock_ctx, patch("db.unregister_repo") as mock_db:
+    with (
+        patch.object(registry, "current_db_user_id") as mock_ctx,
+        patch("db.unregister_repo") as mock_db,
+    ):
         mock_ctx.get.return_value = "uid"
         result = await registry.unregister_repo("owner/repo")
     mock_db.assert_called_once_with("uid", "owner/repo")
@@ -35,7 +41,10 @@ async def test_unregister_repo_returns_confirmation() -> None:
 
 async def test_list_repos_returns_rows() -> None:
     rows = [{"id": "r1", "repo_name": "a/b", "created_at": "2026-05-14"}]
-    with patch.object(registry, "current_db_user_id") as mock_ctx, patch("db.list_repos", return_value=rows) as mock_db:
+    with (
+        patch.object(registry, "current_db_user_id") as mock_ctx,
+        patch("db.list_repos", return_value=rows) as mock_db,
+    ):
         mock_ctx.get.return_value = "uid"
         result = await registry.list_repos()
     mock_db.assert_called_once_with("uid")
