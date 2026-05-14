@@ -183,10 +183,17 @@ async def add_to_project(project_id: str, issue_node_id: str) -> None:
         resp = await http.post(
             "https://api.github.com/graphql",
             headers=_headers(),
-            json={"query": query, "variables": {"projectId": project_id, "contentId": issue_node_id}},
+            json={
+                "query": query,
+                "variables": {"projectId": project_id, "contentId": issue_node_id},
+            },
         )
     if not resp.is_success:
-        logger.warning("github.add_to_project failed project=%s status=%s", project_id, resp.status_code)
+        logger.warning(
+            "github.add_to_project failed project=%s status=%s",
+            project_id,
+            resp.status_code,
+        )
     resp.raise_for_status()
     data = resp.json()
     if "errors" in data:
