@@ -1,8 +1,8 @@
 """Bearer token auth for the Lachesis MCP server.
 
-Single-user: token must be a valid HS256 JWT whose 'sub' matches the
-ALLOWED_EMAIL env var. The resolved user_id is stored in a ContextVar
-populated by the ASGI middleware in main.py.
+Single-user: token must be a valid HS256 JWT whose 'email' claim matches
+the ALLOWED_EMAIL env var. The resolved user_id (Google 'sub') is stored
+in a ContextVar populated by the ASGI middleware in main.py.
 """
 
 from __future__ import annotations

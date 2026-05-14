@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -337,6 +338,10 @@ async def test_callback_upsert_failure_is_nonfatal(
     app: object, seeded_session: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Non-fatal: callback still redirects (302) when Supabase upsert raises."""
+    from oauth_state import auth_codes
+
+    auth_codes.clear()
+
     monkeypatch.setattr("oauth.settings.mcp_base_url", "https://lachesis.example.com")
     with (
         patch("oauth._db.upsert_user", side_effect=RuntimeError("Supabase down")),
@@ -354,3 +359,56 @@ async def test_callback_upsert_failure_is_nonfatal(
 
     # Must still redirect even when Supabase is down
     assert resp.status_code == 302
+    # Verify the auth code entry has lachesis_uid=None (not a default string)
+    assert len(auth_codes) == 1
+    stored_entry = next(iter(auth_codes.values()))
+    assert stored_entry.get("lachesis_uid") is None
+
+
+# ---------------------------------------------------------------------------
+# refresh_token grant — lachesis_uid propagation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_grant_preserves_lachesis_uid(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refreshed JWTs must retain the lachesis_uid claim."""
+    from oauth_state import cleanup_and_store, refresh_tokens
+
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    monkeypatch.setattr("oauth.settings.mcp_base_url", "https://lachesis.example.com")
+
+    # Seed a refresh token that includes lachesis_uid
+    cleanup_and_store(
+        refresh_tokens,
+        "my-refresh-token",
+        {
+            "user_id": "uid123",
+            "email": "allowed@example.com",
+            "lachesis_uid": "db-uuid-789",
+            "client_id": "test-client",
+            "scope": "mcp",
+            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        },
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),  # type: ignore[arg-type]
+        base_url="http://test",
+        follow_redirects=False,
+    ) as client:
+        resp = await client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": "my-refresh-token",
+                "client_id": "test-client",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    claims = jose_jwt.get_unverified_claims(body["access_token"])
+    assert claims["lachesis_uid"] == "db-uuid-789"

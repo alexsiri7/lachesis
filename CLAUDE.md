@@ -10,7 +10,7 @@ See [docs/PRD.md](docs/PRD.md) for the full product spec.
 
 `alexsiri7/kindred` is the canonical reference for this project's MCP/OAuth patterns:
 - FastMCP with Streamable HTTP transport
-- MCP OAuth 2.1 (`oauth.py`, `oauth_state.py`) — adapt to Google OAuth (Kindred uses Supabase; replace the Supabase token exchange with Google's)
+- MCP OAuth 2.1 (`oauth.py`, `oauth_state.py`) — adapt to Google OAuth (Kindred uses Supabase for auth token exchange; Lachesis replaces that with Google's OAuth flow but uses Supabase separately for user identity persistence)
 - `settings.py` extending a `CoreSettings` base (pydantic-settings)
 - Railway via `mcp/Dockerfile` + `railway.toml`
 - Sentry integration via `sentry_sdk`
