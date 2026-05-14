@@ -58,7 +58,7 @@ def _base_url() -> str:
     return settings.mcp_base_url.rstrip("/")
 
 
-def _create_jwt(user_id: str, email: str | None) -> str:
+def _create_jwt(user_id: str, email: str | None, lachesis_uid: str | None = None) -> str:
     """Mint an HS256 JWT signed with ``settings.secret_key``."""
     now = datetime.now(UTC)
     payload: dict[str, Any] = {
@@ -68,6 +68,8 @@ def _create_jwt(user_id: str, email: str | None) -> str:
     }
     if email:
         payload["email"] = email
+    if lachesis_uid:
+        payload["lachesis_uid"] = lachesis_uid
     return str(jwt.encode(payload, settings.secret_key, algorithm="HS256"))
 
 
@@ -78,13 +80,13 @@ def _pkce_s256(verifier: str) -> str:
 
 
 def _issue_token_response(
-    user_id: str, email: str | None, client_id: str, scope: str
+    user_id: str, email: str | None, client_id: str, scope: str, lachesis_uid: str | None = None
 ) -> JSONResponse:
     """RFC 6749 token response with a fresh access_token + rotated refresh_token."""
     if not settings.secret_key:
         raise HTTPException(status_code=501, detail="SECRET_KEY not configured")
 
-    access_token = _create_jwt(user_id, email)
+    access_token = _create_jwt(user_id, email, lachesis_uid)
     refresh_token = secrets.token_urlsafe(32)
     cleanup_and_store(
         refresh_tokens,
@@ -92,6 +94,7 @@ def _issue_token_response(
         {
             "user_id": user_id,
             "email": email,
+            "lachesis_uid": lachesis_uid,
             "client_id": client_id,
             "scope": scope,
             "expires_at": datetime.now(UTC) + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
@@ -353,6 +356,18 @@ def register_routes(mcp_obj: FastMCP) -> None:
         user_id = user_data["id"]
         email = user_data["email"]
 
+        # Upsert user into Supabase, capture DB UUID for JWT
+        lachesis_uid: str | None = None
+        try:
+            import db as _db
+
+            db_user = _db.upsert_user(user_id, email)
+            lachesis_uid = str(db_user["id"])
+            logger.info("MCP OAuth: upserted lachesis_user id=%s", lachesis_uid)
+        except Exception as exc:
+            logger.warning("MCP OAuth: upsert_user failed for google_id=%s: %s", user_id, exc)
+            # Non-fatal: proceed without lachesis_uid; JWT will lack the claim
+
         lachesis_auth_code = secrets.token_urlsafe(32)
         cleanup_and_store(
             auth_codes,
@@ -360,6 +375,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
             {
                 "user_id": str(user_id),
                 "email": email,
+                "lachesis_uid": lachesis_uid,
                 "code_challenge": session["code_challenge"],
                 "code_challenge_method": session["code_challenge_method"],
                 "redirect_uri": session["redirect_uri"],
@@ -401,6 +417,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
                 session.get("email"),
                 session["client_id"],
                 session.get("scope", "mcp"),
+                lachesis_uid=session.get("lachesis_uid"),
             )
 
         if grant_type != "authorization_code":
@@ -432,4 +449,5 @@ def register_routes(mcp_obj: FastMCP) -> None:
             session.get("email"),
             session_client_id,
             session.get("scope", "mcp"),
+            lachesis_uid=session.get("lachesis_uid"),
         )

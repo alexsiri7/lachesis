@@ -15,12 +15,14 @@ from jose.exceptions import JWTError
 from settings import settings
 
 current_user_id: ContextVar[str] = ContextVar("current_user_id")
+current_db_user_id: ContextVar[str] = ContextVar("current_db_user_id")
 
 
-def resolve_user_id_from_jwt(token: str) -> str | None:
+def resolve_user_id_from_jwt(token: str) -> tuple[str, str | None] | None:
     """Decode HS256 JWT signed with settings.secret_key.
 
-    Returns the 'sub' claim if valid AND email matches ALLOWED_EMAIL, else None.
+    Returns ``(google_sub, lachesis_uid | None)`` if valid AND email matches
+    ALLOWED_EMAIL, else ``None``.
     """
     if not settings.secret_key:
         return None
@@ -34,4 +36,5 @@ def resolve_user_id_from_jwt(token: str) -> str | None:
     email = payload.get("email", "")
     if settings.allowed_email and email != settings.allowed_email:
         return None
-    return str(sub)
+    lachesis_uid = payload.get("lachesis_uid")
+    return str(sub), (str(lachesis_uid) if lachesis_uid else None)
