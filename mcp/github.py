@@ -143,7 +143,7 @@ async def delete_file(repo: str, path: str, sha: str, message: str) -> None:
 async def create_issue(
     repo: str, title: str, body: str, labels: list[str] | None = None
 ) -> dict[str, Any]:
-    """Create an issue and return ``{number, title, url}``."""
+    """Create an issue and return ``{number, id, title, url}``."""
     payload: dict[str, Any] = {"title": title, "body": body}
     if labels:
         payload["labels"] = labels
@@ -167,6 +167,27 @@ async def create_issue(
         "title": data["title"],
         "url": data["html_url"],
     }
+
+
+async def get_issue(repo: str, issue_number: int) -> dict[str, Any]:
+    """Return ``{number, id}`` for *issue_number*. Raises :class:`FileNotFoundError` on 404."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}",
+            headers=_headers(),
+        )
+    if resp.status_code == 404:
+        raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
+    if not resp.is_success:
+        logger.warning(
+            "github.get_issue failed repo=%s issue=%s status=%s",
+            repo,
+            issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return {"number": data["number"], "id": data["id"]}
 
 
 async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int) -> None:

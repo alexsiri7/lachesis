@@ -10,7 +10,6 @@ from datetime import date
 from typing import Any, cast
 
 import frontmatter
-import httpx
 
 import github
 
@@ -223,21 +222,20 @@ async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[
         results.append({**result, "blocked_by": []})
         number_to_id[result["number"]] = result["id"]
 
-    # Phase 2: Wire blocked_by dependencies
+    # Phase 2: Wire blocked_by dependencies.
+    # NOTE: Issues from Phase 1 are already created at this point. If Phase 2
+    # raises (invalid blocker number, GitHub API error), those issues will exist
+    # in GitHub without their dependency links wired. The caller must inspect
+    # GitHub directly to determine which issues were created.
     for issue_input, result in zip(issues, results, strict=True):
         blocked_by: list[int] = issue_input.get("blocked_by") or []
         for blocker_number in blocked_by:
             if blocker_number in number_to_id:
                 blocker_id = number_to_id[blocker_number]
             else:
-                # Fetch from GitHub — pre-existing issue
-                async with httpx.AsyncClient(timeout=10.0) as http:
-                    resp = await http.get(
-                        f"https://api.github.com/repos/{repo}/issues/{blocker_number}",
-                        headers=github._headers(),
-                    )
-                resp.raise_for_status()
-                blocker_id = resp.json()["id"]
+                # Fetch from GitHub — pre-existing issue not in this batch
+                fetched = await github.get_issue(repo, blocker_number)
+                blocker_id = fetched["id"]
             await github.add_issue_dependency(repo, result["number"], blocker_id)
             result["blocked_by"].append(blocker_number)
 

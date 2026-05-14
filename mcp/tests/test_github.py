@@ -14,6 +14,7 @@ from github import (
     create_file,
     create_issue,
     get_file,
+    get_issue,
     list_files,
     update_file,
 )
@@ -175,6 +176,42 @@ async def test_create_issue_includes_labels_when_provided(httpx_mock: HTTPXMock)
     await create_issue("owner/repo", "T", "body", labels=["bug", "enhancement"])
     body = json.loads(httpx_mock.get_requests()[0].content)
     assert body["labels"] == ["bug", "enhancement"]
+
+
+# ---------------------------------------------------------------------------
+# get_issue
+# ---------------------------------------------------------------------------
+
+
+async def test_get_issue_returns_number_and_id(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/42",
+        json={"number": 42, "id": 9042, "title": "Some issue"},
+    )
+    result = await get_issue("owner/repo", 42)
+    assert result == {"number": 42, "id": 9042}
+
+
+async def test_get_issue_raises_file_not_found_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/99",
+        status_code=404,
+    )
+    with pytest.raises(FileNotFoundError, match="99"):
+        await get_issue("owner/repo", 99)
+
+
+async def test_get_issue_raises_on_non_404_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/7",
+        status_code=500,
+        json={"message": "Internal Server Error"},
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_issue("owner/repo", 7)
 
 
 # ---------------------------------------------------------------------------

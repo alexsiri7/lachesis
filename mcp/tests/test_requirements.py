@@ -453,6 +453,44 @@ async def test_create_github_issues_fetches_external_blocker(httpx_mock: HTTPXMo
     assert body == {"issue_id": 999}
 
 
+async def test_create_github_issues_multiple_blockers(httpx_mock: HTTPXMock) -> None:
+    """C blocked_by both A and B: two add_issue_dependency calls are made."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"id": 1001, "number": 1, "title": "A", "html_url": "https://github.com/owner/repo/issues/1"},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"id": 1002, "number": 2, "title": "B", "html_url": "https://github.com/owner/repo/issues/2"},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"id": 1003, "number": 3, "title": "C", "html_url": "https://github.com/owner/repo/issues/3"},
+    )
+    _dep_url = _DEP_URL_TEMPLATE.format(n=3)
+    httpx_mock.add_response(method="POST", url=_dep_url, status_code=200, json={})
+    httpx_mock.add_response(method="POST", url=_dep_url, status_code=200, json={})
+
+    result = await create_github_issues(
+        "owner/repo",
+        [
+            {"title": "A", "body": ""},
+            {"title": "B", "body": ""},
+            {"title": "C", "body": "", "blocked_by": [1, 2]},
+        ],
+    )
+
+    dep_requests = [r for r in httpx_mock.get_requests() if r.method == "POST" and "dependencies" in str(r.url)]
+    assert len(dep_requests) == 2
+    bodies = [json.loads(r.content) for r in dep_requests]
+    assert {"issue_id": 1001} in bodies
+    assert {"issue_id": 1002} in bodies
+    assert result[2]["blocked_by"] == [1, 2]
+
+
 async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HTTPXMock) -> None:
     """Issues without blocked_by still work and return empty blocked_by list."""
     httpx_mock.add_response(
