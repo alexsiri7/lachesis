@@ -1,6 +1,6 @@
 ---
 created: '2026-05-14'
-github_issue: null
+github_issue: 24
 id: '011'
 status: idea
 title: Supabase persistence layer (namespaced tables)
@@ -17,4 +17,4 @@ Introduce a Supabase integration using Alex's existing Supabase instance, with a
 
 ## Issues
 
-_None yet._
+- #24 — Supabase persistence layer (namespaced tables)
