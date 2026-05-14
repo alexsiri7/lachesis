@@ -1,10 +1,10 @@
 ---
-id: "009"
-title: "Multi-repo requirements view"
-status: "idea"
+created: '2026-05-12'
 github_issue: null
-created: "2026-05-12"
-updated: "2026-05-12"
+id: 009
+status: idea
+title: Multi-repo requirements view
+updated: '2026-05-14'
 ---
 
 ## Why
@@ -13,6 +13,5 @@ The portfolio spans 8+ repos. A single view aggregating requirements across all 
 
 ## What
 
-Aggregate `list_requirements` across all connected repos, with cross-repo filtering by status (`in_progress`, `planned`, `idea`).
-
+Aggregate requirements across all repos in the user's registry, with cross-repo filtering by status (`in_progress`, `planned`, `idea`). Also expose a `get_dashboard` MCP tool returning the same cross-repo summary for use in Claude. Depends on repo registry (012).
 ## Issues
