@@ -256,7 +256,7 @@ async def create_github_issues(
                 # Fetch from GitHub — pre-existing issue
                 async with httpx.AsyncClient(timeout=10.0) as http:
                     resp = await http.get(
-                        f"https://api.github.com/repos/{repo}/issues/{blocker_number}",
+                        f"{github._BASE_URL}/repos/{repo}/issues/{blocker_number}",
                         headers=github._headers(),
                     )
                 resp.raise_for_status()
