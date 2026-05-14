@@ -33,6 +33,8 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
+import db as _db  # Supabase persistence layer — imported at module level so a missing
+# supabase package fails at startup rather than silently at login time
 from oauth_state import (
     auth_codes,
     cleanup_and_pop,
@@ -59,7 +61,10 @@ def _base_url() -> str:
 
 
 def _create_jwt(user_id: str, email: str | None, lachesis_uid: str | None = None) -> str:
-    """Mint an HS256 JWT signed with ``settings.secret_key``."""
+    """Mint an HS256 JWT signed with ``settings.secret_key``.
+
+    If *lachesis_uid* is provided it is embedded as the ``lachesis_uid`` claim.
+    """
     now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": user_id,
@@ -82,7 +87,10 @@ def _pkce_s256(verifier: str) -> str:
 def _issue_token_response(
     user_id: str, email: str | None, client_id: str, scope: str, lachesis_uid: str | None = None
 ) -> JSONResponse:
-    """RFC 6749 token response with a fresh access_token + rotated refresh_token."""
+    """RFC 6749 token response with a fresh access_token + rotated refresh_token.
+
+    *lachesis_uid* is forwarded into the JWT if present.
+    """
     if not settings.secret_key:
         raise HTTPException(status_code=501, detail="SECRET_KEY not configured")
 
@@ -359,13 +367,16 @@ def register_routes(mcp_obj: FastMCP) -> None:
         # Upsert user into Supabase, capture DB UUID for JWT
         lachesis_uid: str | None = None
         try:
-            import db as _db
-
             db_user = _db.upsert_user(user_id, email)
             lachesis_uid = str(db_user["id"])
             logger.info("MCP OAuth: upserted lachesis_user id=%s", lachesis_uid)
         except Exception as exc:
-            logger.warning("MCP OAuth: upsert_user failed for google_id=%s: %s", user_id, exc)
+            logger.warning(
+                "MCP OAuth: upsert_user failed for google_id=%s: %s",
+                user_id,
+                exc,
+                exc_info=True,  # full traceback for post-hoc diagnosis
+            )
             # Non-fatal: proceed without lachesis_uid; JWT will lack the claim
 
         lachesis_auth_code = secrets.token_urlsafe(32)

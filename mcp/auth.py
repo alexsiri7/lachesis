@@ -15,7 +15,8 @@ from jose.exceptions import JWTError
 from settings import settings
 
 current_user_id: ContextVar[str] = ContextVar("current_user_id")
-current_db_user_id: ContextVar[str] = ContextVar("current_db_user_id")
+# default=None because lachesis_uid is conditionally set — consumers must handle None
+current_db_user_id: ContextVar[str | None] = ContextVar("current_db_user_id", default=None)
 
 
 def resolve_user_id_from_jwt(token: str) -> tuple[str, str | None] | None:

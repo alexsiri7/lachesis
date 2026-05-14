@@ -270,3 +270,87 @@ async def test_authorize_missing_google_client_secret_returns_501(
     ) as client:
         resp = await client.get("/oauth/authorize", params=_AUTHORIZE_PARAMS)
     assert resp.status_code == 501
+
+
+# ---------------------------------------------------------------------------
+# _create_jwt unit tests — lachesis_uid claim embedding
+# ---------------------------------------------------------------------------
+
+
+def test_create_jwt_includes_lachesis_uid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    from oauth import _create_jwt
+
+    token = _create_jwt("sub123", "user@example.com", lachesis_uid="db-uuid")
+    claims = jose_jwt.get_unverified_claims(token)
+    assert claims["lachesis_uid"] == "db-uuid"
+
+
+def test_create_jwt_omits_lachesis_uid_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    from oauth import _create_jwt
+
+    token = _create_jwt("sub123", "user@example.com", lachesis_uid=None)
+    claims = jose_jwt.get_unverified_claims(token)
+    assert "lachesis_uid" not in claims
+
+
+# ---------------------------------------------------------------------------
+# oauth_callback lachesis_uid integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_callback_happy_path_stores_lachesis_uid(
+    app: object, seeded_session: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When Supabase succeeds, lachesis_uid is stored in auth_codes."""
+    from oauth_state import auth_codes
+
+    # Clear auth_codes so we can inspect the one entry created by this test
+    auth_codes.clear()
+
+    monkeypatch.setattr("oauth.settings.mcp_base_url", "https://lachesis.example.com")
+    with (
+        patch("oauth._db.upsert_user", return_value={"id": "db-uuid-456"}),
+        patch(
+            "oauth._exchange_google_code",
+            new=AsyncMock(return_value={"id": "uid123", "email": "allowed@example.com"}),
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            resp = await client.get(f"/oauth/callback?code=gc&state={seeded_session}")
+
+    assert resp.status_code == 302
+    # Verify the auth code entry has the lachesis_uid from Supabase
+    assert len(auth_codes) == 1
+    stored_entry = next(iter(auth_codes.values()))
+    assert stored_entry.get("lachesis_uid") == "db-uuid-456"
+
+
+@pytest.mark.asyncio
+async def test_callback_upsert_failure_is_nonfatal(
+    app: object, seeded_session: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-fatal: callback still redirects (302) when Supabase upsert raises."""
+    monkeypatch.setattr("oauth.settings.mcp_base_url", "https://lachesis.example.com")
+    with (
+        patch("oauth._db.upsert_user", side_effect=RuntimeError("Supabase down")),
+        patch(
+            "oauth._exchange_google_code",
+            new=AsyncMock(return_value={"id": "uid123", "email": "allowed@example.com"}),
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            resp = await client.get(f"/oauth/callback?code=gc&state={seeded_session}")
+
+    # Must still redirect even when Supabase is down
+    assert resp.status_code == 302

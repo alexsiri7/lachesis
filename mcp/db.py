@@ -5,8 +5,9 @@ Tables (all namespaced lachesis_):
   lachesis_repos  — per-user repo registry (populated by repo-registry tools in #12)
 
 Uses the service-role key for all operations. Lachesis is single-user; RLS can
-be added later when multi-user support lands. All write functions still filter
-by user_id so the schema is user-scoped from day one.
+be added later when multi-user support lands. All lachesis_repos write functions
+filter by user_id (the UUID from lachesis_users.id) so the schema is user-scoped
+from day one.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def _client() -> Client:
+    """Return the process-lifetime Supabase client (created once via lru_cache)."""
     if not settings.supabase_url or not settings.supabase_service_role_key:
         raise RuntimeError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured")
     return create_client(settings.supabase_url, settings.supabase_service_role_key)
@@ -60,11 +62,12 @@ def upsert_user(google_id: str, email: str) -> dict[str, Any]:
 
 def register_repo(user_id: str, repo_name: str) -> dict[str, Any]:
     """Register a repo for user_id. Idempotent (upsert on conflict)."""
+    now = datetime.now(UTC).isoformat()
     res = (
         _client()
         .table("lachesis_repos")
         .upsert(
-            {"user_id": user_id, "repo_name": repo_name},
+            {"user_id": user_id, "repo_name": repo_name, "updated_at": now},
             on_conflict="user_id,repo_name",
         )
         .execute()
