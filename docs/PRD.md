@@ -34,7 +34,7 @@ Solo developers working across multiple projects lose requirements at every stag
 - **Markdown-native** — requirements live as `.md` files inside each repo, versioned alongside the code
 - **GitHub is the state machine** — Lachesis does not duplicate issue status; GitHub Issues are the source of truth for progress
 - **Claude does the thinking** — validation, conflict detection, and issue planning are Claude's job; Lachesis provides context and acts on instructions
-- **No separate database** — the repo is the data store
+- **Requirements live in the repo** — requirement files are Markdown, stored in the GitHub repo alongside code; there is no separate query interface for requirements data
 
 ---
 
@@ -44,7 +44,7 @@ Solo developers working across multiple projects lose requirements at every stag
 - **Language**: Python (FastMCP)
 - **Hosting**: Railway, deployed under `lachesis.interstellarai.net`
 - **Auth**: Google OAuth (single-user, allowlisted by email via env var); Claude.ai connects via MCP OAuth 2.1
-- **Storage**: Markdown files written directly to GitHub repos via GitHub API (no local filesystem dependency)
+- **Storage**: Markdown files written directly to GitHub repos via GitHub API (no local filesystem dependency); Supabase stores user identity and repo registry (`lachesis_` namespaced tables)
 
 ### Repository Structure
 

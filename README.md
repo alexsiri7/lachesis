@@ -10,6 +10,7 @@ Lachesis captures requirements as Markdown files inside each repo (`requirements
 - **Hosting**: Railway — `lachesis.interstellarai.net`
 - **Auth**: MCP OAuth 2.1 (Google OAuth, single-user)
 - **Storage**: Markdown files written directly to GitHub repos via GitHub API
+- **Persistence**: Supabase (user identity and repo registry; `lachesis_` namespaced tables)
 
 ## Docs
 

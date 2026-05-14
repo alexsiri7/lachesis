@@ -32,12 +32,15 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   oauth_state.py   In-memory state stores (auth codes, sessions, refresh tokens)
   settings.py      Pydantic-settings config
   github.py        GitHub API client (PAT-authenticated)
+  db.py            Supabase persistence layer (user identity, repo registry)
   tools/
     __init__.py
     requirements.py  All 7 MCP tool implementations
   Dockerfile
   pyproject.toml
   requirements.txt
+migrations/
+  001_lachesis_tables.sql   DDL for lachesis_users and lachesis_repos
 docs/
   PRD.md
 railway.toml
@@ -52,6 +55,19 @@ See `.env.example`. Key ones:
 - `SECRET_KEY` — JWT signing key
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (**both required**; register `{MCP_BASE_URL}/oauth/callback` as an authorized redirect URI in the Google OAuth Console)
 - `MCP_BASE_URL` — public URL, e.g. `https://lachesis.interstellarai.net`
+- `SUPABASE_URL` — Supabase project URL (e.g. `https://<ref>.supabase.co`)
+- `SUPABASE_SERVICE_ROLE_KEY` — Supabase service-role JWT; bypasses RLS (store in Railway secrets only)
+
+## Supabase setup
+
+Run the migration once against the Supabase instance before deploying:
+
+```bash
+# Via Supabase dashboard SQL editor, or psql:
+psql "$SUPABASE_DB_URL" -f migrations/001_lachesis_tables.sql
+```
+
+Tables are namespaced `lachesis_` to coexist with other projects on the same instance.
 
 ## Running locally
 

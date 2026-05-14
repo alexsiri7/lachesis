@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
-from auth import current_user_id, resolve_user_id_from_jwt
+from auth import current_db_user_id, current_user_id, resolve_user_id_from_jwt
 from settings import settings
 from tools import requirements as req_tools
 
@@ -139,9 +139,9 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
         if auth_header.lower().startswith("bearer "):
             token = auth_header[7:].strip()
 
-        user_id = resolve_user_id_from_jwt(token) if token else None
+        resolved = resolve_user_id_from_jwt(token) if token else None
 
-        if user_id is None:
+        if resolved is None:
             base = settings.mcp_base_url.rstrip("/")
             resource_uri = _RESOURCE_METADATA_URI.format(base=base)
             body = b'{"error":"unauthorized"}'
@@ -161,25 +161,17 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
             await send({"type": "http.response.body", "body": body})
             return
 
+        user_id, lachesis_uid = resolved
         current_user_id.set(user_id)
+        if lachesis_uid:
+            current_db_user_id.set(lachesis_uid)
         await app(scope, receive, send)
 
     return wrapper
 
 
 def build_app() -> ASGIApp:
-    inner = with_user_context(mcp.streamable_http_app())
-
-    async def _app(scope: MutableMapping[str, Any], receive: Any, send: Any) -> None:
-        if scope.get("type") == "http" and scope.get("path") == "/healthz":
-            body = b'{"status":"ok"}'
-            headers = [[b"content-type", b"application/json"]]
-            await send({"type": "http.response.start", "status": 200, "headers": headers})
-            await send({"type": "http.response.body", "body": body})
-            return
-        await inner(scope, receive, send)
-
-    return _app
+    return with_user_context(mcp.streamable_http_app())
 
 
 app = build_app()
