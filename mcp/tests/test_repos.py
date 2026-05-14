@@ -29,8 +29,11 @@ def clear_user_id():
 @pytest.mark.anyio
 async def test_register_repo_returns_row(set_user_id: str) -> None:
     row = {
-        "id": "r1", "user_id": "uid", "repo_name": "owner/repo",
-        "created_at": "t", "updated_at": "t",
+        "id": "r1",
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "created_at": "t",
+        "updated_at": "t",
     }
     with patch("tools.repos.db.register_repo", return_value=row) as mock_reg:
         result = await register_repo("owner/repo")

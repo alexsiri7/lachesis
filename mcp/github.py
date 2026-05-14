@@ -211,6 +211,8 @@ async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int)
     if not resp.is_success:
         logger.warning(
             "github.add_issue_dependency failed repo=%s issue=%s status=%s",
-            repo, issue_number, resp.status_code,
+            repo,
+            issue_number,
+            resp.status_code,
         )
     resp.raise_for_status()
