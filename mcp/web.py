@@ -96,14 +96,12 @@ async def web_index(request: Request) -> Response:
         resp.delete_cookie(_COOKIE_NAME)
         return resp
 
-    # Fetch repos
     try:
         repos_raw = db.list_repos(lachesis_uid)
     except Exception as exc:
         logger.warning("web_index: failed to list repos for uid=%s: %s", lachesis_uid, exc)
         repos_raw = []
 
-    # Build dashboard data per repo
     repos_data: list[dict[str, Any]] = []
     for repo_row in repos_raw:
         repo_name = repo_row["repo_name"]

@@ -144,7 +144,6 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
-    # Locate the requirement file
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
@@ -153,7 +152,6 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     path = matching[0]["path"]
     content, sha = await github.get_file(repo, path)
 
-    # Parse frontmatter to check status
     post = frontmatter.loads(content)
     if post.get("status") == "done":
         raise ValueError(
@@ -161,14 +159,12 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
             "Create a new requirement to remove the feature."
         )
 
-    # Delete the file
     await github.delete_file(repo, path, sha, f"chore: delete requirement {id}")
     return {"deleted": path}
 
 
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
-    # Locate the requirement file
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
@@ -176,20 +172,15 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
 
     path = matching[0]["path"]
     content, sha = await github.get_file(repo, path)
-
-    # Parse frontmatter
     post = frontmatter.loads(content)
 
-    # Update metadata
     if issues:
         post["github_issue"] = issues[0]["number"]
     post["updated"] = date.today().isoformat()
 
-    # Build new ## Issues section body
     bullet_block = "\n".join(f"- #{i['number']} \u2014 {i['title']}" for i in issues)
     new_section = f"## Issues\n\n{bullet_block}\n" if bullet_block else "## Issues\n"
 
-    # Replace existing ## Issues section in the body, or append if absent
     body = post.content
     body, n = re.subn(
         r"^## Issues\b[^\n]*\n(?:(?!^## )[^\n]*\n?)*",
@@ -201,7 +192,6 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
         body = body.rstrip("\n") + "\n\n" + new_section
     post.content = body
 
-    # Serialize and write back
     updated_content = frontmatter.dumps(post)
     await github.update_file(
         repo,
