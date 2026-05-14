@@ -276,6 +276,7 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
             "number": 42,
             "title": "Fix bug",
             "html_url": "https://github.com/owner/repo/issues/42",
+            "node_id": "I_kwDOabc",
         },
     )
 
@@ -291,6 +292,7 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
             "title": "Fix bug",
             "url": "https://github.com/owner/repo/issues/42",
             "blocked_by": [],
+            "added_to_project": False,
         }
     ]
 
@@ -300,12 +302,12 @@ async def test_create_github_issues_multiple(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"id": 200, "number": 1, "title": "First", "html_url": "https://github.com/owner/repo/issues/1"},
+        json={"id": 200, "number": 1, "title": "First", "html_url": "https://github.com/owner/repo/issues/1", "node_id": "I_1"},
     )
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"id": 201, "number": 2, "title": "Second", "html_url": "https://github.com/owner/repo/issues/2"},
+        json={"id": 201, "number": 2, "title": "Second", "html_url": "https://github.com/owner/repo/issues/2", "node_id": "I_2"},
     )
 
     result = await create_github_issues(
@@ -339,6 +341,7 @@ async def test_create_github_issues_with_labels(httpx_mock: HTTPXMock) -> None:
             "number": 10,
             "title": "Labeled",
             "html_url": "https://github.com/owner/repo/issues/10",
+            "node_id": "I_labeled",
         },
     )
 
@@ -362,6 +365,7 @@ async def test_create_github_issues_without_labels(httpx_mock: HTTPXMock) -> Non
             "number": 11,
             "title": "No labels",
             "html_url": "https://github.com/owner/repo/issues/11",
+            "node_id": "I_nolabels",
         },
     )
 
@@ -386,13 +390,13 @@ async def test_create_github_issues_wires_blocked_by_from_batch(httpx_mock: HTTP
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"id": 1001, "number": 1, "title": "A", "html_url": "https://github.com/owner/repo/issues/1"},
+        json={"id": 1001, "number": 1, "title": "A", "html_url": "https://github.com/owner/repo/issues/1", "node_id": "I_A"},
     )
     # Issue B created second
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"id": 1002, "number": 2, "title": "B", "html_url": "https://github.com/owner/repo/issues/2"},
+        json={"id": 1002, "number": 2, "title": "B", "html_url": "https://github.com/owner/repo/issues/2", "node_id": "I_B"},
     )
     # Dependency wiring for B blocked by A
     httpx_mock.add_response(
@@ -426,7 +430,7 @@ async def test_create_github_issues_fetches_external_blocker(httpx_mock: HTTPXMo
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"id": 2000, "number": 5, "title": "New", "html_url": "https://github.com/owner/repo/issues/5"},
+        json={"id": 2000, "number": 5, "title": "New", "html_url": "https://github.com/owner/repo/issues/5", "node_id": "I_new"},
     )
     # GET of pre-existing issue #3
     httpx_mock.add_response(
@@ -458,7 +462,7 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
-        json={"id": 100, "number": 7, "title": "No dep", "html_url": "https://github.com/owner/repo/issues/7"},
+        json={"id": 100, "number": 7, "title": "No dep", "html_url": "https://github.com/owner/repo/issues/7", "node_id": "I_nodep"},
     )
 
     result = await create_github_issues(
@@ -473,6 +477,7 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
             "title": "No dep",
             "url": "https://github.com/owner/repo/issues/7",
             "blocked_by": [],
+            "added_to_project": False,
         }
     ]
 
@@ -665,3 +670,95 @@ async def test_get_requirement_matches_by_id_prefix(httpx_mock: HTTPXMock) -> No
     result = await get_requirement("owner/repo", "002")
 
     assert result == second_md
+
+
+# ---------------------------------------------------------------------------
+# create_github_issues — project_id integration
+# ---------------------------------------------------------------------------
+
+_GRAPHQL_URL = "https://api.github.com/graphql"
+
+
+async def test_create_github_issues_adds_to_project_when_project_id_set(httpx_mock: HTTPXMock) -> None:
+    """When project_id is provided, add_to_project is called and added_to_project=True."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={
+            "id": 100,
+            "number": 42,
+            "title": "Fix bug",
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "node_id": "I_kwDOabc",
+        },
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_x"}}}},
+    )
+
+    result = await create_github_issues(
+        "owner/repo",
+        [{"title": "Fix bug", "body": "Details"}],
+        project_id="PVT_kwDO123",
+    )
+
+    assert result[0]["added_to_project"] is True
+    graphql_req = httpx_mock.get_requests()[1]
+    body = json.loads(graphql_req.content)
+    assert body["variables"]["contentId"] == "I_kwDOabc"
+    assert body["variables"]["projectId"] == "PVT_kwDO123"
+
+
+async def test_create_github_issues_added_to_project_false_when_no_project_id(httpx_mock: HTTPXMock) -> None:
+    """When project_id is None, added_to_project=False and no GraphQL call made."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={
+            "id": 100,
+            "number": 42,
+            "title": "Fix bug",
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "node_id": "I_kwDOabc",
+        },
+    )
+
+    result = await create_github_issues(
+        "owner/repo",
+        [{"title": "Fix bug", "body": "Details"}],
+    )
+
+    assert result[0]["added_to_project"] is False
+    assert len(httpx_mock.get_requests()) == 1  # only the issue POST, no GraphQL
+
+
+async def test_create_github_issues_project_failure_does_not_abort(httpx_mock: HTTPXMock) -> None:
+    """GraphQL failure is swallowed — issue still returned with added_to_project=False."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={
+            "id": 100,
+            "number": 42,
+            "title": "Fix bug",
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "node_id": "I_kwDOabc",
+        },
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        status_code=500,
+        json={"message": "server error"},
+    )
+
+    result = await create_github_issues(
+        "owner/repo",
+        [{"title": "Fix bug", "body": "Details"}],
+        project_id="PVT_kwDO123",
+    )
+
+    assert result[0]["number"] == 42
+    assert result[0]["added_to_project"] is False

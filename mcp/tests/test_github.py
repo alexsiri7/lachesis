@@ -11,6 +11,7 @@ from pytest_httpx import HTTPXMock
 
 from github import (
     add_issue_dependency,
+    add_to_project,
     create_file,
     create_issue,
     get_file,
@@ -146,6 +147,7 @@ async def test_create_issue_returns_mapped_shape(httpx_mock: HTTPXMock) -> None:
             "title": "Fix bug",
             "url": "https://api.github.com/repos/owner/repo/issues/42",
             "html_url": "https://github.com/owner/repo/issues/42",
+            "node_id": "I_kwDOabc",
         },
     )
     result = await create_issue("owner/repo", "Fix bug", "body text")
@@ -154,13 +156,14 @@ async def test_create_issue_returns_mapped_shape(httpx_mock: HTTPXMock) -> None:
         "number": 42,
         "title": "Fix bug",
         "url": "https://github.com/owner/repo/issues/42",
+        "node_id": "I_kwDOabc",
     }
 
 
 async def test_create_issue_omits_labels_when_none(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
-        json={"id": 500, "number": 1, "title": "T", "html_url": "http://x"},
+        json={"id": 500, "number": 1, "title": "T", "html_url": "http://x", "node_id": "I_1"},
     )
     await create_issue("owner/repo", "T", "body", labels=None)
     body = json.loads(httpx_mock.get_requests()[0].content)
@@ -170,7 +173,7 @@ async def test_create_issue_omits_labels_when_none(httpx_mock: HTTPXMock) -> Non
 async def test_create_issue_includes_labels_when_provided(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
-        json={"id": 501, "number": 2, "title": "T", "html_url": "http://x"},
+        json={"id": 501, "number": 2, "title": "T", "html_url": "http://x", "node_id": "I_2"},
     )
     await create_issue("owner/repo", "T", "body", labels=["bug", "enhancement"])
     body = json.loads(httpx_mock.get_requests()[0].content)
@@ -196,3 +199,42 @@ async def test_add_issue_dependency_raises_on_error(httpx_mock: HTTPXMock) -> No
     httpx_mock.add_response(method="POST", url=_DEP_URL, status_code=422, json={"message": "err"})
     with pytest.raises(httpx.HTTPStatusError):
         await add_issue_dependency("owner/repo", 42, 9001)
+
+
+# ---------------------------------------------------------------------------
+# add_to_project
+# ---------------------------------------------------------------------------
+
+_GRAPHQL_URL = "https://api.github.com/graphql"
+
+
+async def test_add_to_project_sends_correct_mutation(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_abc"}}}},
+    )
+    await add_to_project("PVT_kwDO123", "I_kwDOabc")
+    request = httpx_mock.get_requests()[0]
+    body = json.loads(request.content)
+    assert body["variables"] == {"projectId": "PVT_kwDO123", "contentId": "I_kwDOabc"}
+    assert "addProjectV2ItemById" in body["query"]
+
+
+async def test_add_to_project_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=401, json={"message": "bad credentials"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await add_to_project("PVT_kwDO123", "I_kwDOabc")
+
+
+async def test_add_to_project_logs_graphql_errors(httpx_mock: HTTPXMock, caplog) -> None:  # type: ignore[no-untyped-def]
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"errors": [{"message": "NOT_FOUND"}]},
+    )
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="github"):
+        await add_to_project("PVT_kwDO123", "I_kwDObad")
+    assert any("graphql errors" in r.message for r in caplog.records)
