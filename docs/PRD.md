@@ -188,7 +188,6 @@ Creates one or more GitHub issues in the repo and returns their numbers and titl
 
 ## Future Considerations
 
-- **Web UI** — a simple read-only dashboard showing requirements per repo with their linked issue status, for at-a-glance project health
 - **Multi-repo view** — aggregate requirements across all projects
 - **Requirement templates** — per-project templates for the `why` / `what` structure
 - **Changelog generation** — generate a release changelog from `done` requirements

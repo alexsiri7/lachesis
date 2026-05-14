@@ -15,6 +15,7 @@ from github import (
     create_file,
     create_issue,
     get_file,
+    get_issue,
     list_files,
     update_file,
 )
@@ -240,3 +241,38 @@ async def test_add_to_project_logs_graphql_errors(httpx_mock: HTTPXMock, caplog)
     with caplog.at_level(logging.WARNING, logger="github"):
         await add_to_project("PVT_kwDO123", "I_kwDObad")
     assert any("graphql errors" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# get_issue
+# ---------------------------------------------------------------------------
+
+
+async def test_get_issue_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=404)
+    result = await get_issue("owner/repo", 42)
+    assert result is None
+
+
+async def test_get_issue_returns_expected_shape(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "number": 42,
+            "title": "My issue",
+            "state": "open",
+            "html_url": "https://github.com/owner/repo/issues/42",
+        }
+    )
+    result = await get_issue("owner/repo", 42)
+    assert result == {
+        "number": 42,
+        "title": "My issue",
+        "state": "open",
+        "url": "https://github.com/owner/repo/issues/42",
+    }
+
+
+async def test_get_issue_raises_on_non_404_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=500)
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_issue("owner/repo", 42)

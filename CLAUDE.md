@@ -33,9 +33,14 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   settings.py      Pydantic-settings config
   github.py        GitHub API client (PAT-authenticated)
   db.py            Supabase persistence layer (user identity, repo registry)
+  web.py           Browser-facing web dashboard routes, cookie-based session auth
   tools/
     __init__.py
     requirements.py  All 7 MCP tool implementations
+  templates/
+    base.html        Jinja2 base layout (Tailwind CDN)
+    dashboard.html   Requirements dashboard view
+    login.html       Google sign-in page
   Dockerfile
   pyproject.toml
   requirements.txt
@@ -53,7 +58,9 @@ See `.env.example`. Key ones:
 - `GITHUB_PAT` — server-side GitHub token with `repo` scope
 - `ALLOWED_EMAIL` — the single authorized Google account email
 - `SECRET_KEY` — JWT signing key
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (**both required**; register `{MCP_BASE_URL}/oauth/callback` as an authorized redirect URI in the Google OAuth Console)
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (**both required**; register the following as authorized redirect URIs in the Google OAuth Console):
+  - `{MCP_BASE_URL}/oauth/callback` — MCP OAuth 2.1 (Claude.ai connection)
+  - `{MCP_BASE_URL}/web/callback` — Web dashboard login
 - `MCP_BASE_URL` — public URL, e.g. `https://lachesis.interstellarai.net`
 - `SUPABASE_URL` — Supabase project URL (e.g. `https://<ref>.supabase.co`)
 - `SUPABASE_SERVICE_ROLE_KEY` — Supabase service-role JWT; bypasses RLS (store in Railway secrets only)

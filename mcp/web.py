@@ -51,7 +51,10 @@ def _render(template_name: str, **ctx: Any) -> HTMLResponse:
 def _get_web_user(request: Request) -> dict[str, Any] | None:
     """Decode the web session cookie. Returns {sub, email, lachesis_uid} or None."""
     token = request.cookies.get(_COOKIE_NAME)
-    if not token or not settings.secret_key:
+    if not token:
+        return None
+    if not settings.secret_key:
+        logger.warning("_get_web_user: SECRET_KEY not configured — rejecting web session")
         return None
     try:
         payload = jose_jwt.decode(token, settings.secret_key, algorithms=["HS256"])
@@ -94,7 +97,11 @@ async def web_index(request: Request) -> Response:
         return resp
 
     # Fetch repos
-    repos_raw = db.list_repos(lachesis_uid)
+    try:
+        repos_raw = db.list_repos(lachesis_uid)
+    except Exception as exc:
+        logger.warning("web_index: failed to list repos for uid=%s: %s", lachesis_uid, exc)
+        repos_raw = []
 
     # Build dashboard data per repo
     repos_data: list[dict[str, Any]] = []
@@ -208,6 +215,9 @@ async def web_callback(request: Request) -> Response:
         lachesis_uid = str(db_user["id"])
     except Exception as exc:
         logger.warning("web_callback: upsert_user failed for google_id=%s: %s", google_id, exc)
+        response = RedirectResponse(url="/web/login?error=session", status_code=302)
+        response.delete_cookie(_OAUTH_STATE_COOKIE)
+        return response
 
     token = create_jwt(google_id, email, lachesis_uid)
 

@@ -34,7 +34,7 @@ def _make_id_token(
 
 
 @pytest.mark.asyncio
-async def testexchange_google_code_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_exchange_google_code_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("oauth.settings.google_client_id", "cid")
     monkeypatch.setattr("oauth.settings.google_client_secret", "csecret")
     monkeypatch.setattr("oauth.settings.allowed_email", "allowed@example.com")
@@ -53,7 +53,7 @@ async def testexchange_google_code_happy_path(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def testexchange_google_code_rejects_wrong_email(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_exchange_google_code_rejects_wrong_email(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("oauth.settings.google_client_id", "cid")
     monkeypatch.setattr("oauth.settings.google_client_secret", "csecret")
     monkeypatch.setattr("oauth.settings.allowed_email", "allowed@example.com")
@@ -70,7 +70,7 @@ async def testexchange_google_code_rejects_wrong_email(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def testexchange_google_code_rejects_unverified_email(
+async def test_exchange_google_code_rejects_unverified_email(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("oauth.settings.google_client_id", "cid")
@@ -92,7 +92,7 @@ async def testexchange_google_code_rejects_unverified_email(
 
 
 @pytest.mark.asyncio
-async def testexchange_google_code_non200_returns_none() -> None:
+async def test_exchange_google_code_non200_returns_none() -> None:
     from oauth import exchange_google_code
 
     with respx.mock:
@@ -105,7 +105,7 @@ async def testexchange_google_code_non200_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def testexchange_google_code_missing_id_token_returns_none() -> None:
+async def test_exchange_google_code_missing_id_token_returns_none() -> None:
     from oauth import exchange_google_code
 
     with respx.mock:
@@ -118,7 +118,7 @@ async def testexchange_google_code_missing_id_token_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def testexchange_google_code_network_error_returns_none() -> None:
+async def test_exchange_google_code_network_error_returns_none() -> None:
     from oauth import exchange_google_code
 
     with respx.mock:
@@ -277,7 +277,7 @@ async def test_authorize_missing_google_client_secret_returns_501(
 # ---------------------------------------------------------------------------
 
 
-def testcreate_jwt_includes_lachesis_uid(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_jwt_includes_lachesis_uid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
     from oauth import create_jwt
 
@@ -286,7 +286,7 @@ def testcreate_jwt_includes_lachesis_uid(monkeypatch: pytest.MonkeyPatch) -> Non
     assert claims["lachesis_uid"] == "db-uuid"
 
 
-def testcreate_jwt_omits_lachesis_uid_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_jwt_omits_lachesis_uid_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
     from oauth import create_jwt
 
