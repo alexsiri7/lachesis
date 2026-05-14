@@ -161,6 +161,30 @@ Creates one or more GitHub issues in the repo and returns their numbers and titl
 
 ---
 
+### `register_repo`
+Registers a GitHub repo so Lachesis tracks it for the authenticated user.
+
+**Input**: `repo` (string, e.g. `alexuser/filmduel`)
+**Output**: Row object with `id`, `user_id`, `repo_name`, `created_at`, `updated_at`
+
+---
+
+### `unregister_repo`
+Removes a repo from Lachesis tracking for the authenticated user. No-op if not registered.
+
+**Input**: `repo` (string, e.g. `alexuser/filmduel`)
+**Output**: `{"unregistered": "<repo>"}`
+
+---
+
+### `list_repos`
+Returns all repos registered with Lachesis for the authenticated user.
+
+**Input**: _(none)_
+**Output**: Array of row objects with `id`, `repo_name`, `created_at`
+
+---
+
 ## Typical Workflow
 
 ### Capturing a new requirement

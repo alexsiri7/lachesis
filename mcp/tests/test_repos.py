@@ -20,7 +20,7 @@ def set_user_id():
 
 @pytest.fixture()
 def clear_user_id():
-    """Ensure current_db_user_id returns None (its default)."""
+    """Actively set current_db_user_id to None to isolate the test from any inherited value."""
     token = current_db_user_id.set(None)
     yield
     current_db_user_id.reset(token)
