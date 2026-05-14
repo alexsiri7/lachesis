@@ -6,19 +6,9 @@ import logging
 from typing import Any
 
 import db
-from auth import current_db_user_id
+from auth import require_db_user_id as _require_user_id
 
 logger = logging.getLogger(__name__)
-
-
-def _require_user_id() -> str:
-    """Return the authenticated Supabase user ID or raise."""
-    user_id = current_db_user_id.get()
-    if not user_id:
-        raise RuntimeError(
-            "No authenticated Supabase user in context — ensure lachesis_uid is in the JWT"
-        )
-    return user_id
 
 
 async def register_repo(repo: str) -> dict[str, Any]:

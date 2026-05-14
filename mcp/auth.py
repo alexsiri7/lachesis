@@ -19,6 +19,16 @@ current_user_id: ContextVar[str] = ContextVar("current_user_id")
 current_db_user_id: ContextVar[str | None] = ContextVar("current_db_user_id", default=None)
 
 
+def require_db_user_id() -> str:
+    """Return the authenticated Supabase user ID or raise RuntimeError."""
+    user_id = current_db_user_id.get()
+    if not user_id:
+        raise RuntimeError(
+            "No authenticated Supabase user in context — ensure lachesis_uid is in the JWT"
+        )
+    return user_id
+
+
 def resolve_user_id_from_jwt(token: str) -> tuple[str, str | None] | None:
     """Decode HS256 JWT signed with settings.secret_key.
 
