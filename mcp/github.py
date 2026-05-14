@@ -161,4 +161,25 @@ async def create_issue(
         )
     resp.raise_for_status()
     data = resp.json()
-    return {"number": data["number"], "title": data["title"], "url": data["html_url"]}
+    return {
+        "number": data["number"],
+        "id": data["id"],
+        "title": data["title"],
+        "url": data["html_url"],
+    }
+
+
+async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int) -> None:
+    """Mark issue_number as blocked by the issue with database id blocked_by_id."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/dependencies/blocked_by",
+            headers=_headers(),
+            json={"issue_id": blocked_by_id},
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.add_issue_dependency failed repo=%s issue=%s status=%s",
+            repo, issue_number, resp.status_code,
+        )
+    resp.raise_for_status()

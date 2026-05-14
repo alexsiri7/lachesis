@@ -5,10 +5,18 @@ from __future__ import annotations
 import base64
 import json
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from github import create_file, create_issue, get_file, list_files, update_file
+from github import (
+    add_issue_dependency,
+    create_file,
+    create_issue,
+    get_file,
+    list_files,
+    update_file,
+)
 
 # ---------------------------------------------------------------------------
 # list_files
@@ -133,6 +141,7 @@ async def test_create_issue_returns_mapped_shape(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
         json={
+            "id": 1001,
             "number": 42,
             "title": "Fix bug",
             "url": "https://api.github.com/repos/owner/repo/issues/42",
@@ -141,6 +150,7 @@ async def test_create_issue_returns_mapped_shape(httpx_mock: HTTPXMock) -> None:
     )
     result = await create_issue("owner/repo", "Fix bug", "body text")
     assert result == {
+        "id": 1001,
         "number": 42,
         "title": "Fix bug",
         "url": "https://github.com/owner/repo/issues/42",
@@ -150,7 +160,7 @@ async def test_create_issue_returns_mapped_shape(httpx_mock: HTTPXMock) -> None:
 async def test_create_issue_omits_labels_when_none(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
-        json={"number": 1, "title": "T", "html_url": "http://x"},
+        json={"id": 500, "number": 1, "title": "T", "html_url": "http://x"},
     )
     await create_issue("owner/repo", "T", "body", labels=None)
     body = json.loads(httpx_mock.get_requests()[0].content)
@@ -160,8 +170,29 @@ async def test_create_issue_omits_labels_when_none(httpx_mock: HTTPXMock) -> Non
 async def test_create_issue_includes_labels_when_provided(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
-        json={"number": 2, "title": "T", "html_url": "http://x"},
+        json={"id": 501, "number": 2, "title": "T", "html_url": "http://x"},
     )
     await create_issue("owner/repo", "T", "body", labels=["bug", "enhancement"])
     body = json.loads(httpx_mock.get_requests()[0].content)
     assert body["labels"] == ["bug", "enhancement"]
+
+
+# ---------------------------------------------------------------------------
+# add_issue_dependency
+# ---------------------------------------------------------------------------
+
+_DEP_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies/blocked_by"
+
+
+async def test_add_issue_dependency_sends_correct_payload(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", url=_DEP_URL, status_code=200, json={})
+    await add_issue_dependency("owner/repo", 42, 9001)
+    request = httpx_mock.get_requests()[0]
+    body = json.loads(request.content)
+    assert body == {"issue_id": 9001}
+
+
+async def test_add_issue_dependency_raises_on_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", url=_DEP_URL, status_code=422, json={"message": "err"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await add_issue_dependency("owner/repo", 42, 9001)
