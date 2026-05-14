@@ -13,7 +13,9 @@ from typing import Any, cast
 import frontmatter
 import httpx
 
+import db
 import github
+from auth import current_db_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -259,3 +261,52 @@ async def create_github_issues(
             result["blocked_by"].append(blocker_number)
 
     return results
+
+
+async def get_dashboard(status: str | None = None) -> dict[str, Any]:
+    """Return cross-repo requirements summary, optionally filtered by status."""
+    valid_statuses = {"idea", "planned", "in-progress", "done"}
+    if status is not None and status not in valid_statuses:
+        raise ValueError(f"Invalid status {status!r}. Must be one of {valid_statuses}")
+
+    user_id = current_db_user_id.get()
+    if not user_id:
+        raise RuntimeError(
+            "No authenticated Supabase user in context — ensure lachesis_uid is in the JWT"
+        )
+
+    repos = db.list_repos(user_id)
+    aggregated: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+
+    for repo_row in repos:
+        repo_name = repo_row["repo_name"]
+        try:
+            files = await github.list_files(repo_name, "requirements")
+            requirements: list[dict[str, Any]] = []
+            for f in files:
+                if not f["name"].endswith(".md"):
+                    continue
+                content, _ = await github.get_file(repo_name, f["path"])
+                post = frontmatter.loads(content)
+                req_status = post.get("status", "")
+                status_counts[req_status] = status_counts.get(req_status, 0) + 1
+                if status is not None and req_status != status:
+                    continue
+                requirements.append(
+                    {
+                        "id": post["id"],
+                        "title": post["title"],
+                        "status": req_status,
+                        "github_issue": post.get("github_issue"),
+                    }
+                )
+            aggregated.append({"repo": repo_name, "requirements": requirements})
+        except Exception:
+            logger.warning("get_dashboard: failed to fetch requirements from %s", repo_name)
+
+    total = sum(status_counts.values())
+    return {
+        "repos": aggregated,
+        "summary": {"total": total, "by_status": status_counts},
+    }

@@ -109,6 +109,12 @@ mcp.tool(
     annotations=ToolAnnotations(readOnlyHint=True),
 )(repo_tools.list_repos)
 
+mcp.tool(
+    description="Return cross-repo requirements summary with optional status filter"
+    " (idea, planned, in-progress, done).",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(req_tools.get_dashboard)
+
 # ---------------------------------------------------------------------------
 # Health check route
 # ---------------------------------------------------------------------------
