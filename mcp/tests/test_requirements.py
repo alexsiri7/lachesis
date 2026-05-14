@@ -7,6 +7,7 @@ import json
 from datetime import date
 
 import frontmatter
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -453,10 +454,10 @@ async def test_create_github_issues_fetches_external_blocker(httpx_mock: HTTPXMo
     assert body == {"issue_id": 999}
 
 
-async def test_create_github_issues_external_blocker_not_found_raises(httpx_mock: HTTPXMock) -> None:
+async def test_create_github_issues_external_blocker_not_found_raises(
+    httpx_mock: HTTPXMock,
+) -> None:
     """If the pre-existing blocker GET returns 404, HTTPStatusError propagates."""
-    import httpx as _httpx
-
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
@@ -469,7 +470,7 @@ async def test_create_github_issues_external_blocker_not_found_raises(httpx_mock
         json={"message": "Not Found"},
     )
 
-    with pytest.raises(_httpx.HTTPStatusError):
+    with pytest.raises(httpx.HTTPStatusError):
         await create_github_issues(
             "owner/repo",
             [{"title": "New", "body": "Body", "blocked_by": [99]}],
