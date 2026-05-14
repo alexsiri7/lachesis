@@ -10,7 +10,6 @@ from datetime import date
 from typing import Any, cast
 
 import frontmatter
-import httpx
 
 import github
 
@@ -231,13 +230,8 @@ async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[
                 blocker_id = number_to_id[blocker_number]
             else:
                 # Fetch from GitHub — pre-existing issue
-                async with httpx.AsyncClient(timeout=10.0) as http:
-                    resp = await http.get(
-                        f"https://api.github.com/repos/{repo}/issues/{blocker_number}",
-                        headers=github._headers(),
-                    )
-                resp.raise_for_status()
-                blocker_id = resp.json()["id"]
+                issue_data = await github.get_issue(repo, blocker_number)
+                blocker_id = issue_data["id"]
             await github.add_issue_dependency(repo, result["number"], blocker_id)
             result["blocked_by"].append(blocker_number)
 

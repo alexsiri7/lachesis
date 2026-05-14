@@ -156,8 +156,8 @@ Sets the first issue as `github_issue` in the frontmatter (the top-level tracker
 ### `create_github_issues`
 Creates one or more GitHub issues in the repo and returns their numbers and titles.
 
-**Input**: `repo`, `issues` (array of `{title, body, labels?}`)
-**Output**: Array of created `{number, title, url}`
+**Input**: `repo`, `issues` (array of `{title, body, labels?, blocked_by?}`)
+**Output**: Array of created `{number, id, title, url, blocked_by}`
 
 ---
 

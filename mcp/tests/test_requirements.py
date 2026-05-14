@@ -453,6 +453,81 @@ async def test_create_github_issues_fetches_external_blocker(httpx_mock: HTTPXMo
     assert body == {"issue_id": 999}
 
 
+async def test_create_github_issues_external_blocker_not_found_raises(httpx_mock: HTTPXMock) -> None:
+    """If the pre-existing blocker GET returns 404, HTTPStatusError propagates."""
+    import httpx as _httpx
+
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"id": 3000, "number": 10, "title": "New", "html_url": "https://github.com/owner/repo/issues/10"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/99",
+        status_code=404,
+        json={"message": "Not Found"},
+    )
+
+    with pytest.raises(_httpx.HTTPStatusError):
+        await create_github_issues(
+            "owner/repo",
+            [{"title": "New", "body": "Body", "blocked_by": [99]}],
+        )
+
+
+async def test_create_github_issues_multiple_blockers_on_one_issue(httpx_mock: HTTPXMock) -> None:
+    """An issue with two blockers (one in-batch, one external) wires both dependencies."""
+    # Issue A created first (in-batch blocker)
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"id": 10, "number": 1, "title": "A", "html_url": "https://github.com/owner/repo/issues/1"},
+    )
+    # Issue C created second (the blocked issue)
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={"id": 30, "number": 3, "title": "C", "html_url": "https://github.com/owner/repo/issues/3"},
+    )
+    # Dependency POST for blocker A (in-batch, id=10) — processed before the external GET
+    httpx_mock.add_response(
+        method="POST",
+        url=_DEP_URL_TEMPLATE.format(n=3),
+        status_code=200,
+        json={},
+    )
+    # GET external blocker #99
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/99",
+        json={"id": 990, "number": 99, "title": "External"},
+    )
+    # Dependency POST for blocker #99 (external, id=990)
+    httpx_mock.add_response(
+        method="POST",
+        url=_DEP_URL_TEMPLATE.format(n=3),
+        status_code=200,
+        json={},
+    )
+
+    result = await create_github_issues(
+        "owner/repo",
+        [
+            {"title": "A", "body": "Body A"},
+            {"title": "C", "body": "Body C", "blocked_by": [1, 99]},
+        ],
+    )
+
+    assert result[1]["blocked_by"] == [1, 99]
+    # Request order: POST A, POST C, POST dep(A→issue3), GET #99, POST dep(99→issue3)
+    requests = httpx_mock.get_requests()
+    dep_request_a = requests[2]   # POST dep for in-batch blocker A (id=10)
+    dep_request_ext = requests[4]  # POST dep for external blocker #99 (id=990)
+    assert json.loads(dep_request_a.content) == {"issue_id": 10}
+    assert json.loads(dep_request_ext.content) == {"issue_id": 990}
+
+
 async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HTTPXMock) -> None:
     """Issues without blocked_by still work and return empty blocked_by list."""
     httpx_mock.add_response(

@@ -143,7 +143,7 @@ async def delete_file(repo: str, path: str, sha: str, message: str) -> None:
 async def create_issue(
     repo: str, title: str, body: str, labels: list[str] | None = None
 ) -> dict[str, Any]:
-    """Create an issue and return ``{number, title, url}``."""
+    """Create an issue and return ``{number, id, title, url}``."""
     payload: dict[str, Any] = {"title": title, "body": body}
     if labels:
         payload["labels"] = labels
@@ -167,6 +167,22 @@ async def create_issue(
         "title": data["title"],
         "url": data["html_url"],
     }
+
+
+async def get_issue(repo: str, number: int) -> dict[str, Any]:
+    """Return the raw issue object for *number* in *repo*."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/issues/{number}",
+            headers=_headers(),
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.get_issue failed repo=%s number=%s status=%s",
+            repo, number, resp.status_code,
+        )
+    resp.raise_for_status()
+    return resp.json()  # type: ignore[no-any-return]
 
 
 async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int) -> None:
