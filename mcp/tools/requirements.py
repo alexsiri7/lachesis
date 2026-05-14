@@ -11,6 +11,8 @@ from typing import Any, cast
 
 import frontmatter
 
+import httpx
+
 import github
 
 
@@ -209,7 +211,9 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
 
 async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Create one or more GitHub issues and return their numbers/titles/urls."""
-    results = []
+    # Phase 1: Create all issues, build number→id map
+    results: list[dict[str, Any]] = []
+    number_to_id: dict[int, int] = {}
     for issue in issues:
         result = await github.create_issue(
             repo,
@@ -217,5 +221,25 @@ async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[
             issue["body"],
             issue.get("labels"),
         )
-        results.append(result)
+        results.append({**result, "blocked_by": []})
+        number_to_id[result["number"]] = result["id"]
+
+    # Phase 2: Wire blocked_by dependencies
+    for issue_input, result in zip(issues, results):
+        blocked_by: list[int] = issue_input.get("blocked_by") or []
+        for blocker_number in blocked_by:
+            if blocker_number in number_to_id:
+                blocker_id = number_to_id[blocker_number]
+            else:
+                # Fetch from GitHub — pre-existing issue
+                async with httpx.AsyncClient(timeout=10.0) as http:
+                    resp = await http.get(
+                        f"https://api.github.com/repos/{repo}/issues/{blocker_number}",
+                        headers=github._headers(),
+                    )
+                resp.raise_for_status()
+                blocker_id = resp.json()["id"]
+            await github.add_issue_dependency(repo, result["number"], blocker_id)
+            result["blocked_by"].append(blocker_number)
+
     return results
