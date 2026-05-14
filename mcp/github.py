@@ -170,6 +170,32 @@ async def create_issue(
     }
 
 
+async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
+    """Return ``{number, title, state, url}`` for *issue_number*, or ``None`` on 404."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}",
+            headers=_headers(),
+        )
+    if resp.status_code == 404:
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.get_issue failed repo=%s issue=%s status=%s",
+            repo,
+            issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "number": data["number"],
+        "title": data["title"],
+        "state": data["state"],  # "open" | "closed"
+        "url": data["html_url"],
+    }
+
+
 async def add_to_project(project_id: str, issue_node_id: str) -> None:
     """Add an issue to a GitHub Projects v2 board."""
     query = """

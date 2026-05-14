@@ -126,6 +126,17 @@ async def healthz(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Web UI routes
+# ---------------------------------------------------------------------------
+from web import web_callback, web_index, web_login, web_logout  # noqa: E402
+
+mcp.custom_route("/web/", methods=["GET"])(web_index)
+mcp.custom_route("/web/login", methods=["GET"])(web_login)
+mcp.custom_route("/web/callback", methods=["GET"])(web_callback)
+mcp.custom_route("/web/logout", methods=["GET"])(web_logout)
+
+
+# ---------------------------------------------------------------------------
 # ASGI middleware — bearer token auth
 # ---------------------------------------------------------------------------
 _RESOURCE_METADATA_URI = "{base}/.well-known/oauth-protected-resource"
@@ -150,6 +161,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
             "/.well-known/",
             "/oauth/",
             "/healthz",
+            "/web/",
         )
         if any(path.startswith(p) for p in public_prefixes):
             await app(scope, receive, send)
