@@ -2,7 +2,7 @@
 
 ## What this is
 
-A hosted FastMCP server providing 7 MCP tools for requirements management, writing/reading Markdown files directly to GitHub repos via the GitHub API.
+A hosted FastMCP server providing 10 MCP tools for requirements management and repo registry, writing/reading Markdown files directly to GitHub repos via the GitHub API.
 
 See [docs/PRD.md](docs/PRD.md) for the full product spec.
 
@@ -35,7 +35,8 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   db.py            Supabase persistence layer (user identity, repo registry)
   tools/
     __init__.py
-    requirements.py  All 7 MCP tool implementations
+    requirements.py  7 requirement management tool implementations
+    registry.py      3 repo registry tool implementations
   Dockerfile
   pyproject.toml
   requirements.txt

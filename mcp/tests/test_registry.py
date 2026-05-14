@@ -35,10 +35,18 @@ async def test_unregister_repo_returns_confirmation() -> None:
 
 async def test_list_repos_returns_rows() -> None:
     rows = [{"id": "r1", "repo_name": "a/b", "created_at": "2026-05-14"}]
-    with patch.object(registry, "current_db_user_id") as mock_ctx, patch("db.list_repos", return_value=rows):
+    with patch.object(registry, "current_db_user_id") as mock_ctx, patch("db.list_repos", return_value=rows) as mock_db:
         mock_ctx.get.return_value = "uid"
         result = await registry.list_repos()
+    mock_db.assert_called_once_with("uid")
     assert result == rows
+
+
+async def test_unregister_repo_raises_if_unauthenticated() -> None:
+    with patch.object(registry, "current_db_user_id") as mock_ctx:
+        mock_ctx.get.return_value = None
+        with pytest.raises(ValueError, match="not authenticated"):
+            await registry.unregister_repo("owner/repo")
 
 
 async def test_list_repos_raises_if_unauthenticated() -> None:

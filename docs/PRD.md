@@ -161,6 +161,32 @@ Creates one or more GitHub issues in the repo and returns their numbers and titl
 
 ---
 
+## Repo Registry Tools
+
+### `register_repo`
+Adds a repo to the current user's registry. Idempotent — safe to call if already registered.
+
+**Input**: `repo` (string, e.g. `alexuser/filmduel`)
+**Output**: Created or existing registry row `{id, user_id, repo_name, created_at}`
+
+---
+
+### `unregister_repo`
+Removes a repo from the current user's registry. No-op if the repo is not registered.
+
+**Input**: `repo` (string)
+**Output**: `{"unregistered": "<repo>"}`
+
+---
+
+### `list_repos`
+Returns all repos registered by the current user, ordered by `repo_name` ascending.
+
+**Input**: _(none)_
+**Output**: Array of registry rows `[{id, repo_name, created_at}, ...]`
+
+---
+
 ## Typical Workflow
 
 ### Capturing a new requirement
