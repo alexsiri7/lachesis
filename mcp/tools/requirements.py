@@ -1,7 +1,4 @@
-"""Stub implementations for all 7 Lachesis MCP tools.
-
-Real implementations are delivered in issues #4-#10.
-"""
+"""Lachesis MCP tool implementations — requirements management."""
 
 from __future__ import annotations
 
@@ -16,6 +13,15 @@ import httpx
 import github
 
 logger = logging.getLogger(__name__)
+
+
+async def _find_requirement(repo: str, id: str) -> str:
+    """Return the requirements/ path for the given id. Raises FileNotFoundError if absent."""
+    files = await github.list_files(repo, "requirements")
+    matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    if not matching:
+        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+    return cast(str, matching[0]["path"])
 
 
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
@@ -40,11 +46,8 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
 
 async def get_requirement(repo: str, id: str) -> str:
     """Return the full markdown content of a single requirement file."""
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-    content, _ = await github.get_file(repo, matching[0]["path"])
+    path = await _find_requirement(repo, id)
+    content, _ = await github.get_file(repo, path)
     return content
 
 
@@ -97,12 +100,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
 
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     """Update fields (title, why, what, status) in an existing requirement."""
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-
-    path = matching[0]["path"]
+    path = await _find_requirement(repo, id)
     content, sha = await github.get_file(repo, path)
     post = frontmatter.loads(content)
 
@@ -142,13 +140,7 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
-    # Locate the requirement file
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-
-    path = matching[0]["path"]
+    path = await _find_requirement(repo, id)
     content, sha = await github.get_file(repo, path)
 
     # Parse frontmatter to check status
@@ -166,16 +158,8 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
 
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
-    # Locate the requirement file
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-
-    path = matching[0]["path"]
+    path = await _find_requirement(repo, id)
     content, sha = await github.get_file(repo, path)
-
-    # Parse frontmatter
     post = frontmatter.loads(content)
 
     # Update metadata
