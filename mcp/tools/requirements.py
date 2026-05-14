@@ -214,7 +214,13 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
 async def create_github_issues(
     repo: str, issues: list[dict[str, Any]], project_id: str | None = None
 ) -> list[dict[str, Any]]:
-    """Create one or more GitHub issues and return their numbers/titles/urls."""
+    """Create one or more GitHub issues and return their metadata.
+
+    Each result contains ``number``, ``title``, ``url``, ``blocked_by``, and
+    ``added_to_project``. When *project_id* is supplied, each issue is added to
+    that GitHub Projects v2 board; failures are logged as warnings and
+    ``added_to_project`` is set to ``False`` rather than aborting.
+    """
     # Phase 1: Create all issues, build number→id map
     results: list[dict[str, Any]] = []
     number_to_id: dict[int, int] = {}
@@ -233,7 +239,7 @@ async def create_github_issues(
             try:
                 await github.add_to_project(project_id, node_id)
                 results[-1]["added_to_project"] = True
-            except Exception:
+            except (httpx.HTTPStatusError, httpx.HTTPError, ValueError):
                 logger.warning(
                     "create_github_issues: failed to add issue %s to project %s",
                     result["number"],

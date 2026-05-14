@@ -143,7 +143,7 @@ async def delete_file(repo: str, path: str, sha: str, message: str) -> None:
 async def create_issue(
     repo: str, title: str, body: str, labels: list[str] | None = None
 ) -> dict[str, Any]:
-    """Create an issue and return ``{number, title, url}``."""
+    """Create an issue and return a mapping with ``number``, ``id``, ``title``, ``url``, and ``node_id``."""
     payload: dict[str, Any] = {"title": title, "body": body}
     if labels:
         payload["labels"] = labels
@@ -171,7 +171,12 @@ async def create_issue(
 
 
 async def add_to_project(project_id: str, issue_node_id: str) -> None:
-    """Add an issue to a GitHub Projects v2 board."""
+    """Add an issue to a GitHub Projects v2 board.
+
+    HTTP errors raise :class:`httpx.HTTPStatusError`. GraphQL application errors
+    (200 response with an ``"errors"`` key) are logged as warnings and raise
+    :class:`ValueError`.
+    """
     query = """
     mutation($projectId: ID!, $contentId: ID!) {
       addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
@@ -181,7 +186,7 @@ async def add_to_project(project_id: str, issue_node_id: str) -> None:
     """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.post(
-            "https://api.github.com/graphql",
+            f"{_BASE_URL}/graphql",
             headers=_headers(),
             json={
                 "query": query,
@@ -198,6 +203,7 @@ async def add_to_project(project_id: str, issue_node_id: str) -> None:
     data = resp.json()
     if "errors" in data:
         logger.warning("github.add_to_project graphql errors: %s", data["errors"])
+        raise ValueError(f"GraphQL errors adding issue to project {project_id}: {data['errors']}")
 
 
 async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int) -> None:

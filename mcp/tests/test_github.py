@@ -236,5 +236,6 @@ async def test_add_to_project_logs_graphql_errors(httpx_mock: HTTPXMock, caplog)
     import logging
 
     with caplog.at_level(logging.WARNING, logger="github"):
-        await add_to_project("PVT_kwDO123", "I_kwDObad")
+        with pytest.raises(ValueError, match="GraphQL errors"):
+            await add_to_project("PVT_kwDO123", "I_kwDObad")
     assert any("graphql errors" in r.message for r in caplog.records)

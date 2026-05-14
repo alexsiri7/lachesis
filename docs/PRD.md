@@ -155,9 +155,10 @@ Sets the first issue as `github_issue` in the frontmatter (the top-level tracker
 
 ### `create_github_issues`
 Creates one or more GitHub issues in the repo and returns their numbers and titles.
+Optionally adds each created issue to a GitHub Projects v2 board.
 
-**Input**: `repo`, `issues` (array of `{title, body, labels?}`)
-**Output**: Array of created `{number, title, url}`
+**Input**: `repo`, `issues` (array of `{title, body, labels?}`), `project_id` (optional — GitHub Projects v2 node ID, e.g. `PVT_kwDO…`)
+**Output**: Array of created `{number, title, url, blocked_by, added_to_project}` — `added_to_project` is `true` if the issue was successfully added to the project board, `false` otherwise
 
 ---
 

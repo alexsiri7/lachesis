@@ -705,6 +705,7 @@ async def test_create_github_issues_adds_to_project_when_project_id_set(httpx_mo
     )
 
     assert result[0]["added_to_project"] is True
+    assert "node_id" not in result[0]
     graphql_req = httpx_mock.get_requests()[1]
     body = json.loads(graphql_req.content)
     assert body["variables"]["contentId"] == "I_kwDOabc"
@@ -735,7 +736,7 @@ async def test_create_github_issues_added_to_project_false_when_no_project_id(ht
 
 
 async def test_create_github_issues_project_failure_does_not_abort(httpx_mock: HTTPXMock) -> None:
-    """GraphQL failure is swallowed — issue still returned with added_to_project=False."""
+    """HTTP error from the GraphQL endpoint is swallowed — issue still returned with added_to_project=False."""
     httpx_mock.add_response(
         method="POST",
         url=_ISSUES_URL,
@@ -758,6 +759,37 @@ async def test_create_github_issues_project_failure_does_not_abort(httpx_mock: H
         "owner/repo",
         [{"title": "Fix bug", "body": "Details"}],
         project_id="PVT_kwDO123",
+    )
+
+    assert result[0]["number"] == 42
+    assert result[0]["added_to_project"] is False
+
+
+async def test_create_github_issues_graphql_error_sets_added_to_project_false(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """GraphQL 200+errors response: issue still returned with added_to_project=False."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={
+            "id": 100,
+            "number": 42,
+            "title": "Fix bug",
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "node_id": "I_kwDOabc",
+        },
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"errors": [{"message": "NOT_FOUND", "type": "NOT_FOUND"}]},
+    )
+
+    result = await create_github_issues(
+        "owner/repo",
+        [{"title": "Fix bug", "body": "Details"}],
+        project_id="PVT_bad",
     )
 
     assert result[0]["number"] == 42

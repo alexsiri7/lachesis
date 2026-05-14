@@ -19,7 +19,7 @@ See [docs/PRD.md](docs/PRD.md) for the full product spec.
 
 - **Single-user** — auth must allowlist exactly one Google account, email loaded from `ALLOWED_EMAIL` env var
 - **No personal data in this repo** — the `ALLOWED_EMAIL` and `GITHUB_PAT` live in env vars / Railway secrets only
-- **GitHub API only** — all file reads/writes go through the GitHub REST API using a server-side PAT (`GITHUB_PAT` env var). No local disk I/O for requirement files.
+- **GitHub API only** — all file reads/writes go through the GitHub API (REST + GraphQL) using a server-side PAT (`GITHUB_PAT` env var). No local disk I/O for requirement files.
 - **`delete_requirement` must refuse `done` status** — see PRD for rationale
 
 ## Project layout
