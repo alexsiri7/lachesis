@@ -95,4 +95,4 @@ def list_repos(user_id: str) -> list[dict[str, Any]]:
         .order("repo_name")
         .execute()
     )
-    return [cast(dict[str, Any], row) for row in (res.data or [])]
+    return cast(list[dict[str, Any]], res.data or [])

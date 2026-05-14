@@ -171,18 +171,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
 
 
 def build_app() -> ASGIApp:
-    inner = with_user_context(mcp.streamable_http_app())
-
-    async def _app(scope: MutableMapping[str, Any], receive: Any, send: Any) -> None:
-        if scope.get("type") == "http" and scope.get("path") == "/healthz":
-            body = b'{"status":"ok"}'
-            headers = [[b"content-type", b"application/json"]]
-            await send({"type": "http.response.start", "status": 200, "headers": headers})
-            await send({"type": "http.response.body", "body": body})
-            return
-        await inner(scope, receive, send)
-
-    return _app
+    return with_user_context(mcp.streamable_http_app())
 
 
 app = build_app()
