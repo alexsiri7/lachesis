@@ -1,6 +1,6 @@
 ---
 created: '2026-05-14'
-github_issue: null
+github_issue: 25
 id: '012'
 status: idea
 title: Repo registry
@@ -17,4 +17,4 @@ A mechanism for users to register which repos lachesis tracks, stored in Supabas
 
 ## Issues
 
-_None yet._
+- #25 — Repo registry
