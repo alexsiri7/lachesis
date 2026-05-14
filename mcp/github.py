@@ -161,7 +161,12 @@ async def create_issue(
         )
     resp.raise_for_status()
     data = resp.json()
-    return {"number": data["number"], "id": data["id"], "title": data["title"], "url": data["html_url"]}
+    return {
+        "number": data["number"],
+        "id": data["id"],
+        "title": data["title"],
+        "url": data["html_url"],
+    }
 
 
 async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int) -> None:

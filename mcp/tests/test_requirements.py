@@ -285,7 +285,13 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
     )
 
     assert result == [
-        {"id": 100, "number": 42, "title": "Fix bug", "url": "https://github.com/owner/repo/issues/42", "blocked_by": []}
+        {
+            "id": 100,
+            "number": 42,
+            "title": "Fix bug",
+            "url": "https://github.com/owner/repo/issues/42",
+            "blocked_by": [],
+        }
     ]
 
 
@@ -460,7 +466,15 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
         [{"title": "No dep", "body": "Body"}],
     )
 
-    assert result == [{"id": 100, "number": 7, "title": "No dep", "url": "https://github.com/owner/repo/issues/7", "blocked_by": []}]
+    assert result == [
+        {
+            "id": 100,
+            "number": 7,
+            "title": "No dep",
+            "url": "https://github.com/owner/repo/issues/7",
+            "blocked_by": [],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------

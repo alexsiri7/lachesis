@@ -10,7 +10,6 @@ from datetime import date
 from typing import Any, cast
 
 import frontmatter
-
 import httpx
 
 import github
@@ -225,7 +224,7 @@ async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[
         number_to_id[result["number"]] = result["id"]
 
     # Phase 2: Wire blocked_by dependencies
-    for issue_input, result in zip(issues, results):
+    for issue_input, result in zip(issues, results, strict=True):
         blocked_by: list[int] = issue_input.get("blocked_by") or []
         for blocker_number in blocked_by:
             if blocker_number in number_to_id:

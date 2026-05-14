@@ -5,10 +5,18 @@ from __future__ import annotations
 import base64
 import json
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from github import add_issue_dependency, create_file, create_issue, get_file, list_files, update_file
+from github import (
+    add_issue_dependency,
+    create_file,
+    create_issue,
+    get_file,
+    list_files,
+    update_file,
+)
 
 # ---------------------------------------------------------------------------
 # list_files
@@ -186,5 +194,5 @@ async def test_add_issue_dependency_sends_correct_payload(httpx_mock: HTTPXMock)
 
 async def test_add_issue_dependency_raises_on_error(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(method="POST", url=_DEP_URL, status_code=422, json={"message": "err"})
-    with pytest.raises(Exception):
+    with pytest.raises(httpx.HTTPStatusError):
         await add_issue_dependency("owner/repo", 42, 9001)
