@@ -5,6 +5,7 @@ Real implementations are delivered in issues #4-#10.
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from typing import Any, cast
@@ -13,6 +14,8 @@ import frontmatter
 import httpx
 
 import github
+
+logger = logging.getLogger(__name__)
 
 
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
@@ -208,7 +211,9 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     return cast(str, updated_content)
 
 
-async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def create_github_issues(
+    repo: str, issues: list[dict[str, Any]], project_id: str | None = None
+) -> list[dict[str, Any]]:
     """Create one or more GitHub issues and return their numbers/titles/urls."""
     # Phase 1: Create all issues, build number→id map
     results: list[dict[str, Any]] = []
@@ -220,8 +225,20 @@ async def create_github_issues(repo: str, issues: list[dict[str, Any]]) -> list[
             issue["body"],
             issue.get("labels"),
         )
-        results.append({**result, "blocked_by": []})
+        node_id = result.pop("node_id")
+        results.append({**result, "blocked_by": [], "added_to_project": False})
         number_to_id[result["number"]] = result["id"]
+
+        if project_id:
+            try:
+                await github.add_to_project(project_id, node_id)
+                results[-1]["added_to_project"] = True
+            except Exception:
+                logger.warning(
+                    "create_github_issues: failed to add issue %s to project %s",
+                    result["number"],
+                    project_id,
+                )
 
     # Phase 2: Wire blocked_by dependencies
     for issue_input, result in zip(issues, results, strict=True):

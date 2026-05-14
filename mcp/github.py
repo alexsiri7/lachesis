@@ -166,7 +166,38 @@ async def create_issue(
         "id": data["id"],
         "title": data["title"],
         "url": data["html_url"],
+        "node_id": data["node_id"],
     }
+
+
+async def add_to_project(project_id: str, issue_node_id: str) -> None:
+    """Add an issue to a GitHub Projects v2 board."""
+    query = """
+    mutation($projectId: ID!, $contentId: ID!) {
+      addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+        item { id }
+      }
+    }
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            "https://api.github.com/graphql",
+            headers=_headers(),
+            json={
+                "query": query,
+                "variables": {"projectId": project_id, "contentId": issue_node_id},
+            },
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.add_to_project failed project=%s status=%s",
+            project_id,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    if "errors" in data:
+        logger.warning("github.add_to_project graphql errors: %s", data["errors"])
 
 
 async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int) -> None:
