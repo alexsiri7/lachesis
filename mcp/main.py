@@ -16,6 +16,7 @@ from starlette.types import ASGIApp
 
 from auth import current_db_user_id, current_user_id, resolve_user_id_from_jwt
 from settings import settings
+from tools import registry as reg_tools
 from tools import requirements as req_tools
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,19 @@ mcp.tool(
 mcp.tool(
     description="Create one or more GitHub issues in the repo.",
 )(req_tools.create_github_issues)
+
+mcp.tool(
+    description="Register a repo in the user's registry.",
+)(reg_tools.register_repo)
+
+mcp.tool(
+    description="Remove a repo from the user's registry.",
+)(reg_tools.unregister_repo)
+
+mcp.tool(
+    description="List all repos registered by the current user.",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(reg_tools.list_repos)
 
 # ---------------------------------------------------------------------------
 # Health check route
