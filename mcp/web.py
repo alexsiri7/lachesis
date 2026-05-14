@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import secrets
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlencode
 
 import frontmatter
@@ -42,6 +42,7 @@ _OAUTH_STATE_COOKIE = "lachesis_oauth_state"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _render(template_name: str, **ctx: Any) -> HTMLResponse:
     tmpl = _jinja_env.get_template(template_name)
     return HTMLResponse(tmpl.render(**ctx))
@@ -59,7 +60,7 @@ def _get_web_user(request: Request) -> dict[str, Any] | None:
     email = payload.get("email", "")
     if settings.allowed_email and email != settings.allowed_email:
         return None
-    return payload
+    return cast(dict[str, Any], payload)
 
 
 def _google_auth_url(redirect_uri: str, state: str) -> str:
@@ -77,6 +78,7 @@ def _google_auth_url(redirect_uri: str, state: str) -> str:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 async def web_index(request: Request) -> Response:
     """GET /web/ -- redirect to login if no valid session, else show dashboard."""
@@ -122,11 +124,13 @@ async def web_index(request: Request) -> Response:
             issue_tasks = [github.get_issue(repo_name, n) for n in issue_numbers]
             issue_results = await asyncio.gather(*issue_tasks, return_exceptions=True)
             issue_map: dict[int, dict[str, Any]] = {}
-            for num, result in zip(issue_numbers, issue_results):
+            for num, result in zip(issue_numbers, issue_results, strict=False):
                 if isinstance(result, dict):
                     issue_map[num] = result
                 else:
-                    logger.warning("web_index: get_issue failed repo=%s issue=%s: %s", repo_name, num, result)
+                    logger.warning(
+                        "web_index: get_issue failed repo=%s issue=%s: %s", repo_name, num, result
+                    )
 
             for req in parsed:
                 inum = req["github_issue"]
@@ -218,7 +222,9 @@ async def web_callback(request: Request) -> Response:
     )
     # Clear the state cookie
     response.delete_cookie(_OAUTH_STATE_COOKIE)
-    logger.info("web_callback: session established for email=%s lachesis_uid=%s", email, lachesis_uid)
+    logger.info(
+        "web_callback: session established for email=%s lachesis_uid=%s", email, lachesis_uid
+    )
     return response
 
 
