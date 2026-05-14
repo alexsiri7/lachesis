@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 from supabase import Client, create_client
 
@@ -34,6 +34,7 @@ def _client() -> Client:
 # lachesis_users
 # ---------------------------------------------------------------------------
 
+
 def upsert_user(google_id: str, email: str) -> dict[str, Any]:
     """Upsert a user by google_id. Returns the lachesis_users row (including id)."""
     now = datetime.now(UTC).isoformat()
@@ -49,12 +50,13 @@ def upsert_user(google_id: str, email: str) -> dict[str, Any]:
     rows = res.data or []
     if not rows:
         raise RuntimeError(f"upsert_user returned no row for google_id={google_id!r}")
-    return rows[0]
+    return cast(dict[str, Any], rows[0])
 
 
 # ---------------------------------------------------------------------------
 # lachesis_repos
 # ---------------------------------------------------------------------------
+
 
 def register_repo(user_id: str, repo_name: str) -> dict[str, Any]:
     """Register a repo for user_id. Idempotent (upsert on conflict)."""
@@ -70,7 +72,7 @@ def register_repo(user_id: str, repo_name: str) -> dict[str, Any]:
     rows = res.data or []
     if not rows:
         raise RuntimeError(f"register_repo returned no row for user_id={user_id!r}")
-    return rows[0]
+    return cast(dict[str, Any], rows[0])
 
 
 def unregister_repo(user_id: str, repo_name: str) -> None:
@@ -90,4 +92,4 @@ def list_repos(user_id: str) -> list[dict[str, Any]]:
         .order("repo_name")
         .execute()
     )
-    return list(res.data or [])
+    return [cast(dict[str, Any], row) for row in (res.data or [])]
