@@ -222,7 +222,9 @@ async def test_add_to_project_sends_correct_mutation(httpx_mock: HTTPXMock) -> N
 
 
 async def test_add_to_project_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=401, json={"message": "bad credentials"})
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, status_code=401, json={"message": "bad credentials"}
+    )
     with pytest.raises(httpx.HTTPStatusError):
         await add_to_project("PVT_kwDO123", "I_kwDOabc")
 
