@@ -61,7 +61,7 @@ def _base_url() -> str:
     return settings.mcp_base_url.rstrip("/")
 
 
-def _create_jwt(user_id: str, email: str | None, lachesis_uid: str | None = None) -> str:
+def create_jwt(user_id: str, email: str | None, lachesis_uid: str | None = None) -> str:
     """Mint an HS256 JWT signed with ``settings.secret_key``.
 
     If *lachesis_uid* is provided it is embedded as the ``lachesis_uid`` claim.
@@ -95,7 +95,7 @@ def _issue_token_response(
     if not settings.secret_key:
         raise HTTPException(status_code=501, detail="SECRET_KEY not configured")
 
-    access_token = _create_jwt(user_id, email, lachesis_uid)
+    access_token = create_jwt(user_id, email, lachesis_uid)
     refresh_token = secrets.token_urlsafe(32)
     cleanup_and_store(
         refresh_tokens,
@@ -120,7 +120,7 @@ def _issue_token_response(
     )
 
 
-async def _exchange_google_code(code: str, redirect_uri: str) -> dict[str, Any] | None:
+async def exchange_google_code(code: str, redirect_uri: str) -> dict[str, Any] | None:
     """Exchange a Google auth code for tokens. Returns {id, email} or None."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
@@ -355,7 +355,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
             raise HTTPException(status_code=400, detail="Invalid or expired state")
 
         callback_uri = f"{_base_url()}/oauth/callback"
-        user_data = await _exchange_google_code(code, callback_uri)
+        user_data = await exchange_google_code(code, callback_uri)
         if user_data is None:
             raise HTTPException(
                 status_code=403,

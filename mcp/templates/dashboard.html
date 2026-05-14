@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – Lachesis{% endblock %}
+{% block content %}
+<h1 class="text-xl font-bold mb-6">Requirements Dashboard</h1>
+{% if not repos %}
+  <p class="text-gray-500">No repos registered yet.</p>
+{% endif %}
+{% for repo in repos %}
+<section class="mb-8 bg-white rounded-lg border border-gray-200 p-5">
+  <h2 class="font-semibold text-base mb-4">
+    <a href="https://github.com/{{ repo.name }}" class="hover:underline text-blue-700" target="_blank">
+      {{ repo.name }}
+    </a>
+  </h2>
+  {% if not repo.requirements %}
+    <p class="text-gray-400 text-sm">No requirements found.</p>
+  {% endif %}
+  {% for status in ["idea", "planned", "in-progress", "done"] %}
+    {% set reqs = repo.requirements | selectattr("status", "equalto", status) | list %}
+    {% if reqs %}
+    <div class="mb-4">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+        {{ status }} ({{ reqs | length }})
+      </h3>
+      <ul class="space-y-1">
+        {% for req in reqs %}
+        <li class="flex items-center gap-3 text-sm">
+          <span class="font-mono text-gray-400">{{ req.id }}</span>
+          <span>{{ req.title }}</span>
+          {% if req.issue %}
+            <a href="{{ req.issue.url }}" target="_blank"
+               class="ml-auto flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border
+               {% if req.issue.state == 'open' %}border-green-400 text-green-700{% else %}border-purple-400 text-purple-700{% endif %}">
+              #{{ req.issue.number }}
+              <span>{{ req.issue.state }}</span>
+            </a>
+          {% elif req.github_issue %}
+            <span class="ml-auto text-xs text-gray-400">#{{ req.github_issue }} (loading failed)</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  {% endfor %}
+</section>
+{% endfor %}
+{% endblock %}

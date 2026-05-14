@@ -1,4 +1,4 @@
-"""Tests for mcp/oauth.py — _exchange_google_code helper and OAuth routes."""
+"""Tests for mcp/oauth.py — exchange_google_code helper and OAuth routes."""
 
 from __future__ import annotations
 
@@ -29,17 +29,17 @@ def _make_id_token(
 
 
 # ---------------------------------------------------------------------------
-# _exchange_google_code unit tests
+# exchange_google_code unit tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_exchange_google_code_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+async def testexchange_google_code_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("oauth.settings.google_client_id", "cid")
     monkeypatch.setattr("oauth.settings.google_client_secret", "csecret")
     monkeypatch.setattr("oauth.settings.allowed_email", "allowed@example.com")
 
-    from oauth import _exchange_google_code
+    from oauth import exchange_google_code
 
     with respx.mock:
         respx.post("https://oauth2.googleapis.com/token").mock(
@@ -47,37 +47,37 @@ async def test_exchange_google_code_happy_path(monkeypatch: pytest.MonkeyPatch) 
                 200, json={"id_token": _make_id_token("allowed@example.com")}
             )
         )
-        result = await _exchange_google_code("authcode", "https://server/oauth/callback")
+        result = await exchange_google_code("authcode", "https://server/oauth/callback")
 
     assert result == {"id": "uid123", "email": "allowed@example.com"}
 
 
 @pytest.mark.asyncio
-async def test_exchange_google_code_rejects_wrong_email(monkeypatch: pytest.MonkeyPatch) -> None:
+async def testexchange_google_code_rejects_wrong_email(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("oauth.settings.google_client_id", "cid")
     monkeypatch.setattr("oauth.settings.google_client_secret", "csecret")
     monkeypatch.setattr("oauth.settings.allowed_email", "allowed@example.com")
 
-    from oauth import _exchange_google_code
+    from oauth import exchange_google_code
 
     with respx.mock:
         respx.post("https://oauth2.googleapis.com/token").mock(
             return_value=httpx.Response(200, json={"id_token": _make_id_token("attacker@evil.com")})
         )
-        result = await _exchange_google_code("authcode", "https://server/oauth/callback")
+        result = await exchange_google_code("authcode", "https://server/oauth/callback")
 
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_exchange_google_code_rejects_unverified_email(
+async def testexchange_google_code_rejects_unverified_email(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("oauth.settings.google_client_id", "cid")
     monkeypatch.setattr("oauth.settings.google_client_secret", "csecret")
     monkeypatch.setattr("oauth.settings.allowed_email", "allowed@example.com")
 
-    from oauth import _exchange_google_code
+    from oauth import exchange_google_code
 
     with respx.mock:
         respx.post("https://oauth2.googleapis.com/token").mock(
@@ -86,46 +86,46 @@ async def test_exchange_google_code_rejects_unverified_email(
                 json={"id_token": _make_id_token("allowed@example.com", email_verified=False)},
             )
         )
-        result = await _exchange_google_code("authcode", "https://server/oauth/callback")
+        result = await exchange_google_code("authcode", "https://server/oauth/callback")
 
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_exchange_google_code_non200_returns_none() -> None:
-    from oauth import _exchange_google_code
+async def testexchange_google_code_non200_returns_none() -> None:
+    from oauth import exchange_google_code
 
     with respx.mock:
         respx.post("https://oauth2.googleapis.com/token").mock(
             return_value=httpx.Response(400, json={"error": "invalid_grant"})
         )
-        result = await _exchange_google_code("badcode", "https://server/oauth/callback")
+        result = await exchange_google_code("badcode", "https://server/oauth/callback")
 
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_exchange_google_code_missing_id_token_returns_none() -> None:
-    from oauth import _exchange_google_code
+async def testexchange_google_code_missing_id_token_returns_none() -> None:
+    from oauth import exchange_google_code
 
     with respx.mock:
         respx.post("https://oauth2.googleapis.com/token").mock(
             return_value=httpx.Response(200, json={"access_token": "tok"})
         )
-        result = await _exchange_google_code("code", "https://server/oauth/callback")
+        result = await exchange_google_code("code", "https://server/oauth/callback")
 
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_exchange_google_code_network_error_returns_none() -> None:
-    from oauth import _exchange_google_code
+async def testexchange_google_code_network_error_returns_none() -> None:
+    from oauth import exchange_google_code
 
     with respx.mock:
         respx.post("https://oauth2.googleapis.com/token").mock(
             side_effect=httpx.ConnectError("unreachable")
         )
-        result = await _exchange_google_code("code", "https://server/oauth/callback")
+        result = await exchange_google_code("code", "https://server/oauth/callback")
 
     assert result is None
 
@@ -198,7 +198,7 @@ async def test_callback_failed_exchange_returns_403(
     app: object, seeded_session: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("oauth.settings.mcp_base_url", "https://lachesis.example.com")
-    with patch("oauth._exchange_google_code", new=AsyncMock(return_value=None)):
+    with patch("oauth.exchange_google_code", new=AsyncMock(return_value=None)):
         async with httpx.AsyncClient(
             transport=ASGITransport(app=app),  # type: ignore[arg-type]
             base_url="http://test",
@@ -214,7 +214,7 @@ async def test_callback_happy_path_redirects(
 ) -> None:
     monkeypatch.setattr("oauth.settings.mcp_base_url", "https://lachesis.example.com")
     with patch(
-        "oauth._exchange_google_code",
+        "oauth.exchange_google_code",
         new=AsyncMock(return_value={"id": "uid123", "email": "allowed@example.com"}),
     ):
         async with httpx.AsyncClient(
@@ -273,24 +273,24 @@ async def test_authorize_missing_google_client_secret_returns_501(
 
 
 # ---------------------------------------------------------------------------
-# _create_jwt unit tests — lachesis_uid claim embedding
+# create_jwt unit tests — lachesis_uid claim embedding
 # ---------------------------------------------------------------------------
 
 
-def test_create_jwt_includes_lachesis_uid(monkeypatch: pytest.MonkeyPatch) -> None:
+def testcreate_jwt_includes_lachesis_uid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
-    from oauth import _create_jwt
+    from oauth import create_jwt
 
-    token = _create_jwt("sub123", "user@example.com", lachesis_uid="db-uuid")
+    token = create_jwt("sub123", "user@example.com", lachesis_uid="db-uuid")
     claims = jose_jwt.get_unverified_claims(token)
     assert claims["lachesis_uid"] == "db-uuid"
 
 
-def test_create_jwt_omits_lachesis_uid_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def testcreate_jwt_omits_lachesis_uid_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
-    from oauth import _create_jwt
+    from oauth import create_jwt
 
-    token = _create_jwt("sub123", "user@example.com", lachesis_uid=None)
+    token = create_jwt("sub123", "user@example.com", lachesis_uid=None)
     claims = jose_jwt.get_unverified_claims(token)
     assert "lachesis_uid" not in claims
 
@@ -314,7 +314,7 @@ async def test_callback_happy_path_stores_lachesis_uid(
     with (
         patch("oauth._db.upsert_user", return_value={"id": "db-uuid-456"}),
         patch(
-            "oauth._exchange_google_code",
+            "oauth.exchange_google_code",
             new=AsyncMock(return_value={"id": "uid123", "email": "allowed@example.com"}),
         ),
     ):
@@ -341,7 +341,7 @@ async def test_callback_upsert_failure_is_nonfatal(
     with (
         patch("oauth._db.upsert_user", side_effect=RuntimeError("Supabase down")),
         patch(
-            "oauth._exchange_google_code",
+            "oauth.exchange_google_code",
             new=AsyncMock(return_value={"id": "uid123", "email": "allowed@example.com"}),
         ),
     ):
