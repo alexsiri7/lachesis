@@ -18,6 +18,7 @@ from tools.requirements import (
     get_requirement,
     link_issues,
     list_requirements,
+    update_requirement,
 )
 
 _NAME = "001-user-auth.md"
@@ -556,8 +557,8 @@ async def test_create_requirement_slug_derived_from_title(httpx_mock: HTTPXMock)
     assert "hello-world" in result["path"]
 
 
-async def test_create_requirement_sends_idea_status(httpx_mock: HTTPXMock) -> None:
-    """Created file has status 'idea' and github_issue null."""
+async def test_create_requirement_sends_draft_status(httpx_mock: HTTPXMock) -> None:
+    """Created file has status 'draft' and github_issue null."""
     httpx_mock.add_response(json=[])
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
@@ -567,7 +568,7 @@ async def test_create_requirement_sends_idea_status(httpx_mock: HTTPXMock) -> No
     body = json.loads(create_request.content)
     decoded = base64.b64decode(body["content"]).decode("utf-8")
     post = frontmatter.loads(decoded)
-    assert post["status"] == "idea"
+    assert post["status"] == "draft"
     assert post["github_issue"] is None
     assert "## Why" in post.content
     assert "## What" in post.content
@@ -937,3 +938,47 @@ Users need to save their rankings.
         assert result["summary"]["unlinked_count"] == 0
     finally:
         current_db_user_id.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# update_requirement — draft status tests
+# ---------------------------------------------------------------------------
+
+
+def _mock_update_flow(
+    httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1"
+) -> None:
+    """Register list_files → get_file → update_file responses."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(content, sha))
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+
+async def test_update_requirement_accepts_draft_status(httpx_mock: HTTPXMock) -> None:
+    """'draft' is accepted as a valid status value."""
+    _mock_update_flow(httpx_mock)
+    result = await update_requirement("owner/repo", "001", {"status": "draft"})
+    post = frontmatter.loads(result)
+    assert post["status"] == "draft"
+
+
+# ---------------------------------------------------------------------------
+# link_issues — draft auto-advance tests
+# ---------------------------------------------------------------------------
+
+
+async def test_link_issues_advances_draft_to_idea(httpx_mock: HTTPXMock) -> None:
+    """link_issues advances status from 'draft' to 'idea'."""
+    draft_md = _SAMPLE_MD.replace('status: "planned"', 'status: "draft"')
+    _mock_full_flow(httpx_mock, content=draft_md)
+    result = await link_issues("owner/repo", "001", _ISSUES)
+    post = frontmatter.loads(result)
+    assert post["status"] == "idea"
+
+
+async def test_link_issues_does_not_change_non_draft_status(httpx_mock: HTTPXMock) -> None:
+    """link_issues does not touch status when requirement is not 'draft'."""
+    _mock_full_flow(httpx_mock)  # _SAMPLE_MD has status: "planned"
+    result = await link_issues("owner/repo", "001", _ISSUES)
+    post = frontmatter.loads(result)
+    assert post["status"] == "planned"
