@@ -5,10 +5,13 @@ from __future__ import annotations
 import base64
 import json
 from datetime import date
+from unittest.mock import patch
 
 import frontmatter
 import pytest
 from pytest_httpx import HTTPXMock
+
+from auth import current_db_user_id
 
 from tools.requirements import (
     create_github_issues,
@@ -861,10 +864,6 @@ Users need to save their rankings.
 
 async def test_get_dashboard_requirement_warns_when_no_github_issue(httpx_mock: HTTPXMock) -> None:
     """Dashboard requirements with github_issue=null get warning='no linked issues'."""
-    from unittest.mock import patch
-
-    from auth import current_db_user_id
-
     token = current_db_user_id.set("test-uid")
     try:
         with patch(
@@ -884,10 +883,6 @@ async def test_get_dashboard_requirement_warns_when_no_github_issue(httpx_mock: 
 
 async def test_get_dashboard_summary_includes_unlinked_count(httpx_mock: HTTPXMock) -> None:
     """Dashboard summary includes unlinked_count for requirements without issues."""
-    from unittest.mock import patch
-
-    from auth import current_db_user_id
-
     token = current_db_user_id.set("test-uid")
     try:
         with patch(
@@ -906,10 +901,6 @@ async def test_get_dashboard_summary_includes_unlinked_count(httpx_mock: HTTPXMo
 
 async def test_get_dashboard_unlinked_count_zero_when_all_linked(httpx_mock: HTTPXMock) -> None:
     """Dashboard unlinked_count is 0 when all requirements have github_issue set."""
-    from unittest.mock import patch
-
-    from auth import current_db_user_id
-
     linked_md = """\
 ---
 id: "001"
