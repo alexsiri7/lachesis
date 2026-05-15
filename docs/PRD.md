@@ -84,6 +84,18 @@ Implement email/password authentication with JWT sessions. Support Google OAuth 
 - #44 — [Frontend] Login and registration screens
 ```
 
+### Requirement vs Issue
+
+A **requirement** captures *intent* and *desired behaviour*:
+- `why` — the motivation or problem being solved
+- `what` — the user-visible outcome, described in behavioural terms
+
+A **GitHub issue** captures *implementation work* — the concrete steps needed to build the behaviour described in the requirement.
+
+**Requirements must never describe implementation steps.** Writing "Implement JWT middleware" in `what` is wrong; "Users can authenticate with their Google account" is correct.
+
+Every requirement should be paired with at least one GitHub issue to be actionable. A requirement with no linked issues is a note, not a plan.
+
 **Status values**: `idea` → `planned` → `in_progress` → `done`
 
 Status is set manually or by Claude based on GitHub issue state — Lachesis does not auto-sync.
