@@ -79,8 +79,8 @@ mcp.tool(
         "Create a new requirement capturing intent and desired behaviour. "
         "`why` = the motivation or problem; `what` = the desired outcome, "
         "written in terms of user-visible behaviour — never implementation steps. "
-        "After creating a requirement, call `create_github_issues` then "
-        "`link_issues` to make it actionable."
+        "New requirements start as 'draft' — call `create_github_issues` then "
+        "`link_issues` to make it actionable and advance to 'idea'."
     ),
 )(req_tools.create_requirement)
 
@@ -102,7 +102,8 @@ mcp.tool(
 mcp.tool(
     description=(
         "Attach GitHub issue numbers and titles to a requirement's Issues section, "
-        "completing the requirement → issue link."
+        "completing the requirement → issue link. "
+        "Automatically advances status from 'draft' to 'idea' when issues are first linked."
     ),
 )(req_tools.link_issues)
 
@@ -130,7 +131,7 @@ mcp.tool(
 
 mcp.tool(
     description="Return cross-repo requirements summary with optional status filter"
-    " (idea, planned, in-progress, done).",
+    " (draft, idea, planned, in-progress, done).",
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dashboard)
 

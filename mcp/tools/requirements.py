@@ -87,7 +87,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
         f"## Why\n\n{why}\n\n## What\n\n{what}\n\n## Issues\n\n_None yet._\n",
         id=id_str,
         title=title,
-        status="idea",
+        status="draft",
         github_issue=None,
         created=today,
         updated=today,
@@ -115,7 +115,7 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     if unknown:
         raise ValueError(f"Unknown fields: {unknown!r}. Allowed: {allowed!r}")
 
-    valid_statuses = {"idea", "planned", "in-progress", "done"}
+    valid_statuses = {"draft", "idea", "planned", "in-progress", "done"}
     if "status" in fields and fields["status"] not in valid_statuses:
         raise ValueError(f"Invalid status {fields['status']!r}. Must be one of {valid_statuses}")
 
@@ -185,6 +185,8 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     # Update metadata
     if issues:
         post["github_issue"] = issues[0]["number"]
+    if post.get("status") == "draft":
+        post["status"] = "idea"
     post["updated"] = date.today().isoformat()
 
     # Build new ## Issues section body
@@ -267,7 +269,7 @@ async def create_github_issues(
 
 async def get_dashboard(status: str | None = None) -> dict[str, Any]:
     """Return cross-repo requirements summary, optionally filtered by status."""
-    valid_statuses = {"idea", "planned", "in-progress", "done"}
+    valid_statuses = {"draft", "idea", "planned", "in-progress", "done"}
     if status is not None and status not in valid_statuses:
         raise ValueError(f"Invalid status {status!r}. Must be one of {valid_statuses}")
 
