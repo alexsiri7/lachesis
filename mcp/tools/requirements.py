@@ -1,7 +1,4 @@
-"""Stub implementations for all 7 Lachesis MCP tools.
-
-Real implementations are delivered in issues #4-#10.
-"""
+"""Lachesis MCP tool implementations — requirements management."""
 
 from __future__ import annotations
 

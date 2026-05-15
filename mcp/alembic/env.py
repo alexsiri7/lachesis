@@ -19,8 +19,7 @@ config = context.config
 if not settings.database_url:
     raise RuntimeError(
         "DATABASE_URL is not configured. "
-        "Set it in Railway secrets to the Supabase Postgres connection string, e.g.: "
-        "postgresql://postgres:[password]@db.<ref>.supabase.co:5432/postgres"
+        "Set it as an environment variable or Railway secret."
     )
 config.set_main_option("sqlalchemy.url", settings.database_url)
 

@@ -365,7 +365,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
         user_id = user_data["id"]
         email = user_data["email"]
 
-        # Upsert user into Supabase, capture DB UUID for JWT
+        # Upsert user into DB, capture UUID for JWT
         lachesis_uid: str | None = None
         try:
             db_user = _db.upsert_user(user_id, email)

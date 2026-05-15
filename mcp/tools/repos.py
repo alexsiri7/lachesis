@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def _require_user_id() -> str:
-    """Return the authenticated Supabase user ID or raise."""
+    """Return the current DB user ID or raise."""
     user_id = current_db_user_id.get()
     if not user_id:
         raise RuntimeError(
