@@ -12,7 +12,6 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from auth import current_db_user_id
-
 from tools.requirements import (
     create_github_issues,
     create_requirement,
@@ -936,9 +935,7 @@ Users need to save their rankings.
 # ---------------------------------------------------------------------------
 
 
-def _mock_update_flow(
-    httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1"
-) -> None:
+def _mock_update_flow(httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1") -> None:
     """Register list_files → get_file → update_file responses."""
     httpx_mock.add_response(json=_LIST_RESP)
     httpx_mock.add_response(json=_make_file_response(content, sha))
