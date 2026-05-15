@@ -19,11 +19,11 @@ current_user_id: ContextVar[str] = ContextVar("current_user_id")
 current_db_user_id: ContextVar[str | None] = ContextVar("current_db_user_id", default=None)
 
 
-def resolve_user_id_from_jwt(token: str) -> tuple[str, str | None] | None:
+def resolve_user_id_from_jwt(token: str) -> tuple[str, str, str | None] | None:
     """Decode HS256 JWT signed with settings.secret_key.
 
-    Returns ``(google_sub, lachesis_uid | None)`` if valid AND email matches
-    ALLOWED_EMAIL, else ``None``.
+    Returns ``(google_sub, email, lachesis_uid | None)`` if valid AND email
+    matches ALLOWED_EMAIL, else ``None``.
     """
     if not settings.secret_key:
         return None
@@ -38,4 +38,4 @@ def resolve_user_id_from_jwt(token: str) -> tuple[str, str | None] | None:
     if settings.allowed_email and email != settings.allowed_email:
         return None
     lachesis_uid = payload.get("lachesis_uid")
-    return str(sub), (str(lachesis_uid) if lachesis_uid else None)
+    return str(sub), email, (str(lachesis_uid) if lachesis_uid else None)

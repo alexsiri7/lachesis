@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
+import db as _db
 from auth import current_db_user_id, current_user_id, resolve_user_id_from_jwt
 from settings import settings
 from tools import repos as repo_tools
@@ -193,10 +194,17 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
             await send({"type": "http.response.body", "body": body})
             return
 
-        user_id, lachesis_uid = resolved
+        user_id, email, lachesis_uid = resolved
         current_user_id.set(user_id)
         if lachesis_uid:
             current_db_user_id.set(lachesis_uid)
+        else:
+            # Token predates lachesis_uid claim — look up / create the DB user now
+            try:
+                db_user = _db.upsert_user(user_id, email)
+                current_db_user_id.set(str(db_user["id"]))
+            except Exception:
+                logger.warning("middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True)
         await app(scope, receive, send)
 
     return wrapper
