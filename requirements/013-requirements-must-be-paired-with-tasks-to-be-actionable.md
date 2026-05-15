@@ -1,6 +1,6 @@
 ---
 created: '2026-05-15'
-github_issue: null
+github_issue: 42
 id: '013'
 status: idea
 title: Requirements must be paired with tasks to be actionable
@@ -17,4 +17,6 @@ Lachesis should enforce and communicate the distinction between requirements and
 
 ## Issues
 
-_None yet._
+- #42 — Document requirement vs task distinction in tool descriptions
+- #43 — Warn when requirements have no linked issues
+- #44 — Add draft status for unpaired requirements
