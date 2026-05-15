@@ -22,6 +22,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.create_table(
         "lachesis_users",
+        if_not_exists=True,
         sa.Column(
             "id",
             sa.UUID(as_uuid=False),
@@ -48,6 +49,7 @@ def upgrade() -> None:
 
     op.create_table(
         "lachesis_repos",
+        if_not_exists=True,
         sa.Column(
             "id",
             sa.UUID(as_uuid=False),
