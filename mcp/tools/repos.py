@@ -16,7 +16,9 @@ def _require_user_id() -> str:
     user_id = current_db_user_id.get()
     if not user_id:
         raise RuntimeError(
-            "No authenticated Supabase user in context — ensure lachesis_uid is in the JWT"
+            "No DB user ID in request context. "
+            "This may indicate a database connectivity issue (check server logs) "
+            "or a token that predates the lachesis_uid claim."
         )
     return user_id
 

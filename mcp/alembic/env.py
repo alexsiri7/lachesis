@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 # Import settings from the app (PYTHONPATH=/app in Docker, or prepend_sys_path=. locally)
 from settings import settings
@@ -15,6 +16,12 @@ config = context.config
 
 # Override sqlalchemy.url from settings so the placeholder in alembic.ini
 # is never used.
+if not settings.database_url:
+    raise RuntimeError(
+        "DATABASE_URL is not configured. "
+        "Set it in Railway secrets to the Supabase Postgres connection string, e.g.: "
+        "postgresql://postgres:[password]@db.<ref>.supabase.co:5432/postgres"
+    )
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # Interpret the config file for Python logging.

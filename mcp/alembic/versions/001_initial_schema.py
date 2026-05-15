@@ -7,22 +7,22 @@ Create Date: 2026-05-15
 """
 from __future__ import annotations
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
     op.create_table(
         "lachesis_users",
-        if_not_exists=True,
         sa.Column(
             "id",
             sa.UUID(as_uuid=False),
@@ -45,11 +45,11 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
         sa.UniqueConstraint("google_id", name="lachesis_users_google_id_key"),
+        if_not_exists=True,
     )
 
     op.create_table(
         "lachesis_repos",
-        if_not_exists=True,
         sa.Column(
             "id",
             sa.UUID(as_uuid=False),
@@ -78,6 +78,7 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.UniqueConstraint("user_id", "repo_name", name="lachesis_repos_user_id_repo_name_key"),
+        if_not_exists=True,
     )
 
 

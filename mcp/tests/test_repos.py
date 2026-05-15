@@ -43,7 +43,7 @@ async def test_register_repo_returns_row(set_user_id: str) -> None:
 
 @pytest.mark.anyio
 async def test_register_repo_raises_when_no_user(clear_user_id: None) -> None:
-    with pytest.raises(RuntimeError, match="No authenticated Supabase user"):
+    with pytest.raises(RuntimeError, match="No DB user ID in request context"):
         await register_repo("owner/repo")
 
 
@@ -57,7 +57,7 @@ async def test_unregister_repo_returns_confirmation(set_user_id: str) -> None:
 
 @pytest.mark.anyio
 async def test_unregister_repo_raises_when_no_user(clear_user_id: None) -> None:
-    with pytest.raises(RuntimeError, match="No authenticated Supabase user"):
+    with pytest.raises(RuntimeError, match="No DB user ID in request context"):
         await unregister_repo("owner/repo")
 
 
@@ -72,5 +72,5 @@ async def test_list_repos_returns_list(set_user_id: str) -> None:
 
 @pytest.mark.anyio
 async def test_list_repos_raises_when_no_user(clear_user_id: None) -> None:
-    with pytest.raises(RuntimeError, match="No authenticated Supabase user"):
+    with pytest.raises(RuntimeError, match="No DB user ID in request context"):
         await list_repos()
