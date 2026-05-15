@@ -75,11 +75,21 @@ mcp.tool(
 )(req_tools.get_requirement)
 
 mcp.tool(
-    description="Create a new requirement in the repo.",
+    description=(
+        "Create a new requirement capturing intent and desired behaviour. "
+        "`why` = the motivation or problem; `what` = the desired outcome, "
+        "written in terms of user-visible behaviour — never implementation steps. "
+        "After creating a requirement, call `create_github_issues` then "
+        "`link_issues` to make it actionable."
+    ),
 )(req_tools.create_requirement)
 
 mcp.tool(
-    description="Update fields (title, why, what, status) of an existing requirement.",
+    description=(
+        "Update fields of an existing requirement. "
+        "`what` must describe desired behaviour, not implementation steps — "
+        "those belong in GitHub issues."
+    ),
 )(req_tools.update_requirement)
 
 mcp.tool(
@@ -90,11 +100,19 @@ mcp.tool(
 )(req_tools.delete_requirement)
 
 mcp.tool(
-    description="Write GitHub issue numbers and titles into a requirement's Issues section.",
+    description=(
+        "Attach GitHub issue numbers and titles to a requirement's Issues section, "
+        "completing the requirement → issue link."
+    ),
 )(req_tools.link_issues)
 
 mcp.tool(
-    description="Create one or more GitHub issues in the repo.",
+    description=(
+        "Create one or more GitHub issues capturing implementation work. "
+        "Issues are the task layer — they break down *how* a requirement's "
+        "desired behaviour will be built. Call `link_issues` after to attach "
+        "them to the requirement."
+    ),
 )(req_tools.create_github_issues)
 
 mcp.tool(
