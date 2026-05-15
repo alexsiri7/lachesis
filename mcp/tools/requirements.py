@@ -29,12 +29,14 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
             continue
         content, _ = await github.get_file(repo, f["path"])
         post = frontmatter.loads(content)
+        github_issue = post.get("github_issue")
         results.append(
             {
                 "id": post["id"],
                 "title": post["title"],
                 "status": post["status"],
-                "github_issue": post.get("github_issue"),
+                "github_issue": github_issue,
+                "warning": "no linked issues" if github_issue is None else None,
             }
         )
     return results
@@ -293,12 +295,14 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                 status_counts[req_status] = status_counts.get(req_status, 0) + 1
                 if status is not None and req_status != status:
                     continue
+                github_issue = post.get("github_issue")
                 requirements.append(
                     {
                         "id": post["id"],
                         "title": post["title"],
                         "status": req_status,
-                        "github_issue": post.get("github_issue"),
+                        "github_issue": github_issue,
+                        "warning": "no linked issues" if github_issue is None else None,
                     }
                 )
             aggregated.append({"repo": repo_name, "requirements": requirements})
@@ -306,7 +310,13 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
             logger.warning("get_dashboard: failed to fetch requirements from %s", repo_name)
 
     total = sum(status_counts.values())
+    unlinked_count = sum(
+        1
+        for repo_entry in aggregated
+        for req in repo_entry["requirements"]
+        if req["github_issue"] is None
+    )
     return {
         "repos": aggregated,
-        "summary": {"total": total, "by_status": status_counts},
+        "summary": {"total": total, "by_status": status_counts, "unlinked_count": unlinked_count},
     }
