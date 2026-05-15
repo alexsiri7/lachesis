@@ -22,7 +22,6 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.create_table(
         "lachesis_users",
-        if_not_exists=True,
         sa.Column(
             "id",
             sa.UUID(as_uuid=False),
@@ -45,11 +44,11 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
         sa.UniqueConstraint("google_id", name="lachesis_users_google_id_key"),
+        if_not_exists=True,
     )
 
     op.create_table(
         "lachesis_repos",
-        if_not_exists=True,
         sa.Column(
             "id",
             sa.UUID(as_uuid=False),
@@ -78,6 +77,7 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.UniqueConstraint("user_id", "repo_name", name="lachesis_repos_user_id_repo_name_key"),
+        if_not_exists=True,
     )
 
 
