@@ -34,6 +34,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 import db as _db  # imported at module level so a missing sqlalchemy/psycopg2 package
+
 # fails at startup rather than silently at login time
 from oauth_state import (
     auth_codes,

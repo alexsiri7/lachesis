@@ -223,7 +223,9 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                 db_user = _db.upsert_user(user_id, email)
                 current_db_user_id.set(str(db_user["id"]))
             except Exception:
-                logger.warning("middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True)
+                logger.warning(
+                    "middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True
+                )
         await app(scope, receive, send)
 
     return wrapper

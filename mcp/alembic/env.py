@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 # Import settings from the app (PYTHONPATH=/app in Docker, or prepend_sys_path=. locally)
 from settings import settings
