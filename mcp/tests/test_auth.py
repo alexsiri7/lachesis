@@ -28,7 +28,7 @@ def test_resolve_returns_tuple_with_lachesis_uid(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("auth.settings.allowed_email", "user@example.com")
     token = _make_jwt("google-sub", "user@example.com", lachesis_uid="db-uuid-123")
     result = resolve_user_id_from_jwt(token)
-    assert result == ("google-sub", "db-uuid-123")
+    assert result == ("google-sub", "user@example.com", "db-uuid-123")
 
 
 def test_resolve_returns_none_lachesis_uid_when_claim_absent(
@@ -38,7 +38,7 @@ def test_resolve_returns_none_lachesis_uid_when_claim_absent(
     monkeypatch.setattr("auth.settings.allowed_email", "user@example.com")
     token = _make_jwt("google-sub", "user@example.com")
     result = resolve_user_id_from_jwt(token)
-    assert result == ("google-sub", None)
+    assert result == ("google-sub", "user@example.com", None)
 
 
 def test_resolve_returns_none_for_wrong_email(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,8 +61,8 @@ def test_resolve_returns_none_when_no_secret_key(monkeypatch: pytest.MonkeyPatch
     assert resolve_user_id_from_jwt(token) is None
 
 
-def test_resolve_tuple_shape_is_str_str_or_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify the tuple return type contract: (str, str | None)."""
+def test_resolve_tuple_shape_is_str_str_str_or_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify the tuple return type contract: (str, str, str | None)."""
     monkeypatch.setattr("auth.settings.secret_key", SECRET)
     monkeypatch.setattr("auth.settings.allowed_email", "user@example.com")
     token_with = _make_jwt("google-sub", "user@example.com", lachesis_uid="uid-abc")
@@ -72,11 +72,13 @@ def test_resolve_tuple_shape_is_str_str_or_none(monkeypatch: pytest.MonkeyPatch)
     result_without = resolve_user_id_from_jwt(token_without)
 
     assert result_with is not None
-    user_id_with, lachesis_uid_with = result_with
+    user_id_with, email_with, lachesis_uid_with = result_with
     assert isinstance(user_id_with, str)
+    assert isinstance(email_with, str)
     assert isinstance(lachesis_uid_with, str)
 
     assert result_without is not None
-    user_id_without, lachesis_uid_without = result_without
+    user_id_without, email_without, lachesis_uid_without = result_without
     assert isinstance(user_id_without, str)
+    assert isinstance(email_without, str)
     assert lachesis_uid_without is None
