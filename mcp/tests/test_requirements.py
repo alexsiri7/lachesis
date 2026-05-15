@@ -14,6 +14,7 @@ from tools.requirements import (
     create_github_issues,
     create_requirement,
     delete_requirement,
+    get_dashboard,
     get_requirement,
     link_issues,
     list_requirements,
@@ -602,7 +603,13 @@ async def test_list_requirements_returns_metadata(httpx_mock: HTTPXMock) -> None
     result = await list_requirements("owner/repo")
 
     assert result == [
-        {"id": "001", "title": "User authentication", "status": "planned", "github_issue": None},
+        {
+            "id": "001",
+            "title": "User authentication",
+            "status": "planned",
+            "github_issue": None,
+            "warning": "no linked issues",
+        },
     ]
 
 
@@ -657,8 +664,10 @@ CSV export.
 
     assert len(result) == 2
     assert result[0]["id"] == "001"
+    assert result[0]["warning"] == "no linked issues"
     assert result[1]["id"] == "002"
     assert result[1]["github_issue"] == 99
+    assert result[1]["warning"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -802,3 +811,129 @@ async def test_create_github_issues_project_failure_does_not_abort(httpx_mock: H
 
     assert result[0]["number"] == 42
     assert result[0]["added_to_project"] is False
+
+
+# ---------------------------------------------------------------------------
+# list_requirements warning tests
+# ---------------------------------------------------------------------------
+
+
+async def test_list_requirements_warns_when_no_github_issue(httpx_mock: HTTPXMock) -> None:
+    """Requirements with github_issue=null get warning='no linked issues'."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+
+    result = await list_requirements("owner/repo")
+
+    assert result[0]["warning"] == "no linked issues"
+
+
+async def test_list_requirements_no_warning_when_issue_linked(httpx_mock: HTTPXMock) -> None:
+    """Requirements with github_issue set get warning=None."""
+    linked_md = """\
+---
+id: "001"
+title: "User authentication"
+status: "planned"
+github_issue: 42
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Why
+
+Users need to save their rankings.
+"""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(linked_md, "sha1"))
+
+    result = await list_requirements("owner/repo")
+
+    assert result[0]["github_issue"] == 42
+    assert result[0]["warning"] is None
+
+
+# ---------------------------------------------------------------------------
+# get_dashboard warning tests
+# ---------------------------------------------------------------------------
+
+
+async def test_get_dashboard_requirement_warns_when_no_github_issue(httpx_mock: HTTPXMock) -> None:
+    """Dashboard requirements with github_issue=null get warning='no linked issues'."""
+    from unittest.mock import patch
+
+    from auth import current_db_user_id
+
+    token = current_db_user_id.set("test-uid")
+    try:
+        with patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/repo"}],
+        ):
+            httpx_mock.add_response(json=_LIST_RESP)
+            httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+
+            result = await get_dashboard()
+
+        req = result["repos"][0]["requirements"][0]
+        assert req["warning"] == "no linked issues"
+    finally:
+        current_db_user_id.reset(token)
+
+
+async def test_get_dashboard_summary_includes_unlinked_count(httpx_mock: HTTPXMock) -> None:
+    """Dashboard summary includes unlinked_count for requirements without issues."""
+    from unittest.mock import patch
+
+    from auth import current_db_user_id
+
+    token = current_db_user_id.set("test-uid")
+    try:
+        with patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/repo"}],
+        ):
+            httpx_mock.add_response(json=_LIST_RESP)
+            httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+
+            result = await get_dashboard()
+
+        assert result["summary"]["unlinked_count"] == 1
+    finally:
+        current_db_user_id.reset(token)
+
+
+async def test_get_dashboard_unlinked_count_zero_when_all_linked(httpx_mock: HTTPXMock) -> None:
+    """Dashboard unlinked_count is 0 when all requirements have github_issue set."""
+    from unittest.mock import patch
+
+    from auth import current_db_user_id
+
+    linked_md = """\
+---
+id: "001"
+title: "User authentication"
+status: "planned"
+github_issue: 42
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Why
+
+Users need to save their rankings.
+"""
+    token = current_db_user_id.set("test-uid")
+    try:
+        with patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/repo"}],
+        ):
+            httpx_mock.add_response(json=_LIST_RESP)
+            httpx_mock.add_response(json=_make_file_response(linked_md, "sha1"))
+
+            result = await get_dashboard()
+
+        assert result["summary"]["unlinked_count"] == 0
+    finally:
+        current_db_user_id.reset(token)
