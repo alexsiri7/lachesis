@@ -15,8 +15,7 @@ class Settings(BaseSettings):
 
     github_pat: str = ""
 
-    supabase_url: str = ""
-    supabase_service_role_key: str = ""
+    database_url: str = ""
 
     google_client_id: str = ""
     google_client_secret: str = ""

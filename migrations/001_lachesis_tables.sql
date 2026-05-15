@@ -1,3 +1,4 @@
+-- Superseded by mcp/alembic/versions/001_initial_schema.py — kept for reference only.
 -- Run against Alex's existing Supabase instance.
 -- All tables namespaced with lachesis_ prefix per req 011.
 
