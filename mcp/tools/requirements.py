@@ -276,7 +276,9 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
     user_id = current_db_user_id.get()
     if not user_id:
         raise RuntimeError(
-            "No authenticated Supabase user in context — ensure lachesis_uid is in the JWT"
+            "No DB user ID in request context. "
+            "This may indicate a database connectivity issue (check server logs) "
+            "or a token that predates the lachesis_uid claim."
         )
 
     repos = db.list_repos(user_id)
