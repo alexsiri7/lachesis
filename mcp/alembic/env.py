@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
@@ -14,22 +15,18 @@ from settings import settings
 # access to the values within the .ini file in use.
 config = context.config
 
-# Override sqlalchemy.url from settings so the placeholder in alembic.ini
-# is never used.
-if not settings.database_url:
-    raise RuntimeError(
-        "DATABASE_URL is not configured. "
-        "Set it in Railway secrets to the Supabase Postgres connection string, e.g.: "
-        "postgresql://postgres:[password]@db.<ref>.supabase.co:5432/postgres"
-    )
-config.set_main_option("sqlalchemy.url", settings.database_url)
-
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# Set up logging first so warning messages are properly routed.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 logger = logging.getLogger("alembic.env")
+
+# Override sqlalchemy.url from settings so the placeholder in alembic.ini
+# is never used. Exit cleanly if DATABASE_URL is not set (e.g. staging / initial deploy).
+if not settings.database_url:
+    logger.warning("DATABASE_URL not set — skipping migration")
+    sys.exit(0)
+config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # add your model's MetaData object here
 # for 'autogenerate' support
