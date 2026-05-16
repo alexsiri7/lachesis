@@ -17,11 +17,9 @@ config = context.config
 # Override sqlalchemy.url from settings so the placeholder in alembic.ini
 # is never used.
 if not settings.database_url:
-    raise RuntimeError(
-        "DATABASE_URL is not configured. "
-        "Set it in Railway secrets to the Supabase Postgres connection string, e.g.: "
-        "postgresql://postgres:[password]@db.<ref>.supabase.co:5432/postgres"
-    )
+    import sys
+    logging.getLogger("alembic.env").warning("DATABASE_URL not set — skipping migration")
+    sys.exit(0)
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # Interpret the config file for Python logging.

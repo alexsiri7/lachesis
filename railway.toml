@@ -2,7 +2,7 @@
 dockerfilePath = "mcp/Dockerfile"
 
 [deploy]
-preDeployCommand = "sh -c 'if [ -z \"$DATABASE_URL\" ]; then echo \"WARNING: DATABASE_URL not set — skipping migration\" >&2; else alembic upgrade head; fi'"
+preDeployCommand = "alembic upgrade head"
 startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/healthz"
 healthcheckTimeout = 60
