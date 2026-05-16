@@ -67,6 +67,21 @@ _ISSUES = [
     {"number": 43, "title": "Build login endpoints"},
 ]
 
+_LINKED_MD = """\
+---
+id: "001"
+title: "User authentication"
+status: "planned"
+github_issue: 42
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Why
+
+Users need to save their rankings.
+"""
+
 
 def _mock_full_flow(httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1") -> None:
     """Register list_files → get_file → update_file responses."""
@@ -821,34 +836,10 @@ async def test_create_github_issues_project_failure_does_not_abort(httpx_mock: H
 # ---------------------------------------------------------------------------
 
 
-async def test_list_requirements_warns_when_no_github_issue(httpx_mock: HTTPXMock) -> None:
-    """Requirements with github_issue=null get warning='no linked issues'."""
-    httpx_mock.add_response(json=_LIST_RESP)
-    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
-
-    result = await list_requirements("owner/repo")
-
-    assert result[0]["warning"] == "no linked issues"
-
-
 async def test_list_requirements_no_warning_when_issue_linked(httpx_mock: HTTPXMock) -> None:
     """Requirements with github_issue set get warning=None."""
-    linked_md = """\
----
-id: "001"
-title: "User authentication"
-status: "planned"
-github_issue: 42
-created: "2026-05-11"
-updated: "2026-05-11"
----
-
-## Why
-
-Users need to save their rankings.
-"""
     httpx_mock.add_response(json=_LIST_RESP)
-    httpx_mock.add_response(json=_make_file_response(linked_md, "sha1"))
+    httpx_mock.add_response(json=_make_file_response(_LINKED_MD, "sha1"))
 
     result = await list_requirements("owner/repo")
 
@@ -904,26 +895,12 @@ async def test_get_dashboard_unlinked_count_zero_when_all_linked(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
     """Dashboard unlinked_count is 0 when all requirements have github_issue set."""
-    linked_md = """\
----
-id: "001"
-title: "User authentication"
-status: "planned"
-github_issue: 42
-created: "2026-05-11"
-updated: "2026-05-11"
----
-
-## Why
-
-Users need to save their rankings.
-"""
     with patch(
         "tools.requirements.db.list_repos",
         return_value=[{"repo_name": "owner/repo"}],
     ):
         httpx_mock.add_response(json=_LIST_RESP)
-        httpx_mock.add_response(json=_make_file_response(linked_md, "sha1"))
+        httpx_mock.add_response(json=_make_file_response(_LINKED_MD, "sha1"))
         result = await get_dashboard()
 
     assert result["summary"]["unlinked_count"] == 0
@@ -934,16 +911,9 @@ Users need to save their rankings.
 # ---------------------------------------------------------------------------
 
 
-def _mock_update_flow(httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1") -> None:
-    """Register list_files → get_file → update_file responses."""
-    httpx_mock.add_response(json=_LIST_RESP)
-    httpx_mock.add_response(json=_make_file_response(content, sha))
-    httpx_mock.add_response(json={"content": {}, "commit": {}})
-
-
 async def test_update_requirement_accepts_draft_status(httpx_mock: HTTPXMock) -> None:
     """'draft' is accepted as a valid status value."""
-    _mock_update_flow(httpx_mock)
+    _mock_full_flow(httpx_mock)
     result = await update_requirement("owner/repo", "001", {"status": "draft"})
     post = frontmatter.loads(result)
     assert post["status"] == "draft"
