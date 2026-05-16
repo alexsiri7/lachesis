@@ -34,6 +34,17 @@ def _engine() -> Engine:
 
 
 # ---------------------------------------------------------------------------
+# Health probe
+# ---------------------------------------------------------------------------
+
+
+def ping() -> None:
+    """Raise if the DB is unreachable or lachesis_users is missing."""
+    with _engine().connect() as conn:
+        conn.execute(text("SELECT 1 FROM lachesis_users LIMIT 1"))
+
+
+# ---------------------------------------------------------------------------
 # lachesis_users
 # ---------------------------------------------------------------------------
 

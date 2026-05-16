@@ -142,7 +142,15 @@ mcp.tool(
 
 @mcp.custom_route("/healthz", methods=["GET"])  # type: ignore[untyped-decorator]
 async def healthz(request: Request) -> JSONResponse:
-    return JSONResponse({"ok": True})
+    import asyncio
+
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, _db.ping)
+        db_status = "ok"
+    except Exception as exc:
+        db_status = str(exc)
+    ok = db_status == "ok"
+    return JSONResponse({"ok": ok, "db": db_status}, status_code=200 if ok else 503)
 
 
 # ---------------------------------------------------------------------------
