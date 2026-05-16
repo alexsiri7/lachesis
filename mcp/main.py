@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
@@ -142,12 +143,11 @@ mcp.tool(
 
 @mcp.custom_route("/healthz", methods=["GET"])  # type: ignore[untyped-decorator]
 async def healthz(request: Request) -> JSONResponse:
-    import asyncio
-
     try:
-        await asyncio.get_event_loop().run_in_executor(None, _db.ping)
+        await asyncio.get_running_loop().run_in_executor(None, _db.ping)
         db_status = "ok"
     except Exception as exc:
+        logger.warning("healthz: db ping failed: %s", exc, exc_info=True)
         db_status = str(exc)
     ok = db_status == "ok"
     return JSONResponse({"ok": ok, "db": db_status}, status_code=200 if ok else 503)
