@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
@@ -142,8 +143,6 @@ mcp.tool(
 
 @mcp.custom_route("/healthz", methods=["GET"])  # type: ignore[untyped-decorator]
 async def healthz(request: Request) -> JSONResponse:
-    import asyncio
-
     try:
         await asyncio.get_running_loop().run_in_executor(None, _db.ping)
         db_status = "ok"
