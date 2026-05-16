@@ -145,7 +145,7 @@ async def healthz(request: Request) -> JSONResponse:
     import asyncio
 
     try:
-        await asyncio.get_event_loop().run_in_executor(None, _db.ping)
+        await asyncio.get_running_loop().run_in_executor(None, _db.ping)
         db_status = "ok"
     except Exception as exc:
         db_status = str(exc)
