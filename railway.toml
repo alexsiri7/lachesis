@@ -2,5 +2,5 @@
 dockerfilePath = "mcp/Dockerfile"
 
 [deploy]
-healthcheckPath = "/healthz"
+healthcheckPath = "/ping"
 healthcheckTimeout = 60
