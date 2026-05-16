@@ -861,44 +861,48 @@ Users need to save their rankings.
 # ---------------------------------------------------------------------------
 
 
-async def test_get_dashboard_requirement_warns_when_no_github_issue(httpx_mock: HTTPXMock) -> None:
+@pytest.fixture()
+def set_db_user_id():
+    """Set current_db_user_id for the test, reset afterwards."""
+    token = current_db_user_id.set("test-uid")
+    yield
+    current_db_user_id.reset(token)
+
+
+async def test_get_dashboard_requirement_warns_when_no_github_issue(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
     """Dashboard requirements with github_issue=null get warning='no linked issues'."""
-    token = current_db_user_id.set("test-uid")
-    try:
-        with patch(
-            "tools.requirements.db.list_repos",
-            return_value=[{"repo_name": "owner/repo"}],
-        ):
-            httpx_mock.add_response(json=_LIST_RESP)
-            httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        result = await get_dashboard()
 
-            result = await get_dashboard()
-
-        req = result["repos"][0]["requirements"][0]
-        assert req["warning"] == "no linked issues"
-    finally:
-        current_db_user_id.reset(token)
+    req = result["repos"][0]["requirements"][0]
+    assert req["warning"] == "no linked issues"
 
 
-async def test_get_dashboard_summary_includes_unlinked_count(httpx_mock: HTTPXMock) -> None:
+async def test_get_dashboard_summary_includes_unlinked_count(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
     """Dashboard summary includes unlinked_count for requirements without issues."""
-    token = current_db_user_id.set("test-uid")
-    try:
-        with patch(
-            "tools.requirements.db.list_repos",
-            return_value=[{"repo_name": "owner/repo"}],
-        ):
-            httpx_mock.add_response(json=_LIST_RESP)
-            httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        result = await get_dashboard()
 
-            result = await get_dashboard()
-
-        assert result["summary"]["unlinked_count"] == 1
-    finally:
-        current_db_user_id.reset(token)
+    assert result["summary"]["unlinked_count"] == 1
 
 
-async def test_get_dashboard_unlinked_count_zero_when_all_linked(httpx_mock: HTTPXMock) -> None:
+async def test_get_dashboard_unlinked_count_zero_when_all_linked(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
     """Dashboard unlinked_count is 0 when all requirements have github_issue set."""
     linked_md = """\
 ---
@@ -914,20 +918,15 @@ updated: "2026-05-11"
 
 Users need to save their rankings.
 """
-    token = current_db_user_id.set("test-uid")
-    try:
-        with patch(
-            "tools.requirements.db.list_repos",
-            return_value=[{"repo_name": "owner/repo"}],
-        ):
-            httpx_mock.add_response(json=_LIST_RESP)
-            httpx_mock.add_response(json=_make_file_response(linked_md, "sha1"))
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(linked_md, "sha1"))
+        result = await get_dashboard()
 
-            result = await get_dashboard()
-
-        assert result["summary"]["unlinked_count"] == 0
-    finally:
-        current_db_user_id.reset(token)
+    assert result["summary"]["unlinked_count"] == 0
 
 
 # ---------------------------------------------------------------------------
