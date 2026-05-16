@@ -19,6 +19,8 @@ from auth import current_db_user_id
 
 logger = logging.getLogger(__name__)
 
+_VALID_STATUSES = {"draft", "idea", "planned", "in-progress", "done"}
+
 
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
     """Return all requirements for a given repo (id, title, status, github_issue)."""
@@ -115,9 +117,8 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     if unknown:
         raise ValueError(f"Unknown fields: {unknown!r}. Allowed: {allowed!r}")
 
-    valid_statuses = {"draft", "idea", "planned", "in-progress", "done"}
-    if "status" in fields and fields["status"] not in valid_statuses:
-        raise ValueError(f"Invalid status {fields['status']!r}. Must be one of {valid_statuses}")
+    if "status" in fields and fields["status"] not in _VALID_STATUSES:
+        raise ValueError(f"Invalid status {fields['status']!r}. Must be one of {_VALID_STATUSES}")
 
     for key in ("title", "status"):
         if key in fields:
@@ -269,9 +270,8 @@ async def create_github_issues(
 
 async def get_dashboard(status: str | None = None) -> dict[str, Any]:
     """Return cross-repo requirements summary, optionally filtered by status."""
-    valid_statuses = {"draft", "idea", "planned", "in-progress", "done"}
-    if status is not None and status not in valid_statuses:
-        raise ValueError(f"Invalid status {status!r}. Must be one of {valid_statuses}")
+    if status is not None and status not in _VALID_STATUSES:
+        raise ValueError(f"Invalid status {status!r}. Must be one of {_VALID_STATUSES}")
 
     user_id = current_db_user_id.get()
     if not user_id:
