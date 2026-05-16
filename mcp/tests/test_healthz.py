@@ -40,3 +40,10 @@ def test_ping(client: TestClient) -> None:
     resp = client.get("/ping")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
+
+
+def test_ping_no_auth_required(client: TestClient) -> None:
+    """Liveness probe must succeed even with an invalid/missing bearer token."""
+    resp = client.get("/ping", headers={"Authorization": "Bearer invalid-token"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
