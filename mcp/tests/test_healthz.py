@@ -33,3 +33,10 @@ def test_healthz_db_failure(client: TestClient) -> None:
     body = resp.json()
     assert body["ok"] is False
     assert "connection refused" in body["db"]
+
+
+def test_ping(client: TestClient) -> None:
+    """Returns 200 always — no DB interaction."""
+    resp = client.get("/ping")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True

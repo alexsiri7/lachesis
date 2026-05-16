@@ -153,6 +153,12 @@ async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"ok": ok, "db": db_status}, status_code=200 if ok else 503)
 
 
+@mcp.custom_route("/ping", methods=["GET"])  # type: ignore[untyped-decorator]
+async def ping(request: Request) -> JSONResponse:
+    """Liveness probe for Railway — always 200 if the process is running."""
+    return JSONResponse({"ok": True})
+
+
 # ---------------------------------------------------------------------------
 # Web UI routes
 # ---------------------------------------------------------------------------
@@ -189,6 +195,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
             "/.well-known/",
             "/oauth/",
             "/healthz",
+            "/ping",
             "/web/",
         )
         if any(path.startswith(p) for p in public_prefixes):
