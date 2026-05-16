@@ -15,4 +15,4 @@ EXPOSE 8080
 RUN adduser --disabled-password --gecos '' --uid 1000 appuser
 USER appuser
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
