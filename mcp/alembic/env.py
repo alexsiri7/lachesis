@@ -18,6 +18,7 @@ config = context.config
 # is never used.
 if not settings.database_url:
     import sys
+
     logging.getLogger("alembic.env").warning("DATABASE_URL not set — skipping migration")
     sys.exit(0)
 config.set_main_option("sqlalchemy.url", settings.database_url)
