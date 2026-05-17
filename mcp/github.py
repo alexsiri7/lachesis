@@ -35,6 +35,7 @@ async def list_files(repo: str, path: str) -> list[dict[str, Any]]:
             headers=_headers(),
         )
     if resp.status_code == 404:
+        logger.warning("github.list_files 404 repo=%s path=%s", repo, path)
         return []
     if not resp.is_success:
         logger.warning(
