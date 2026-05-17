@@ -41,8 +41,6 @@ from oauth_state import (
     cleanup_and_pop,
     cleanup_and_store,
     oauth_sessions,
-    refresh_tokens,
-    registered_clients,
 )
 from settings import settings
 
@@ -97,8 +95,8 @@ def _issue_token_response(
 
     access_token = create_jwt(user_id, email, lachesis_uid)
     refresh_token = secrets.token_urlsafe(32)
-    cleanup_and_store(
-        refresh_tokens,
+    expires_at = datetime.now(UTC) + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS)
+    _db.upsert_refresh_token(
         refresh_token,
         {
             "user_id": user_id,
@@ -106,8 +104,8 @@ def _issue_token_response(
             "lachesis_uid": lachesis_uid,
             "client_id": client_id,
             "scope": scope,
-            "expires_at": datetime.now(UTC) + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
         },
+        expires_at,
     )
     return JSONResponse(
         {
@@ -250,7 +248,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
             ),
             "scope": body.get("scope", "mcp"),
         }
-        cleanup_and_store(registered_clients, client_id, client)
+        _db.upsert_oauth_client(client_id, client)
         logger.info(
             "MCP OAuth: registered client %s (%s)",
             client_id,
@@ -292,7 +290,7 @@ def register_routes(mcp_obj: FastMCP) -> None:
             raise HTTPException(
                 status_code=400, detail="code_challenge is required (PKCE required)"
             )
-        registered = registered_clients.get(client_id)
+        registered = _db.get_oauth_client(client_id)
         if not registered:
             raise HTTPException(
                 status_code=400,
@@ -421,9 +419,10 @@ def register_routes(mcp_obj: FastMCP) -> None:
             refresh_token = str(form.get("refresh_token", ""))
             if not refresh_token:
                 raise HTTPException(status_code=400, detail="refresh_token is required")
-            session = cleanup_and_pop(refresh_tokens, refresh_token)
+            session = _db.get_refresh_token(refresh_token)
             if not session:
                 raise HTTPException(status_code=400, detail="Invalid or expired refresh_token")
+            _db.delete_refresh_token(refresh_token)
             return _issue_token_response(
                 session["user_id"],
                 session.get("email"),
