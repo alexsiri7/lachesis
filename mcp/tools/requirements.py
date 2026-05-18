@@ -23,8 +23,39 @@ logger = logging.getLogger(__name__)
 _VALID_STATUSES = {"draft", "idea", "planned", "in-progress", "done"}
 
 
+async def _resolve_repo(repo: str) -> str:
+    """Resolve a short name (e.g. 'lachesis') to a registered 'owner/repo' string.
+
+    If the input already contains '/' (or is a full URL) it is normalised and
+    returned as-is.  Otherwise the user's registered repos are searched for one
+    whose final path component matches the short name.  Falls back to the raw
+    input if no match is found or if there is no auth context.
+    """
+    try:
+        normalized = normalize_repo(repo)
+    except ValueError:
+        normalized = repo
+
+    if "/" in normalized:
+        return normalized
+
+    user_id = current_db_user_id.get()
+    if user_id:
+        rows = db.list_repos(user_id)
+        for row in rows:
+            try:
+                full = normalize_repo(row["repo_name"])
+            except ValueError:
+                continue
+            if full.split("/")[-1].lower() == normalized.lower():
+                return full
+
+    return normalized
+
+
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
     """Return all requirements for a given repo (id, title, status, github_issue)."""
+    repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
     results: list[dict[str, Any]] = []
     for f in files:
@@ -47,6 +78,7 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
 
 async def get_requirement(repo: str, id: str) -> str:
     """Return the full markdown content of a single requirement file."""
+    repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
@@ -57,6 +89,7 @@ async def get_requirement(repo: str, id: str) -> str:
 
 async def create_requirement(repo: str, title: str, why: str, what: str) -> dict[str, Any]:
     """Create a new requirement file and return its path and auto-assigned id."""
+    repo = await _resolve_repo(repo)
     # 1. List existing files to determine next ID and detect slug collisions
     files = await github.list_files(repo, "requirements")
 
@@ -104,6 +137,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
 
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     """Update fields (title, why, what, status) in an existing requirement."""
+    repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
@@ -148,6 +182,7 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
+    repo = await _resolve_repo(repo)
     # Locate the requirement file
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
@@ -172,6 +207,7 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
 
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
+    repo = await _resolve_repo(repo)
     # Locate the requirement file
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
@@ -223,6 +259,7 @@ async def create_github_issues(
     repo: str, issues: list[dict[str, Any]], project_id: str | None = None
 ) -> list[dict[str, Any]]:
     """Create one or more GitHub issues and return their numbers/titles/urls."""
+    repo = await _resolve_repo(repo)
     # Phase 1: Create all issues, build number→id map
     results: list[dict[str, Any]] = []
     number_to_id: dict[int, int] = {}

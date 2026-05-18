@@ -939,3 +939,47 @@ async def test_link_issues_does_not_change_non_draft_status(httpx_mock: HTTPXMoc
     result = await link_issues("owner/repo", "001", _ISSUES)
     post = frontmatter.loads(result)
     assert post["status"] == "planned"
+
+
+# ---------------------------------------------------------------------------
+# Short-name resolution (_resolve_repo)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def set_user_id():
+    token = current_db_user_id.set("test-uid")
+    yield "test-uid"
+    current_db_user_id.reset(token)
+
+
+@pytest.mark.anyio
+async def test_list_requirements_resolves_short_name(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """list_requirements('lachesis') resolves to 'alexsiri7/lachesis' via registered repos."""
+    registered = [{"id": "r1", "repo_name": "alexsiri7/lachesis", "created_at": "t"}]
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+
+    with patch("tools.requirements.db.list_repos", return_value=registered):
+        result = await list_requirements("lachesis")
+
+    assert len(result) == 1
+    sent_url = str(httpx_mock.get_requests()[0].url)
+    assert "alexsiri7/lachesis" in sent_url
+
+
+@pytest.mark.anyio
+async def test_list_requirements_short_name_case_insensitive(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Short-name resolution is case-insensitive."""
+    registered = [{"id": "r1", "repo_name": "alexsiri7/Lachesis", "created_at": "t"}]
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+
+    with patch("tools.requirements.db.list_repos", return_value=registered):
+        result = await list_requirements("lachesis")
+
+    assert len(result) == 1
