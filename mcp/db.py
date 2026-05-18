@@ -1,8 +1,10 @@
 """SQLAlchemy persistence layer for Lachesis.
 
 Tables (all namespaced lachesis_):
-  lachesis_users  — one row per authenticated Google identity
-  lachesis_repos  — per-user repo registry (populated by repo-registry tools in #12)
+  lachesis_users          — one row per authenticated Google identity
+  lachesis_repos          — per-user repo registry (populated by repo-registry tools in #12)
+  lachesis_oauth_clients  — persisted OAuth client registrations
+  lachesis_refresh_tokens — persisted refresh tokens (with expiry)
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -14,7 +16,9 @@ callers always get the current row back.
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -118,3 +122,87 @@ def list_repos(user_id: str) -> list[dict[str, Any]]:
     with _engine().connect() as conn:
         result = conn.execute(sql, {"user_id": user_id})
         return [dict(row) for row in result.mappings().all()]
+
+
+# ---------------------------------------------------------------------------
+# lachesis_oauth_clients
+# ---------------------------------------------------------------------------
+
+
+def upsert_oauth_client(client_id: str, data: dict[str, Any]) -> None:
+    """Persist an OAuth client registration. Idempotent."""
+    sql = text(
+        """
+        INSERT INTO lachesis_oauth_clients (client_id, data)
+        VALUES (:client_id, CAST(:data AS jsonb))
+        ON CONFLICT (client_id) DO UPDATE
+            SET data = EXCLUDED.data
+        """
+    )
+    with _engine().begin() as conn:
+        conn.execute(sql, {"client_id": client_id, "data": json.dumps(data, default=str)})
+
+
+def get_oauth_client(client_id: str) -> dict[str, Any] | None:
+    """Return the client registration dict for client_id, or None if not found."""
+    sql = text(
+        """
+        SELECT data FROM lachesis_oauth_clients WHERE client_id = :client_id
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql, {"client_id": client_id})
+        row = result.mappings().first()
+    if row is None:
+        return None
+    return dict(row["data"])
+
+
+# ---------------------------------------------------------------------------
+# lachesis_refresh_tokens
+# ---------------------------------------------------------------------------
+
+
+def upsert_refresh_token(token: str, data: dict[str, Any], expires_at: datetime) -> None:
+    """Persist a refresh token with its expiry. Idempotent."""
+    sql = text(
+        """
+        INSERT INTO lachesis_refresh_tokens (token, data, expires_at)
+        VALUES (:token, CAST(:data AS jsonb), :expires_at)
+        ON CONFLICT (token) DO UPDATE
+            SET data = EXCLUDED.data,
+                expires_at = EXCLUDED.expires_at
+        """
+    )
+    with _engine().begin() as conn:
+        conn.execute(
+            sql,
+            {
+                "token": token,
+                "data": json.dumps(data, default=str),
+                "expires_at": expires_at,
+            },
+        )
+
+
+def get_refresh_token(token: str) -> dict[str, Any] | None:
+    """Return the refresh token data dict, or None if not found or expired."""
+    sql = text(
+        """
+        SELECT data FROM lachesis_refresh_tokens
+        WHERE token = :token AND expires_at > now()
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql, {"token": token})
+        row = result.mappings().first()
+    if row is None:
+        return None
+    return dict(row["data"])
+
+
+def delete_refresh_token(token: str) -> None:
+    """Delete a refresh token. No-op if not found."""
+    sql = text("DELETE FROM lachesis_refresh_tokens WHERE token = :token")
+    with _engine().begin() as conn:
+        conn.execute(sql, {"token": token})

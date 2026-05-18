@@ -1,10 +1,11 @@
 """Shared in-memory state for the MCP OAuth 2.1 flow.
 
-Four bounded dicts back the seven endpoints in ``oauth.py``. Expired entries
-are lazily purged on every store/retrieve, and each dict is hard-capped at
-``MAX_ENTRIES_PER_DICT`` to avoid unbounded growth. Persistence is intentionally
-not implemented — Railway redeploys are infrequent enough that re-registering
-on restart is acceptable.
+Two bounded dicts back the short-lived endpoints in ``oauth.py``. Expired
+entries are lazily purged on every store/retrieve, and each dict is hard-capped
+at ``MAX_ENTRIES_PER_DICT`` to avoid unbounded growth.
+
+``registered_clients`` and ``refresh_tokens`` are persisted to Postgres (see
+``db.py``) so they survive Railway redeploys.
 """
 
 from __future__ import annotations
@@ -35,17 +36,6 @@ oauth_sessions: dict[str, Entry] = {}
 #   user_id, email, code_challenge, code_challenge_method, redirect_uri, expires_at
 # }
 auth_codes: dict[str, Entry] = {}
-
-# client_id -> {
-#   client_id, client_secret, redirect_uris, client_name, grant_types,
-#   response_types, token_endpoint_auth_method, scope
-# }
-registered_clients: dict[str, Entry] = {}
-
-# refresh_token -> {
-#   user_id, email, client_id, scope, expires_at
-# }
-refresh_tokens: dict[str, Entry] = {}
 
 
 def _is_expired(entry: Entry, now_ts: float, now_dt: datetime) -> bool:
