@@ -16,6 +16,7 @@ import httpx
 import db
 import github
 from auth import current_db_user_id
+from .repos import normalize_repo
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +287,7 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
     status_counts: dict[str, int] = {}
 
     for repo_row in repos:
-        repo_name = repo_row["repo_name"]
+        repo_name = normalize_repo(repo_row["repo_name"])
         try:
             files = await github.list_files(repo_name, "requirements")
             requirements: list[dict[str, Any]] = []

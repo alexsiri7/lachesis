@@ -16,7 +16,11 @@ _GITHUB_URL_RE = re.compile(
 )
 
 
-def _normalize_repo(repo: str) -> str:
+def normalize_repo(repo: str) -> str:
+    """Normalize a GitHub repo identifier to owner/repo format.
+
+    Accepts full URLs (https://github.com/owner/repo) or bare owner/repo strings.
+    """
     repo = repo.strip()
     m = _GITHUB_URL_RE.match(repo)
     if m:
@@ -27,6 +31,10 @@ def _normalize_repo(repo: str) -> str:
     if len(parts) == 2 and parts[0] and parts[1]:
         return repo
     raise ValueError(f"invalid repo format: {repo!r}")
+
+
+# Keep private alias for internal callers
+_normalize_repo = normalize_repo
 
 
 def _require_user_id() -> str:
@@ -50,11 +58,18 @@ async def register_repo(repo: str) -> dict[str, Any]:
 async def unregister_repo(repo: str) -> dict[str, Any]:
     """Unregister a repo from Lachesis tracking."""
     user_id = _require_user_id()
-    db.unregister_repo(user_id, repo)
-    return {"unregistered": repo}
+    normalized = normalize_repo(repo)
+    db.unregister_repo(user_id, normalized)
+    if repo != normalized:
+        # Also purge any stale full-URL rows for the same repo.
+        db.unregister_repo(user_id, repo)
+    return {"unregistered": normalized}
 
 
 async def list_repos() -> list[dict[str, Any]]:
     """List all repos registered with Lachesis."""
     user_id = _require_user_id()
-    return db.list_repos(user_id)
+    rows = db.list_repos(user_id)
+    for row in rows:
+        row["repo_name"] = normalize_repo(row["repo_name"])
+    return rows

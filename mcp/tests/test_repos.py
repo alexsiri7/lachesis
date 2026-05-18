@@ -74,3 +74,22 @@ async def test_list_repos_returns_list(set_user_id: str) -> None:
 async def test_list_repos_raises_when_no_user(clear_user_id: None) -> None:
     with pytest.raises(RuntimeError, match="No DB user ID in request context"):
         await list_repos()
+
+
+@pytest.mark.anyio
+async def test_list_repos_normalizes_url_format_names(set_user_id: str) -> None:
+    rows = [{"id": "r1", "repo_name": "https://github.com/owner/repo", "created_at": "t"}]
+    with patch("tools.repos.db.list_repos", return_value=rows):
+        result = await list_repos()
+    assert result[0]["repo_name"] == "owner/repo"
+
+
+@pytest.mark.anyio
+async def test_unregister_repo_purges_stale_url_row(set_user_id: str) -> None:
+    """Passing a full URL should delete both the normalized row and the stale URL row."""
+    with patch("tools.repos.db.unregister_repo") as mock_unreg:
+        result = await unregister_repo("https://github.com/owner/repo")
+    assert result == {"unregistered": "owner/repo"}
+    assert mock_unreg.call_count == 2
+    mock_unreg.assert_any_call("test-uid", "owner/repo")
+    mock_unreg.assert_any_call("test-uid", "https://github.com/owner/repo")
