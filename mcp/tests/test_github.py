@@ -12,8 +12,11 @@ from pytest_httpx import HTTPXMock
 from github import (
     add_issue_dependency,
     add_to_project,
+    create_branch,
     create_file,
     create_issue,
+    create_pull_request,
+    get_branch_sha,
     get_file,
     list_files,
     update_file,
@@ -109,6 +112,20 @@ async def test_create_file_returns_raw_response(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(json=expected)
     result = await create_file("owner/repo", "req/new.md", "content", "msg")
     assert result == expected
+
+
+async def test_create_file_includes_branch_when_provided(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+    await create_file("owner/repo", "req/new.md", "content", "msg", branch="feature-branch")
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert body["branch"] == "feature-branch"
+
+
+async def test_create_file_omits_branch_when_not_provided(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+    await create_file("owner/repo", "req/new.md", "content", "msg")
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert "branch" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -240,3 +257,67 @@ async def test_add_to_project_logs_graphql_errors(httpx_mock: HTTPXMock, caplog)
     with caplog.at_level(logging.WARNING, logger="github"):
         await add_to_project("PVT_kwDO123", "I_kwDObad")
     assert any("graphql errors" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# get_branch_sha
+# ---------------------------------------------------------------------------
+
+
+async def test_get_branch_sha_returns_sha(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"object": {"sha": "abc123"}})
+    result = await get_branch_sha("owner/repo", "main")
+    assert result == "abc123"
+
+
+async def test_get_branch_sha_raises_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=404)
+    with pytest.raises(FileNotFoundError):
+        await get_branch_sha("owner/repo", "nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# create_branch
+# ---------------------------------------------------------------------------
+
+
+async def test_create_branch_posts_correct_ref(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=201, json={})
+    await create_branch("owner/repo", "lachesis/req-001-my-feat", "abc123")
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert body["ref"] == "refs/heads/lachesis/req-001-my-feat"
+    assert body["sha"] == "abc123"
+
+
+async def test_create_branch_raises_on_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=422, json={"message": "Reference already exists"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await create_branch("owner/repo", "lachesis/req-001-existing", "abc123")
+
+
+# ---------------------------------------------------------------------------
+# create_pull_request
+# ---------------------------------------------------------------------------
+
+
+async def test_create_pull_request_returns_number_and_url(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        status_code=201,
+        json={"number": 7, "html_url": "https://github.com/owner/repo/pull/7"},
+    )
+    result = await create_pull_request(
+        "owner/repo", "title", "body text", "lachesis/req-001-feat", "main"
+    )
+    assert result == {"number": 7, "url": "https://github.com/owner/repo/pull/7"}
+
+
+async def test_create_pull_request_sends_correct_payload(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        status_code=201,
+        json={"number": 1, "html_url": "https://github.com/owner/repo/pull/1"},
+    )
+    await create_pull_request("owner/repo", "My PR", "desc", "feature-branch", "main")
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert body["title"] == "My PR"
+    assert body["head"] == "feature-branch"
+    assert body["base"] == "main"

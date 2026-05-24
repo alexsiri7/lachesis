@@ -608,6 +608,54 @@ async def test_create_requirement_increments_past_highest_id(httpx_mock: HTTPXMo
     assert result["path"] == "requirements/006-new-feature.md"
 
 
+async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTTPXMock) -> None:
+    """On 409 from create_file, creates branch and PR, returns pr_url."""
+    httpx_mock.add_response(json=[])  # list_files → empty
+    httpx_mock.add_response(status_code=409, json={"message": "Protected branch"})  # create_file → 409
+    httpx_mock.add_response(json={"object": {"sha": "deadbeef"}})  # get_branch_sha
+    httpx_mock.add_response(status_code=201, json={})  # create_branch
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
+    httpx_mock.add_response(
+        status_code=201,
+        json={"number": 5, "html_url": "https://github.com/owner/repo/pull/5"},
+    )  # create_pull_request
+
+    result = await create_requirement("owner/repo", "My Feature", "Why", "What")
+
+    assert result["id"] == "001"
+    assert result["path"] == "requirements/001-my-feature.md"
+    assert result["pr_url"] == "https://github.com/owner/repo/pull/5"
+
+
+async def test_create_requirement_no_pr_url_on_direct_write(httpx_mock: HTTPXMock) -> None:
+    """When create_file succeeds directly, pr_url is absent from response."""
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file success
+
+    result = await create_requirement("owner/repo", "Direct Write", "Why", "What")
+
+    assert "pr_url" not in result
+
+
+async def test_create_requirement_409_uses_correct_branch_name(httpx_mock: HTTPXMock) -> None:
+    """Branch name follows lachesis/req-{id}-{slug} pattern."""
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(status_code=409, json={"message": "Protected branch"})
+    httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
+    httpx_mock.add_response(status_code=201, json={})  # create_branch — capture this
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
+    httpx_mock.add_response(
+        status_code=201, json={"number": 1, "html_url": "http://github.com/pr/1"}
+    )
+
+    await create_requirement("owner/repo", "Hello World", "Why", "What")
+
+    # 3rd request (index 2) is get_branch_sha, 4th (index 3) is create_branch
+    create_branch_req = httpx_mock.get_requests()[3]
+    body = json.loads(create_branch_req.content)
+    assert body["ref"] == "refs/heads/lachesis/req-001-hello-world"
+
+
 # ---------------------------------------------------------------------------
 # list_requirements tests
 # ---------------------------------------------------------------------------
