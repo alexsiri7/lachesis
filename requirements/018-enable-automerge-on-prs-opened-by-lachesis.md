@@ -1,8 +1,8 @@
 ---
 created: '2026-05-24'
-github_issue: null
+github_issue: 79
 id: 018
-status: draft
+status: idea
 title: Enable automerge on PRs opened by Lachesis
 updated: '2026-05-24'
 ---
@@ -17,4 +17,4 @@ When Lachesis opens a PR via the branch protection fallback, it immediately enab
 
 ## Issues
 
-_None yet._
+- #79 — Enable automerge and branch deletion on Lachesis-created PRs
