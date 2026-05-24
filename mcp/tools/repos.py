@@ -33,10 +33,6 @@ def normalize_repo(repo: str) -> str:
     raise ValueError(f"invalid repo format: {repo!r}")
 
 
-# Keep private alias for internal callers
-_normalize_repo = normalize_repo
-
-
 def _require_user_id() -> str:
     """Return the authenticated DB user ID or raise."""
     user_id = current_db_user_id.get()
@@ -52,7 +48,7 @@ def _require_user_id() -> str:
 async def register_repo(repo: str) -> dict[str, Any]:
     """Register a repo so Lachesis tracks it."""
     user_id = _require_user_id()
-    return db.register_repo(user_id, _normalize_repo(repo))
+    return db.register_repo(user_id, normalize_repo(repo))
 
 
 async def unregister_repo(repo: str) -> dict[str, Any]:
