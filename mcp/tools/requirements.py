@@ -88,7 +88,13 @@ async def get_requirement(repo: str, id: str) -> str:
 
 
 async def create_requirement(repo: str, title: str, why: str, what: str) -> dict[str, Any]:
-    """Create a new requirement file and return its path and auto-assigned id."""
+    """Create a new requirement file and return its id and path.
+
+    Returns ``{"id": str, "path": str}``.  When the target repo has branch
+    protection on ``main``, the file is committed to a new branch and a pull
+    request is opened automatically; in that case the dict also contains
+    ``"pr_url": str`` with the URL of the created PR.
+    """
     repo = await _resolve_repo(repo)
     # 1. List existing files to determine next ID and detect slug collisions
     files = await github.list_files(repo, "requirements")
@@ -130,9 +136,49 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     )
     content = frontmatter.dumps(post)
 
-    # 6. Create file in GitHub
-    await github.create_file(repo, path, content, f"feat: add requirement {id_str}")
-    return {"id": id_str, "path": path}
+    # 6. Create file in GitHub — with branch protection fallback
+    branch_name = f"lachesis/req-{id_str}-{slug}"
+    pr_url: str | None = None
+    try:
+        await github.create_file(repo, path, content, f"feat: add requirement {id_str}")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 409:
+            raise
+        logger.warning(
+            "create_requirement: 409 on main for repo=%s, falling back to branch+PR",
+            repo,
+        )
+        sha = await github.get_branch_sha(repo, "main")
+        await github.create_branch(repo, branch_name, sha)
+        try:
+            await github.create_file(
+                repo, path, content, f"feat: add requirement {id_str}", branch=branch_name
+            )
+            pr = await github.create_pull_request(
+                repo,
+                title=f"[Lachesis] Add requirement {id_str}: {title}",
+                body=(
+                    f"This pull request was automatically created by Lachesis.\n\n"
+                    f"**Requirement:** {id_str} — {title}\n"
+                    f"**File:** `{path}`\n\n"
+                    f"Review and merge to add this requirement to `main`."
+                ),
+                head=branch_name,
+                base="main",
+            )
+        except Exception:
+            logger.warning(
+                "create_requirement: fallback failed mid-flight repo=%s branch=%s; "
+                "branch may be orphaned",
+                repo,
+                branch_name,
+            )
+            raise
+        pr_url = pr["url"]
+    result: dict[str, Any] = {"id": id_str, "path": path}
+    if pr_url is not None:
+        result["pr_url"] = pr_url
+    return result
 
 
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
@@ -293,13 +339,10 @@ async def create_github_issues(
                 blocker_id = number_to_id[blocker_number]
             else:
                 # Fetch from GitHub — pre-existing issue
-                async with httpx.AsyncClient(timeout=10.0) as http:
-                    resp = await http.get(
-                        f"https://api.github.com/repos/{repo}/issues/{blocker_number}",
-                        headers=github._headers(),
-                    )
-                resp.raise_for_status()
-                blocker_id = resp.json()["id"]
+                blocker = await github.get_issue(repo, blocker_number)
+                if blocker is None:
+                    raise ValueError(f"Blocker issue #{blocker_number} not found in {repo!r}")
+                blocker_id = blocker["id"]
             await github.add_issue_dependency(repo, result["number"], blocker_id)
             result["blocked_by"].append(blocker_number)
 

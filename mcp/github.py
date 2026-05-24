@@ -79,16 +79,22 @@ async def get_file(repo: str, path: str) -> tuple[str, str]:
     return content, data["sha"]
 
 
-async def create_file(repo: str, path: str, content: str, message: str) -> dict[str, Any]:
-    """Create a new file at *path* in *repo*. Returns the raw GitHub Contents API response."""
+async def create_file(repo: str, path: str, content: str, message: str, *, branch: str | None = None) -> dict[str, Any]:
+    """Create a new file at *path* in *repo*. Returns the raw GitHub Contents API response.
+
+    Pass *branch* to target a specific branch; defaults to the repo's default branch.
+    """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    payload: dict[str, Any] = {"message": message, "content": encoded}
+    if branch:
+        payload["branch"] = branch
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.put(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
-            json={"message": message, "content": encoded},
+            json=payload,
         )
-    if not resp.is_success:
+    if not resp.is_success and resp.status_code != 409:
         logger.warning(
             "github.create_file failed repo=%s path=%s status=%s",
             repo,
@@ -97,6 +103,65 @@ async def create_file(repo: str, path: str, content: str, message: str) -> dict[
         )
     resp.raise_for_status()
     return resp.json()  # type: ignore[no-any-return]
+
+
+async def get_branch_sha(repo: str, branch: str) -> str:
+    """Return the HEAD SHA of *branch*. Raises :class:`FileNotFoundError` on 404."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/git/ref/heads/{branch}",
+            headers=_headers(),
+        )
+    if resp.status_code == 404:
+        raise FileNotFoundError(f"Branch {branch!r} not found in {repo!r}")
+    if not resp.is_success:
+        logger.warning(
+            "github.get_branch_sha failed repo=%s branch=%s status=%s",
+            repo,
+            branch,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return data["object"]["sha"]  # type: ignore[no-any-return]
+
+
+async def create_branch(repo: str, branch_name: str, sha: str) -> None:
+    """Create a new branch pointing at *sha*."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            f"{_BASE_URL}/repos/{repo}/git/refs",
+            headers=_headers(),
+            json={"ref": f"refs/heads/{branch_name}", "sha": sha},
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.create_branch failed repo=%s branch=%s status=%s",
+            repo,
+            branch_name,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+
+
+async def create_pull_request(repo: str, title: str, body: str, head: str, base: str) -> dict[str, Any]:
+    """Create a pull request and return ``{number, url}``."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            f"{_BASE_URL}/repos/{repo}/pulls",
+            headers=_headers(),
+            json={"title": title, "body": body, "head": head, "base": base},
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.create_pull_request failed repo=%s head=%s status=%s",
+            repo,
+            head,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return {"number": data["number"], "url": data["html_url"]}
 
 
 async def update_file(repo: str, path: str, content: str, sha: str, message: str) -> dict[str, Any]:
@@ -191,6 +256,7 @@ async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
     data = resp.json()
     return {
         "number": data["number"],
+        "id": data["id"],
         "title": data["title"],
         "state": data["state"],  # "open" | "closed"
         "url": data["html_url"],
