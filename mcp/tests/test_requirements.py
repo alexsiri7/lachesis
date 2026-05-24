@@ -486,7 +486,7 @@ async def test_create_github_issues_fetches_external_blocker(httpx_mock: HTTPXMo
     httpx_mock.add_response(
         method="GET",
         url="https://api.github.com/repos/owner/repo/issues/3",
-        json={"id": 999, "number": 3, "title": "Old"},
+        json={"id": 999, "number": 3, "title": "Old", "state": "open", "html_url": "https://github.com/owner/repo/issues/3"},
     )
     # Dependency POST
     httpx_mock.add_response(

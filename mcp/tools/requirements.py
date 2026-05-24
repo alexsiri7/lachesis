@@ -339,13 +339,10 @@ async def create_github_issues(
                 blocker_id = number_to_id[blocker_number]
             else:
                 # Fetch from GitHub — pre-existing issue
-                async with httpx.AsyncClient(timeout=10.0) as http:
-                    resp = await http.get(
-                        f"https://api.github.com/repos/{repo}/issues/{blocker_number}",
-                        headers=github._headers(),
-                    )
-                resp.raise_for_status()
-                blocker_id = resp.json()["id"]
+                blocker = await github.get_issue(repo, blocker_number)
+                if blocker is None:
+                    raise ValueError(f"Blocker issue #{blocker_number} not found in {repo!r}")
+                blocker_id = blocker["id"]
             await github.add_issue_dependency(repo, result["number"], blocker_id)
             result["blocked_by"].append(blocker_number)
 

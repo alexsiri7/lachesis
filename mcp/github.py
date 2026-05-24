@@ -256,6 +256,7 @@ async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
     data = resp.json()
     return {
         "number": data["number"],
+        "id": data["id"],
         "title": data["title"],
         "state": data["state"],  # "open" | "closed"
         "url": data["html_url"],
