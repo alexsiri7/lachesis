@@ -1,8 +1,8 @@
 ---
 created: '2026-05-24'
-github_issue: null
+github_issue: 74
 id: '016'
-status: draft
+status: idea
 title: get_initial_instructions tool — deliver collaboration guidelines to Claude
 updated: '2026-05-24'
 ---
@@ -17,4 +17,5 @@ A `get_initial_instructions` tool exists on the Lachesis MCP server. It returns 
 
 ## Issues
 
-_None yet._
+- #74 — Implement get_initial_instructions MCP tool
+- #75 — Document get_initial_instructions in Lachesis README
