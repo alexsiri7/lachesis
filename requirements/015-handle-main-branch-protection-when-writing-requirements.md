@@ -2,7 +2,7 @@
 created: '2026-05-24'
 github_issue: 72
 id: '015'
-status: idea
+status: done
 title: Handle main branch protection when writing requirements
 updated: '2026-05-24'
 ---
