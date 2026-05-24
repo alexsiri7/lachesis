@@ -88,7 +88,13 @@ async def get_requirement(repo: str, id: str) -> str:
 
 
 async def create_requirement(repo: str, title: str, why: str, what: str) -> dict[str, Any]:
-    """Create a new requirement file and return its path and auto-assigned id."""
+    """Create a new requirement file and return its id and path.
+
+    Returns ``{"id": str, "path": str}``.  When the target repo has branch
+    protection on ``main``, the file is committed to a new branch and a pull
+    request is opened automatically; in that case the dict also contains
+    ``"pr_url": str`` with the URL of the created PR.
+    """
     repo = await _resolve_repo(repo)
     # 1. List existing files to determine next ID and detect slug collisions
     files = await github.list_files(repo, "requirements")
@@ -144,21 +150,30 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
         )
         sha = await github.get_branch_sha(repo, "main")
         await github.create_branch(repo, branch_name, sha)
-        await github.create_file(
-            repo, path, content, f"feat: add requirement {id_str}", branch=branch_name
-        )
-        pr = await github.create_pull_request(
-            repo,
-            title=f"[Lachesis] Add requirement {id_str}: {title}",
-            body=(
-                f"This pull request was automatically created by Lachesis.\n\n"
-                f"**Requirement:** {id_str} — {title}\n"
-                f"**File:** `{path}`\n\n"
-                f"Review and merge to add this requirement to `main`."
-            ),
-            head=branch_name,
-            base="main",
-        )
+        try:
+            await github.create_file(
+                repo, path, content, f"feat: add requirement {id_str}", branch=branch_name
+            )
+            pr = await github.create_pull_request(
+                repo,
+                title=f"[Lachesis] Add requirement {id_str}: {title}",
+                body=(
+                    f"This pull request was automatically created by Lachesis.\n\n"
+                    f"**Requirement:** {id_str} — {title}\n"
+                    f"**File:** `{path}`\n\n"
+                    f"Review and merge to add this requirement to `main`."
+                ),
+                head=branch_name,
+                base="main",
+            )
+        except Exception:
+            logger.warning(
+                "create_requirement: fallback failed mid-flight repo=%s branch=%s; "
+                "branch may be orphaned",
+                repo,
+                branch_name,
+            )
+            raise
         pr_url = pr["url"]
     result: dict[str, Any] = {"id": id_str, "path": path}
     if pr_url is not None:

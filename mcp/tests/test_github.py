@@ -321,3 +321,9 @@ async def test_create_pull_request_sends_correct_payload(httpx_mock: HTTPXMock) 
     assert body["title"] == "My PR"
     assert body["head"] == "feature-branch"
     assert body["base"] == "main"
+
+
+async def test_create_pull_request_raises_on_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=422, json={"message": "Validation Failed"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await create_pull_request("owner/repo", "title", "body", "branch", "main")

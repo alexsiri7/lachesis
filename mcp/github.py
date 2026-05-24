@@ -80,7 +80,10 @@ async def get_file(repo: str, path: str) -> tuple[str, str]:
 
 
 async def create_file(repo: str, path: str, content: str, message: str, *, branch: str | None = None) -> dict[str, Any]:
-    """Create a new file at *path* in *repo*. Returns the raw GitHub Contents API response."""
+    """Create a new file at *path* in *repo*. Returns the raw GitHub Contents API response.
+
+    Pass *branch* to target a specific branch; defaults to the repo's default branch.
+    """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     payload: dict[str, Any] = {"message": message, "content": encoded}
     if branch:
@@ -91,7 +94,7 @@ async def create_file(repo: str, path: str, content: str, message: str, *, branc
             headers=_headers(),
             json=payload,
         )
-    if not resp.is_success:
+    if not resp.is_success and resp.status_code != 409:
         logger.warning(
             "github.create_file failed repo=%s path=%s status=%s",
             repo,
@@ -151,8 +154,9 @@ async def create_pull_request(repo: str, title: str, body: str, head: str, base:
         )
     if not resp.is_success:
         logger.warning(
-            "github.create_pull_request failed repo=%s status=%s",
+            "github.create_pull_request failed repo=%s head=%s status=%s",
             repo,
+            head,
             resp.status_code,
         )
     resp.raise_for_status()

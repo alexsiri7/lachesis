@@ -8,6 +8,7 @@ from datetime import date
 from unittest.mock import patch
 
 import frontmatter
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -625,6 +626,23 @@ async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTT
     assert result["id"] == "001"
     assert result["path"] == "requirements/001-my-feature.md"
     assert result["pr_url"] == "https://github.com/owner/repo/pull/5"
+    # request order: [0]=list_files, [1]=create_file(409),
+    #                [2]=get_branch_sha, [3]=create_branch, [4]=create_file(branch), [5]=create_pr
+    branch_create_file_req = httpx_mock.get_requests()[4]
+    body = json.loads(branch_create_file_req.content)
+    assert body["branch"] == "lachesis/req-001-my-feature"
+
+
+async def test_create_requirement_non_409_error_propagates(httpx_mock: HTTPXMock) -> None:
+    """Non-409 errors from create_file must propagate, not trigger the branch fallback."""
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})  # create_file → 403
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await create_requirement("owner/repo", "My Feature", "Why", "What")
+    assert exc_info.value.response.status_code == 403
+    # Only 2 requests made — no branch/PR calls
+    assert len(httpx_mock.get_requests()) == 2
 
 
 async def test_create_requirement_no_pr_url_on_direct_write(httpx_mock: HTTPXMock) -> None:
