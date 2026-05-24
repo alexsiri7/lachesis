@@ -1,8 +1,8 @@
 ---
 created: '2026-05-24'
-github_issue: null
+github_issue: 80
 id: 019
-status: draft
+status: idea
 title: Read requirements from open Lachesis PRs as well as main
 updated: '2026-05-24'
 ---
@@ -17,4 +17,5 @@ When listing or fetching requirements, Lachesis checks both main and any open PR
 
 ## Issues
 
-_None yet._
+- #80 — Include requirements from open Lachesis PRs in list and get operations
+- #81 — Allow link_issues to update requirements in open PR branches
