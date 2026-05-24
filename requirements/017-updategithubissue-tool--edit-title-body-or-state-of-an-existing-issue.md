@@ -1,8 +1,8 @@
 ---
 created: '2026-05-24'
-github_issue: null
+github_issue: 76
 id: '017'
-status: draft
+status: idea
 title: update_github_issue tool — edit title, body, or state of an existing issue
 updated: '2026-05-24'
 ---
@@ -17,4 +17,4 @@ An `update_github_issue(repo, issueNumber, fields)` tool exists on the Lachesis 
 
 ## Issues
 
-_None yet._
+- #76 — Implement update_github_issue MCP tool
