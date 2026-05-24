@@ -1,8 +1,8 @@
 ---
 created: '2026-05-24'
-github_issue: null
+github_issue: 72
 id: '015'
-status: draft
+status: idea
 title: Handle main branch protection when writing requirements
 updated: '2026-05-24'
 ---
@@ -17,4 +17,5 @@ When Lachesis cannot write directly to main due to branch protection rules, it a
 
 ## Issues
 
-_None yet._
+- #72 — Detect 409 on main and fall back to branch + PR flow
+- #73 — Include PR URL in create_requirement response when branch flow is used
