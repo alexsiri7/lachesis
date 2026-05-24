@@ -1,8 +1,8 @@
 ---
 created: '2026-05-24'
-github_issue: null
+github_issue: 70
 id: '014'
-status: draft
+status: idea
 title: OAuth tokens must survive app restarts
 updated: '2026-05-24'
 ---
@@ -17,4 +17,5 @@ After an app restart, the Lachesis MCP server resumes serving requests using pre
 
 ## Issues
 
-_None yet._
+- #70 — Persist OAuth tokens to durable storage instead of in-memory
+- #71 — Implement proactive token refresh so stored tokens don't expire while idle
