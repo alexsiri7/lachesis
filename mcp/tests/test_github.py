@@ -319,6 +319,7 @@ async def test_create_pull_request_sends_correct_payload(httpx_mock: HTTPXMock) 
     await create_pull_request("owner/repo", "My PR", "desc", "feature-branch", "main")
     body = json.loads(httpx_mock.get_requests()[0].content)
     assert body["title"] == "My PR"
+    assert body["body"] == "desc"
     assert body["head"] == "feature-branch"
     assert body["base"] == "main"
 
