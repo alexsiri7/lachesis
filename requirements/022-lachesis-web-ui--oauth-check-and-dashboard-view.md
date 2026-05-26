@@ -1,8 +1,8 @@
 ---
 created: '2026-05-26'
-github_issue: null
+github_issue: 86
 id: '022'
-status: draft
+status: idea
 title: Lachesis web UI — OAuth check and dashboard view
 updated: '2026-05-26'
 ---
@@ -17,4 +17,5 @@ The Lachesis web UI checks OAuth state on load. If the user is not authenticated
 
 ## Issues
 
-_None yet._
+- #86 — Web UI: OAuth check and connect flow on load
+- #87 — Web UI: render dashboard view matching get_dashboard output
