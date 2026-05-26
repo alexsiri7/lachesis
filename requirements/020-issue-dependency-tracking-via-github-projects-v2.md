@@ -1,8 +1,8 @@
 ---
 created: '2026-05-26'
-github_issue: null
+github_issue: 82
 id: '020'
-status: draft
+status: idea
 title: Issue dependency tracking via GitHub Projects v2
 updated: '2026-05-26'
 ---
@@ -17,4 +17,6 @@ Lachesis gains two capabilities: `add_dependency(repo, issueNumber, blockedByIss
 
 ## Issues
 
-_None yet._
+- #82 — Wire up blocked_by in create_github_issues to GitHub Projects v2 dependencies
+- #83 — Implement add_dependency MCP tool
+- #84 — Implement get_dependencies MCP tool
