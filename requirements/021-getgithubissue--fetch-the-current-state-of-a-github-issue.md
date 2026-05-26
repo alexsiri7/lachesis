@@ -1,8 +1,8 @@
 ---
 created: '2026-05-26'
-github_issue: null
+github_issue: 85
 id: '021'
-status: draft
+status: idea
 title: get_github_issue — fetch the current state of a GitHub issue
 updated: '2026-05-26'
 ---
@@ -17,4 +17,4 @@ A `get_github_issue(repo, issueNumber)` tool exists on the Lachesis MCP server. 
 
 ## Issues
 
-_None yet._
+- #85 — Implement get_github_issue MCP tool
