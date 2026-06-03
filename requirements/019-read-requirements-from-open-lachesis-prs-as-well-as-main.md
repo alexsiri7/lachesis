@@ -4,7 +4,7 @@ github_issue: 80
 id: 019
 status: idea
 title: Read requirements from open Lachesis PRs as well as main
-updated: '2026-05-24'
+updated: '2026-06-03'
 ---
 
 ## Why
@@ -17,5 +17,6 @@ When listing or fetching requirements, Lachesis checks both main and any open PR
 
 ## Issues
 
-- #80 — Include requirements from open Lachesis PRs in list and get operations
-- #81 — Allow link_issues to update requirements in open PR branches
+- #80 — Read requirements from open Lachesis PRs
+- #90 — list_requirements and get_requirement resolve across open PR branches
+- #91 — link_issues writes to the branch where the requirement lives
