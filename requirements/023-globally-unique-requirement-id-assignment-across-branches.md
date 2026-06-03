@@ -1,8 +1,8 @@
 ---
 created: '2026-06-03'
-github_issue: null
+github_issue: 89
 id: '023'
-status: draft
+status: idea
 title: Globally unique requirement ID assignment across branches
 updated: '2026-06-03'
 ---
@@ -17,4 +17,4 @@ When assigning an ID to a new requirement, Lachesis checks for existing requirem
 
 ## Issues
 
-_None yet._
+- #89 — Scan open PR branches for existing requirement IDs before assigning next ID
