@@ -246,17 +246,13 @@ def _check_refresh_token_health() -> None:
         return
     now = datetime.now(UTC)
     buffer = timedelta(days=_REFRESH_TOKEN_WARN_DAYS)
-    expiring_soon = [
-        t
-        for t in tokens
-        if (
-            t["expires_at"].replace(tzinfo=UTC)
-            if t["expires_at"].tzinfo is None
-            else t["expires_at"]
-        )
-        - now
-        < buffer
-    ]
+    expiring_soon = []
+    for t in tokens:
+        exp_dt = t["expires_at"]
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=UTC)
+        if exp_dt - now < buffer:
+            expiring_soon.append(t)
     if expiring_soon:
         logger.warning(
             "startup check: %d refresh token(s) expiring within %d days",
@@ -360,38 +356,38 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
 
                     await app(scope, receive, _send_with_new_token)
                     return
-                else:
-                    # Expired JWT + no valid refresh token → actionable 401
-                    logger.warning(
-                        "middleware: expired token with no valid refresh token for sub=%s", user_id
-                    )
-                    base = settings.mcp_base_url.rstrip("/")
-                    resource_uri = _RESOURCE_METADATA_URI.format(base=base)
-                    body = json.dumps(
-                        {
-                            "error": "token_expired",
-                            "description": (
-                                "Access token has expired and no valid refresh token was found. "
-                                "Please re-authenticate via the OAuth flow."
-                            ),
-                        }
-                    ).encode()
-                    await send(
-                        {
-                            "type": "http.response.start",
-                            "status": 401,
-                            "headers": [
-                                [b"content-type", b"application/json"],
-                                [
-                                    b"www-authenticate",
-                                    f'Bearer realm="lachesis" error="invalid_token" '
-                                    f'resource_metadata="{resource_uri}"'.encode(),
-                                ],
+
+                # Expired JWT + no valid refresh token → actionable 401
+                logger.warning(
+                    "middleware: expired token with no valid refresh token for sub=%s", user_id
+                )
+                base = settings.mcp_base_url.rstrip("/")
+                resource_uri = _RESOURCE_METADATA_URI.format(base=base)
+                body = json.dumps(
+                    {
+                        "error": "token_expired",
+                        "description": (
+                            "Access token has expired and no valid refresh token was found. "
+                            "Please re-authenticate via the OAuth flow."
+                        ),
+                    }
+                ).encode()
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [
+                            [b"content-type", b"application/json"],
+                            [
+                                b"www-authenticate",
+                                f'Bearer realm="lachesis" error="invalid_token" '
+                                f'resource_metadata="{resource_uri}"'.encode(),
                             ],
-                        }
-                    )
-                    await send({"type": "http.response.body", "body": body})
-                    return
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": body})
+                return
 
         # No token or completely invalid token → generic 401
         base = settings.mcp_base_url.rstrip("/")

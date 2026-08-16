@@ -399,7 +399,7 @@ def seeded_auth_code() -> str:
 async def test_token_endpoint_authorization_code_calls_upsert_refresh_token(
     app: object, seeded_auth_code: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_db.upsert_refresh_token is called with user_id when issuing tokens via authorization_code."""
+    """_db.upsert_refresh_token is called with user_id when issuing tokens via authorization_code."""  # noqa: E501
     monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
     verifier, _ = _pkce_pair()
     with patch("oauth._db.upsert_refresh_token") as mock_upsert:
