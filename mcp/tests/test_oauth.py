@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -354,3 +356,29 @@ async def test_callback_upsert_failure_is_nonfatal(
 
     # Must still redirect even when Supabase is down
     assert resp.status_code == 302
+
+
+# ---------------------------------------------------------------------------
+# oauth_state._is_expired unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_is_expired_returns_false_for_future_epoch() -> None:
+    from oauth_state import _is_expired
+
+    entry = {"expires_at": time.time() + 3600}
+    assert _is_expired(entry, time.time(), datetime.now(UTC)) is False
+
+
+def test_is_expired_returns_true_for_past_epoch() -> None:
+    from oauth_state import _is_expired
+
+    entry = {"expires_at": time.time() - 1}
+    assert _is_expired(entry, time.time(), datetime.now(UTC)) is True
+
+
+def test_is_expired_handles_integer_epoch() -> None:
+    from oauth_state import _is_expired
+
+    entry = {"expires_at": int(time.time()) - 1}  # integer, not float
+    assert _is_expired(entry, time.time(), datetime.now(UTC)) is True

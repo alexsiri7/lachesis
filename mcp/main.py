@@ -65,8 +65,7 @@ mcp: FastMCP = FastMCP(
 # ---------------------------------------------------------------------------
 # OAuth 2.1 + discovery routes
 # ---------------------------------------------------------------------------
-from oauth import create_jwt  # noqa: E402
-from oauth import register_routes as _register_oauth_routes  # noqa: E402
+from oauth import create_jwt, register_routes as _register_oauth_routes  # noqa: E402
 
 _register_oauth_routes(mcp)
 
@@ -281,7 +280,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
         # Run startup health check once on first HTTP request
         if not _startup_check_done:
             _startup_check_done = True
-            _check_refresh_token_health()
+            await asyncio.get_running_loop().run_in_executor(None, _check_refresh_token_health)
 
         headers = dict(scope.get("headers", []))
         auth_header = headers.get(b"authorization", b"").decode("ascii", errors="replace")
@@ -328,6 +327,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
             if decoded is not None:
                 user_id, email, lachesis_uid = decoded
                 # Look up a valid refresh token for this user
+                rt_lookup_failed = False
                 try:
                     rt = _db.get_refresh_token_by_user_id(user_id)
                 except Exception as exc:
@@ -335,6 +335,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                         "middleware: refresh token lookup failed for sub=%s: %s", user_id, exc
                     )
                     rt = None
+                    rt_lookup_failed = True
                 if rt is not None:
                     _rt_token, rt_data = rt
                     if not lachesis_uid:
@@ -370,15 +371,17 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     return
                 else:
                     # Expired JWT + no valid refresh token → actionable 401
-                    logger.warning(
-                        "middleware: expired token with no valid refresh token for sub=%s", user_id
-                    )
+                    if not rt_lookup_failed:
+                        logger.warning(
+                            "middleware: expired token with no valid refresh token for sub=%s",
+                            user_id,
+                        )
                     base = settings.mcp_base_url.rstrip("/")
                     resource_uri = _RESOURCE_METADATA_URI.format(base=base)
                     body = json.dumps({
                         "error": "token_expired",
                         "description": (
-                            "Access token has expired and no valid refresh token was found. "
+                            "Access token has expired. "
                             "Please re-authenticate via the OAuth flow."
                         ),
                     }).encode()

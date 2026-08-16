@@ -1,8 +1,9 @@
 """Bearer token auth for the Lachesis MCP server.
 
-Single-user: token must be a valid HS256 JWT whose 'sub' matches the
-ALLOWED_EMAIL env var. The resolved user_id is stored in a ContextVar
-populated by the ASGI middleware in main.py.
+Single-user: token must be a valid HS256 JWT signed with SECRET_KEY. The
+'email' claim is checked against the ALLOWED_EMAIL env var; 'sub' is used
+as the internal user identity (google_sub). The resolved user_id is stored
+in a ContextVar populated by the ASGI middleware in main.py.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def decode_jwt_ignoring_expiry(token: str) -> tuple[str, str, str | None] | None
 
     Used to extract user identity from an expired access token so the middleware
     can attempt a proactive refresh using a stored Lachesis refresh token.
-    Returns (google_sub, email, lachesis_uid) or None if otherwise invalid.
+    Returns (google_sub, email, lachesis_uid | None) or None if otherwise invalid.
     """
     if not settings.secret_key:
         return None

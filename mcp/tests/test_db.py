@@ -91,3 +91,38 @@ def test_engine_raises_if_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("db.settings.database_url", "")
     with pytest.raises(RuntimeError, match="not configured"):
         db._engine()
+
+
+def test_get_refresh_token_by_user_id_returns_most_recent() -> None:
+    row = {"token": "rt-abc", "data": {"user_id": "sub-123", "lachesis_uid": "uid-1"}}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.get_refresh_token_by_user_id("sub-123")
+    assert result == ("rt-abc", {"user_id": "sub-123", "lachesis_uid": "uid-1"})
+
+
+def test_get_refresh_token_by_user_id_returns_none_when_not_found() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        result = db.get_refresh_token_by_user_id("unknown-sub")
+    assert result is None
+
+
+def test_list_active_refresh_tokens_returns_list() -> None:
+    from datetime import UTC, datetime
+
+    expires = datetime.now(UTC)
+    row = {"token": "rt-xyz", "data": {"user_id": "sub-1"}, "expires_at": expires}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.list_active_refresh_tokens()
+    assert len(result) == 1
+    assert result[0]["token"] == "rt-xyz"
+    assert result[0]["expires_at"] == expires
+
+
+def test_list_active_refresh_tokens_returns_empty_list() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        result = db.list_active_refresh_tokens()
+    assert result == []

@@ -193,3 +193,93 @@ def test_startup_check_logs_info_when_healthy(
         with caplog.at_level(logging.INFO):
             _check_refresh_token_health()
     assert "all healthy" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_expired_token_with_db_error_returns_401(app: object) -> None:
+    """DB error during refresh lookup should return 401 without a redundant second warning."""
+    token = _make_expired_jwt(lachesis_uid="db-uuid-123")
+    with patch(
+        "main._db.get_refresh_token_by_user_id",
+        side_effect=Exception("db unavailable"),
+    ):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            resp = await client.get("/mcp", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+    assert resp.json()["error"] == "token_expired"
+
+
+@pytest.mark.asyncio
+async def test_startup_check_runs_once_on_first_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the startup health check fires on first HTTP request but not on subsequent ones."""
+    monkeypatch.setattr("main._startup_check_done", False)
+
+    call_count = 0
+
+    def _mock_health_check() -> None:
+        nonlocal call_count
+        call_count += 1
+
+    monkeypatch.setattr("main._check_refresh_token_health", _mock_health_check)
+
+    token = _make_valid_jwt()
+    app = _make_test_app()
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),  # type: ignore[arg-type]
+        base_url="http://test",
+    ) as client:
+        await client.get("/mcp", headers={"Authorization": f"Bearer {token}"})
+        await client.get("/mcp", headers={"Authorization": f"Bearer {token}"})
+
+    assert call_count == 1, f"Expected health check to run once, ran {call_count} times"
+
+
+@pytest.mark.asyncio
+async def test_expired_token_without_lachesis_uid_uses_refresh_token_data(
+    app: object,
+) -> None:
+    """lachesis_uid absent from expired JWT should be sourced from refresh token data."""
+    token = _make_expired_jwt(lachesis_uid=None)  # no lachesis_uid in JWT
+    rt_data = ("rt-token-abc", {"user_id": "google-sub", "lachesis_uid": "db-from-rt"})
+    with patch("main._db.get_refresh_token_by_user_id", return_value=rt_data):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            resp = await client.get(
+                "/mcp",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert resp.status_code == 200
+    new_token = resp.headers["x-lachesis-access-token"]
+    payload = jose_jwt.decode(new_token, SECRET, algorithms=["HS256"])
+    assert payload.get("lachesis_uid") == "db-from-rt"
+
+
+@pytest.mark.asyncio
+async def test_expired_token_upserts_user_when_no_lachesis_uid_anywhere(
+    app: object,
+) -> None:
+    """When lachesis_uid is absent from both JWT and RT data, upsert_user is called."""
+    token = _make_expired_jwt(lachesis_uid=None)
+    rt_data = ("rt-token-abc", {"user_id": "google-sub"})  # no lachesis_uid in RT data
+    db_user = {"id": "fresh-db-id", "google_id": "google-sub", "email": "user@example.com"}
+    with (
+        patch("main._db.get_refresh_token_by_user_id", return_value=rt_data),
+        patch("main._db.upsert_user", return_value=db_user) as mock_upsert,
+    ):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            resp = await client.get(
+                "/mcp",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert resp.status_code == 200
+    mock_upsert.assert_called_once_with("google-sub", "user@example.com")
