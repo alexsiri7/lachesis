@@ -31,9 +31,7 @@ async def list_files(repo: str, path: str, *, branch: str | None = None) -> list
     If *path* resolves to a single file rather than a directory, returns a
     one-element list (GitHub Contents API returns a dict in that case).
     """
-    params: dict[str, str] = {}
-    if branch:
-        params["ref"] = branch
+    params = {"ref": branch} if branch else {}
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
@@ -60,9 +58,7 @@ async def get_file(repo: str, path: str, *, branch: str | None = None) -> tuple[
 
     Pass *branch* to target a specific branch; defaults to the repo's default branch.
     """
-    params: dict[str, str] = {}
-    if branch:
-        params["ref"] = branch
+    params = {"ref": branch} if branch else {}
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",

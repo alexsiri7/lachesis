@@ -121,9 +121,8 @@ async def get_requirement(repo: str, id: str) -> str:
             id,
             repo,
         )
-        lachesis_prs = await github.list_lachesis_prs(repo)
-        for pr_info in lachesis_prs:
-            branch = pr_info["branch"]
+        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
+        if branch is not None:
             pr_files = await github.list_files(repo, "requirements", branch=branch)
             pr_matching = [f for f in pr_files if f["name"].startswith(f"{id}-")]
             if pr_matching:
