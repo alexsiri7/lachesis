@@ -163,7 +163,7 @@ async def create_branch(repo: str, branch_name: str, sha: str) -> None:
 async def create_pull_request(
     repo: str, title: str, body: str, head: str, base: str
 ) -> dict[str, Any]:
-    """Create a pull request and return ``{number, url}``."""
+    """Create a pull request and return ``{number, url, node_id}``."""
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/pulls",

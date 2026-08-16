@@ -236,14 +236,21 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
                 elif repo_settings["allow_merge_commit"]:
                     merge_method = "MERGE"
                 else:
-                    merge_method = "REBASE"
-                await github.enable_automerge(pr["node_id"], merge_method)
-                if not repo_settings["delete_branch_on_merge"]:
                     logger.info(
-                        "create_requirement: automerge enabled but delete_branch_on_merge "
-                        "is disabled on repo=%s — branch will not auto-delete",
+                        "create_requirement: only rebase merge available on "
+                        "repo=%s — skipping automerge",
                         repo,
                     )
+                    merge_method = None
+
+                if merge_method is not None:
+                    await github.enable_automerge(pr["node_id"], merge_method)
+                    if not repo_settings["delete_branch_on_merge"]:
+                        logger.info(
+                            "create_requirement: automerge enabled but delete_branch_on_merge "
+                            "is disabled on repo=%s — branch will not auto-delete",
+                            repo,
+                        )
             else:
                 logger.info(
                     "create_requirement: automerge not available on repo=%s "
