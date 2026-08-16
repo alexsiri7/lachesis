@@ -683,8 +683,14 @@ async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTT
     httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
     httpx_mock.add_response(
         status_code=201,
-        json={"number": 5, "html_url": "https://github.com/owner/repo/pull/5"},
+        json={"number": 5, "html_url": "https://github.com/owner/repo/pull/5", "node_id": "PR_abc"},
     )  # create_pull_request
+    httpx_mock.add_response(
+        json={"allow_auto_merge": True, "allow_squash_merge": True, "delete_branch_on_merge": True}
+    )  # get_repo_settings
+    httpx_mock.add_response(
+        json={"data": {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "2026-01-01"}}}}}
+    )  # GraphQL enable_automerge
 
     result = await create_requirement("owner/repo", "My Feature", "Why", "What")
 
@@ -692,10 +698,117 @@ async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTT
     assert result["path"] == "requirements/001-my-feature.md"
     assert result["pr_url"] == "https://github.com/owner/repo/pull/5"
     # request order: [0]=list_files, [1]=create_file(409),
-    #                [2]=get_branch_sha, [3]=create_branch, [4]=create_file(branch), [5]=create_pr
+    #                [2]=get_branch_sha, [3]=create_branch, [4]=create_file(branch),
+    #                [5]=create_pr, [6]=get_repo_settings, [7]=enable_automerge
     branch_create_file_req = httpx_mock.get_requests()[4]
     body = json.loads(branch_create_file_req.content)
     assert body["branch"] == "lachesis/req-001-my-feature"
+
+
+async def test_create_requirement_automerge_enabled_when_available(httpx_mock: HTTPXMock) -> None:
+    """When repo allows automerge and squash, enablePullRequestAutoMerge is called."""
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(status_code=409, json={"message": "Protected"})
+    httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
+    httpx_mock.add_response(status_code=201, json={})  # create_branch
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
+    httpx_mock.add_response(
+        status_code=201,
+        json={"number": 5, "html_url": "https://github.com/o/r/pull/5", "node_id": "PR_abc"},
+    )  # create_pull_request
+    httpx_mock.add_response(
+        json={"allow_auto_merge": True, "allow_squash_merge": True, "delete_branch_on_merge": True}
+    )  # get_repo_settings
+    httpx_mock.add_response(
+        json={"data": {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "2026-01-01"}}}}}
+    )  # GraphQL
+
+    result = await create_requirement("owner/repo", "My Feature", "Why", "What")
+
+    assert result["pr_url"] == "https://github.com/o/r/pull/5"
+    # Verify GraphQL request used SQUASH merge method
+    graphql_req = httpx_mock.get_requests()[7]  # 8th request
+    body = json.loads(graphql_req.content)
+    assert body["variables"]["mergeMethod"] == "SQUASH"
+    assert body["variables"]["pullRequestId"] == "PR_abc"
+
+
+async def test_create_requirement_automerge_falls_back_gracefully_when_disabled(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """When repo has allow_auto_merge=False, returns pr_url without error."""
+    httpx_mock.add_response(json=[])
+    httpx_mock.add_response(status_code=409, json={"message": "Protected"})
+    httpx_mock.add_response(json={"object": {"sha": "abc"}})
+    httpx_mock.add_response(status_code=201, json={})
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+    httpx_mock.add_response(
+        status_code=201,
+        json={"number": 5, "html_url": "https://github.com/o/r/pull/5", "node_id": "PR_abc"},
+    )
+    httpx_mock.add_response(
+        json={"allow_auto_merge": False, "allow_squash_merge": True, "delete_branch_on_merge": False}
+    )  # get_repo_settings — automerge disabled
+
+    result = await create_requirement("owner/repo", "My Feature", "Why", "What")
+
+    assert result["pr_url"] == "https://github.com/o/r/pull/5"
+    # Only 7 requests — no GraphQL mutation sent
+    assert len(httpx_mock.get_requests()) == 7
+
+
+async def test_create_requirement_automerge_exception_falls_back_to_pr_url(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """If get_repo_settings raises (HTTP 500), pr_url is still returned (graceful fallback)."""
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(status_code=409, json={"message": "Protected"})
+    httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
+    httpx_mock.add_response(status_code=201, json={})  # create_branch
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
+    httpx_mock.add_response(
+        status_code=201,
+        json={"number": 5, "html_url": "https://github.com/o/r/pull/5", "node_id": "PR_abc"},
+    )  # create_pull_request
+    httpx_mock.add_response(status_code=500, json={})  # get_repo_settings fails
+
+    result = await create_requirement("owner/repo", "My Feature", "Why", "What")
+
+    # PR was already created — url must be returned despite the automerge failure
+    assert result["pr_url"] == "https://github.com/o/r/pull/5"
+
+
+async def test_create_requirement_automerge_uses_merge_when_squash_disabled(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """When allow_squash_merge=False and allow_merge_commit=True, mergeMethod is MERGE."""
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(status_code=409, json={"message": "Protected"})
+    httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
+    httpx_mock.add_response(status_code=201, json={})  # create_branch
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
+    httpx_mock.add_response(
+        status_code=201,
+        json={"number": 5, "html_url": "https://github.com/o/r/pull/5", "node_id": "PR_abc"},
+    )  # create_pull_request
+    httpx_mock.add_response(
+        json={
+            "allow_auto_merge": True,
+            "allow_squash_merge": False,
+            "allow_merge_commit": True,
+            "delete_branch_on_merge": True,
+        }
+    )  # get_repo_settings — squash disabled, merge allowed
+    httpx_mock.add_response(
+        json={"data": {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "2026-01-01"}}}}}
+    )  # GraphQL
+
+    result = await create_requirement("owner/repo", "My Feature", "Why", "What")
+
+    assert result["pr_url"] == "https://github.com/o/r/pull/5"
+    graphql_req = httpx_mock.get_requests()[7]  # 8th request
+    body = json.loads(graphql_req.content)
+    assert body["variables"]["mergeMethod"] == "MERGE"
 
 
 async def test_create_requirement_non_409_error_propagates(httpx_mock: HTTPXMock) -> None:
@@ -728,8 +841,14 @@ async def test_create_requirement_409_uses_correct_branch_name(httpx_mock: HTTPX
     httpx_mock.add_response(status_code=201, json={})  # create_branch — capture this
     httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
     httpx_mock.add_response(
-        status_code=201, json={"number": 1, "html_url": "http://github.com/pr/1"}
+        status_code=201, json={"number": 1, "html_url": "http://github.com/pr/1", "node_id": "PR_xyz"}
     )
+    httpx_mock.add_response(
+        json={"allow_auto_merge": True, "allow_squash_merge": True, "delete_branch_on_merge": True}
+    )  # get_repo_settings
+    httpx_mock.add_response(
+        json={"data": {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "2026-01-01"}}}}}
+    )  # GraphQL enable_automerge
 
     await create_requirement("owner/repo", "Hello World", "Why", "What")
 

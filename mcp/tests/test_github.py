@@ -17,11 +17,13 @@ from github import (
     create_file,
     create_issue,
     create_pull_request,
+    enable_automerge,
     find_pr_branch,
     get_branch_sha,
     get_file,
     get_issue,
     get_issue_dependencies,
+    get_repo_settings,
     list_files,
     update_file,
 )
@@ -400,18 +402,18 @@ async def test_create_branch_raises_on_error(httpx_mock: HTTPXMock) -> None:
 async def test_create_pull_request_returns_number_and_url(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
-        json={"number": 7, "html_url": "https://github.com/owner/repo/pull/7"},
+        json={"number": 7, "html_url": "https://github.com/owner/repo/pull/7", "node_id": "PR_abc123"},
     )
     result = await create_pull_request(
         "owner/repo", "title", "body text", "lachesis/req-001-feat", "main"
     )
-    assert result == {"number": 7, "url": "https://github.com/owner/repo/pull/7"}
+    assert result == {"number": 7, "url": "https://github.com/owner/repo/pull/7", "node_id": "PR_abc123"}
 
 
 async def test_create_pull_request_sends_correct_payload(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
-        json={"number": 1, "html_url": "https://github.com/owner/repo/pull/1"},
+        json={"number": 1, "html_url": "https://github.com/owner/repo/pull/1", "node_id": "PR_def456"},
     )
     await create_pull_request("owner/repo", "My PR", "desc", "feature-branch", "main")
     body = json.loads(httpx_mock.get_requests()[0].content)
@@ -565,3 +567,81 @@ async def test_get_issue_dependencies_returns_empty_lists_when_no_deps(
     httpx_mock.add_response(method="GET", url=_BLOCKING_URL, json=[])
     result = await get_issue_dependencies("owner/repo", 42)
     assert result == {"blocked_by": [], "blocking": []}
+
+
+# ---------------------------------------------------------------------------
+# get_repo_settings
+# ---------------------------------------------------------------------------
+
+
+async def test_get_repo_settings_returns_settings(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "allow_auto_merge": True,
+            "allow_squash_merge": False,
+            "allow_merge_commit": True,
+            "allow_rebase_merge": False,
+            "delete_branch_on_merge": True,
+        }
+    )
+    result = await get_repo_settings("owner/repo")
+    assert result == {
+        "allow_auto_merge": True,
+        "allow_squash_merge": False,
+        "allow_merge_commit": True,
+        "allow_rebase_merge": False,
+        "delete_branch_on_merge": True,
+    }
+
+
+async def test_get_repo_settings_uses_defaults_for_missing_keys(httpx_mock: HTTPXMock) -> None:
+    """GitHub API may omit keys for older repos — defaults must be applied correctly."""
+    httpx_mock.add_response(json={})  # No merge-related keys
+    result = await get_repo_settings("owner/repo")
+    assert result["allow_auto_merge"] is False
+    assert result["allow_squash_merge"] is True  # important: default is True, not False
+    assert result["allow_merge_commit"] is True
+    assert result["allow_rebase_merge"] is True
+    assert result["delete_branch_on_merge"] is False
+
+
+async def test_get_repo_settings_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_repo_settings("owner/repo")
+
+
+# ---------------------------------------------------------------------------
+# enable_automerge
+# ---------------------------------------------------------------------------
+
+
+async def test_enable_automerge_sends_correct_graphql_payload(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "data": {
+                "enablePullRequestAutoMerge": {
+                    "pullRequest": {"autoMergeRequest": {"enabledAt": "2026-01-01"}}
+                }
+            }
+        }
+    )
+    await enable_automerge("PR_abc123", "SQUASH")
+    req = httpx_mock.get_requests()[0]
+    body = json.loads(req.content)
+    assert body["variables"]["pullRequestId"] == "PR_abc123"
+    assert body["variables"]["mergeMethod"] == "SQUASH"
+    assert "enablePullRequestAutoMerge" in body["query"]
+
+
+async def test_enable_automerge_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=401, json={"message": "Bad credentials"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await enable_automerge("PR_abc123")
+
+
+async def test_enable_automerge_raises_on_graphql_errors(httpx_mock: HTTPXMock) -> None:
+    """GraphQL errors in a 200 response must raise RuntimeError."""
+    httpx_mock.add_response(json={"errors": [{"message": "Not allowed"}]})
+    with pytest.raises(RuntimeError, match="GraphQL errors enabling automerge"):
+        await enable_automerge("PR_abc123")
