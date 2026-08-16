@@ -183,7 +183,10 @@ async def create_pull_request(
 
 
 async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
-    """Return the head branch of the first open PR whose ref starts with *head_prefix*, or ``None``."""
+    """Return the head branch of the first open PR whose ref starts with *head_prefix*.
+
+    Returns ``None`` if no matching PR is found.
+    """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/pulls",

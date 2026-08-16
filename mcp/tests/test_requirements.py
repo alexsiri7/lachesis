@@ -147,13 +147,11 @@ async def test_link_issues_found_on_pr_branch_writes_back_to_branch(
     httpx_mock: HTTPXMock,
 ) -> None:
     """When requirement lives on a PR branch, link_issues reads from and writes to that branch."""
-    _PR_BRANCH = "lachesis/req-001-user-auth"
+    pr_branch = "lachesis/req-001-user-auth"
     # 1. list_files on default branch → empty (req not on main)
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
     # 2. find_pr_branch → GET /pulls?state=open returns a PR with matching head
-    httpx_mock.add_response(
-        json=[{"head": {"ref": _PR_BRANCH}}]
-    )
+    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}}])
     # 3. list_files on PR branch → returns the requirement file
     httpx_mock.add_response(json=_LIST_RESP)
     # 4. get_file on PR branch
@@ -170,7 +168,7 @@ async def test_link_issues_found_on_pr_branch_writes_back_to_branch(
     # update_file request must include branch in payload
     update_request = httpx_mock.get_requests()[4]
     body = json.loads(update_request.content)
-    assert body["branch"] == _PR_BRANCH
+    assert body["branch"] == pr_branch
     assert body["sha"] == "branchsha"
 
 
@@ -181,9 +179,7 @@ async def test_link_issues_raises_when_not_found_on_main_or_pr_branch(
     # list_files on default branch → no match
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
     # find_pr_branch → open PRs exist but none match lachesis/req-001-*
-    httpx_mock.add_response(
-        json=[{"head": {"ref": "lachesis/req-002-something-else"}}]
-    )
+    httpx_mock.add_response(json=[{"head": {"ref": "lachesis/req-002-something-else"}}])
 
     with pytest.raises(FileNotFoundError, match="001"):
         await link_issues("owner/repo", "001", _ISSUES)
@@ -1165,7 +1161,9 @@ async def test_get_github_issue_raises_on_404(httpx_mock: HTTPXMock) -> None:
 # get_dependencies tests
 # ---------------------------------------------------------------------------
 
-_GET_DEPS_BLOCKED_BY_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies/blocked_by"
+_GET_DEPS_BLOCKED_BY_URL = (
+    "https://api.github.com/repos/owner/repo/issues/42/dependencies/blocked_by"
+)
 _GET_DEPS_BLOCKING_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies/blocking"
 
 
@@ -1236,8 +1234,12 @@ async def test_get_dependencies_returns_empty_lists_when_no_deps(httpx_mock: HTT
 _ADD_DEP_ISSUE_URL = "https://api.github.com/repos/owner/repo/issues/10"
 _ADD_DEP_BLOCKER_URL = "https://api.github.com/repos/owner/repo/issues/5"
 _ADD_DEP_POST_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocked_by"
-_ADD_DEP_GET_BLOCKED_BY_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocked_by"
-_ADD_DEP_GET_BLOCKING_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocking"
+_ADD_DEP_GET_BLOCKED_BY_URL = (
+    "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocked_by"
+)
+_ADD_DEP_GET_BLOCKING_URL = (
+    "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocking"
+)
 
 _ADD_DEP_SUBJECT_JSON = {
     "id": 2000,

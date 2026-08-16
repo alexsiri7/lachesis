@@ -36,6 +36,7 @@ def test_headers_includes_correct_github_api_version() -> None:
     assert headers["Accept"] == "application/vnd.github+json"
     assert "Authorization" in headers
 
+
 # ---------------------------------------------------------------------------
 # list_files
 # ---------------------------------------------------------------------------
