@@ -12,9 +12,8 @@ from urllib.parse import urlencode
 
 import frontmatter
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from jose import JWTError
+from jose import JWTError, jwt as jose_jwt
 from jose.exceptions import ExpiredSignatureError
-from jose import jwt as jose_jwt
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
@@ -80,7 +79,8 @@ def _get_web_user_status(
         payload = jose_jwt.decode(token, settings.secret_key, algorithms=["HS256"])
     except ExpiredSignatureError:
         return ("expired", None)
-    except JWTError:
+    except JWTError as exc:
+        logger.debug("_get_web_user_status: JWT decode failed: %s", exc)
         return ("missing", None)
     email = payload.get("email", "")
     if settings.allowed_email and email != settings.allowed_email:
