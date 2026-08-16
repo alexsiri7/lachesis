@@ -25,6 +25,7 @@ from github import (
     get_issue_dependencies,
     get_repo_settings,
     list_files,
+    list_lachesis_prs,
     update_file,
     update_issue,
 )
@@ -701,3 +702,54 @@ async def test_enable_automerge_raises_on_graphql_errors(httpx_mock: HTTPXMock) 
     httpx_mock.add_response(json={"errors": [{"message": "Not allowed"}]})
     with pytest.raises(RuntimeError, match="GraphQL errors enabling automerge"):
         await enable_automerge("PR_abc123")
+
+
+# ---------------------------------------------------------------------------
+# list_lachesis_prs
+# ---------------------------------------------------------------------------
+
+
+async def test_list_lachesis_prs_returns_branch_url_and_number(httpx_mock: HTTPXMock) -> None:
+    """Happy path: only lachesis/ branches are returned with correct fields and types."""
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": "lachesis/req-007-auth"},
+                "html_url": "https://github.com/owner/repo/pull/7",
+                "number": 7,
+            },
+            {
+                "head": {"ref": "feature/not-lachesis"},
+                "html_url": "https://github.com/owner/repo/pull/8",
+                "number": 8,
+            },
+        ]
+    )
+    result = await list_lachesis_prs("owner/repo")
+    assert len(result) == 1
+    assert result[0]["branch"] == "lachesis/req-007-auth"
+    assert result[0]["pr_url"] == "https://github.com/owner/repo/pull/7"
+    assert result[0]["pr_number"] == 7
+    assert isinstance(result[0]["pr_number"], int)
+
+
+async def test_list_lachesis_prs_returns_empty_on_missing_number_key(httpx_mock: HTTPXMock) -> None:
+    """Malformed API response missing 'number' triggers silent error path returning empty list."""
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": "lachesis/req-007-auth"},
+                "html_url": "https://github.com/owner/repo/pull/7",
+                # "number" intentionally absent — triggers KeyError silent path
+            }
+        ]
+    )
+    result = await list_lachesis_prs("owner/repo")
+    assert result == []
+
+
+async def test_list_lachesis_prs_returns_empty_when_no_lachesis_prs(httpx_mock: HTTPXMock) -> None:
+    """When there are no open PRs at all, result is an empty list."""
+    httpx_mock.add_response(json=[])
+    result = await list_lachesis_prs("owner/repo")
+    assert result == []

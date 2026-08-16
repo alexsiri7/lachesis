@@ -1588,7 +1588,7 @@ Do it.
     # 2. get_file for 001 on main
     httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
     # 3. list_lachesis_prs → GET /pulls?state=open
-    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}, "html_url": pr_url}])
+    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}, "html_url": pr_url, "number": 7}])
     # 4. list_files on PR branch
     pr_file = {"name": "002-new-feature.md", "path": "requirements/002-new-feature.md"}
     httpx_mock.add_response(json=[pr_file])
@@ -1610,6 +1610,8 @@ Do it.
     assert "pr_url" not in result[0]  # main-branch req has no pr_url
     assert result[1]["id"] == "002"
     assert result[1]["pr_url"] == pr_url
+    assert result[1]["branch"] == pr_branch
+    assert result[1]["pr_number"] == 7
     assert result[1]["warning"] == "no linked issues"
 
 
@@ -1620,9 +1622,8 @@ async def test_list_requirements_deduplicates_pr_and_main(httpx_mock: HTTPXMock)
     httpx_mock.add_response(json=_LIST_RESP)
     httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
     # 2. list_lachesis_prs → PR exists for same req
-    httpx_mock.add_response(
-        json=[{"head": {"ref": pr_branch}, "html_url": "https://github.com/owner/repo/pull/3"}]
-    )
+    pr_url_3 = "https://github.com/owner/repo/pull/3"
+    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}, "html_url": pr_url_3, "number": 3}])
     # 3. list_files on PR branch → also has 001
     httpx_mock.add_response(json=_LIST_RESP)
     # 4. get_file on PR branch (needed to read frontmatter id for dedup check)
@@ -1633,6 +1634,8 @@ async def test_list_requirements_deduplicates_pr_and_main(httpx_mock: HTTPXMock)
     assert len(result) == 1
     assert result[0]["id"] == "001"
     assert "pr_url" not in result[0]
+    assert "branch" not in result[0]
+    assert "pr_number" not in result[0]
 
 
 async def test_list_requirements_no_prs_returns_main_only(httpx_mock: HTTPXMock) -> None:
@@ -1788,7 +1791,9 @@ async def test_get_dashboard_includes_pr_branch_requirements(
         # 2. get_file for 001 on main
         httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
         # 3. list_lachesis_prs
-        httpx_mock.add_response(json=[{"head": {"ref": pr_branch}, "html_url": pr_url}])
+        httpx_mock.add_response(
+            json=[{"head": {"ref": pr_branch}, "html_url": pr_url, "number": 7}]
+        )
         # 4. list_files on PR branch
         httpx_mock.add_response(
             json=[{"name": "002-new-feature.md", "path": "requirements/002-new-feature.md"}]

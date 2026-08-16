@@ -208,17 +208,17 @@ async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
     return None
 
 
-async def list_lachesis_prs(repo: str) -> list[dict[str, str]]:
+async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
     """Return all open PRs whose head branch starts with 'lachesis/'.
 
-    Returns list of {"branch": str, "pr_url": str}.
+    Returns list of {"branch": str, "pr_number": int, "pr_url": str}.
     """
-    result: list[dict[str, str]] = []
+    result: list[dict[str, Any]] = []
     try:
         for pr in await _list_open_prs(repo):
             ref = pr["head"]["ref"]
             if ref.startswith("lachesis/"):
-                result.append({"branch": ref, "pr_url": pr["html_url"]})
+                result.append({"branch": ref, "pr_url": pr["html_url"], "pr_number": pr["number"]})
     except (KeyError, TypeError) as exc:
         logger.warning(
             "github.list_lachesis_prs unexpected response shape repo=%s error=%r", repo, exc
