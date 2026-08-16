@@ -428,7 +428,9 @@ _BLOCKING_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies/
 
 async def test_get_issue_dependencies_returns_parsed_numbers(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
-        method="GET", url=_BLOCKED_BY_URL, json=[{"number": 38, "id": 1001}, {"number": 41, "id": 1002}]
+        method="GET",
+        url=_BLOCKED_BY_URL,
+        json=[{"number": 38, "id": 1001}, {"number": 41, "id": 1002}],
     )
     httpx_mock.add_response(method="GET", url=_BLOCKING_URL, json=[{"number": 45, "id": 1003}])
     result = await get_issue_dependencies("owner/repo", 42)

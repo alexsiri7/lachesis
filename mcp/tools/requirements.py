@@ -433,7 +433,9 @@ async def get_dependencies(repo: str, issue_number: int) -> dict[str, Any]:
     return deps
 
 
-async def add_dependency(repo: str, issue_number: int, blocked_by_issue_number: int) -> dict[str, Any]:
+async def add_dependency(
+    repo: str, issue_number: int, blocked_by_issue_number: int
+) -> dict[str, Any]:
     """Mark issue_number as blocked by blocked_by_issue_number.
 
     Returns the updated dependency state: {"blocked_by": [int, ...], "blocking": [int, ...]}

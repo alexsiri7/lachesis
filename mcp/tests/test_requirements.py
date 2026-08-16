@@ -1125,8 +1125,12 @@ _GET_DEPS_BLOCKING_URL = "https://api.github.com/repos/owner/repo/issues/42/depe
 @pytest.mark.anyio
 async def test_get_dependencies_returns_blocked_by_and_blocking(httpx_mock: HTTPXMock) -> None:
     """Happy path: returns structured blocked_by and blocking lists."""
-    httpx_mock.add_response(method="GET", url=_GET_DEPS_BLOCKED_BY_URL, json=[{"number": 38, "id": 1001}])
-    httpx_mock.add_response(method="GET", url=_GET_DEPS_BLOCKING_URL, json=[{"number": 45, "id": 1003}])
+    httpx_mock.add_response(
+        method="GET", url=_GET_DEPS_BLOCKED_BY_URL, json=[{"number": 38, "id": 1001}]
+    )
+    httpx_mock.add_response(
+        method="GET", url=_GET_DEPS_BLOCKING_URL, json=[{"number": 45, "id": 1003}]
+    )
 
     result = await get_dependencies("owner/repo", 42)
 
@@ -1212,7 +1216,7 @@ _ADD_DEP_BLOCKER_JSON = {
 
 @pytest.mark.anyio
 async def test_add_dependency_happy_path(httpx_mock: HTTPXMock) -> None:
-    """Happy path: validates both issues, POSTs database id (not issue number), returns updated deps."""
+    """Happy path: validates both issues, POSTs database id (not issue number), returns deps."""
     httpx_mock.add_response(method="GET", url=_ADD_DEP_ISSUE_URL, json=_ADD_DEP_SUBJECT_JSON)
     httpx_mock.add_response(method="GET", url=_ADD_DEP_BLOCKER_URL, json=_ADD_DEP_BLOCKER_JSON)
     httpx_mock.add_response(method="POST", url=_ADD_DEP_POST_URL, status_code=200, json={})
@@ -1253,7 +1257,9 @@ async def test_add_dependency_raises_when_blocker_not_found(httpx_mock: HTTPXMoc
 
 
 @pytest.mark.anyio
-async def test_add_dependency_raises_when_target_disappears_post_mutation(httpx_mock: HTTPXMock) -> None:
+async def test_add_dependency_raises_when_target_disappears_post_mutation(
+    httpx_mock: HTTPXMock,
+) -> None:
     """Raises FileNotFoundError when get_issue_dependencies returns None after the POST."""
     httpx_mock.add_response(method="GET", url=_ADD_DEP_ISSUE_URL, json=_ADD_DEP_SUBJECT_JSON)
     httpx_mock.add_response(method="GET", url=_ADD_DEP_BLOCKER_URL, json=_ADD_DEP_BLOCKER_JSON)
