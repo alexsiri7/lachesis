@@ -96,7 +96,13 @@ A **GitHub issue** captures *implementation work* — the concrete steps needed 
 
 Every requirement should be paired with at least one GitHub issue to be actionable. A requirement with no linked issues is a note, not a plan.
 
-**Status values**: `idea` → `planned` → `in_progress` → `done`
+**Status values**: `draft` → `idea` → `planned` → `in-progress` → `done`
+
+- **draft** — captured but not yet validated or shaped; may be incomplete or exploratory
+- **idea** — validated intent, not yet planned for implementation
+- **planned** — scoped with linked GitHub issues, ready to build
+- **in-progress** — active implementation underway
+- **done** — implemented; `delete_requirement` refuses to delete requirements in this state
 
 Status is set manually or by Claude based on GitHub issue state — Lachesis does not auto-sync.
 
@@ -200,7 +206,6 @@ Creates one or more GitHub issues in the repo and returns their numbers and titl
 
 ## Future Considerations
 
-- **Web UI** — a simple read-only dashboard showing requirements per repo with their linked issue status, for at-a-glance project health
 - **Multi-repo view** — aggregate requirements across all projects
 - **Requirement templates** — per-project templates for the `why` / `what` structure
 - **Changelog generation** — generate a release changelog from `done` requirements

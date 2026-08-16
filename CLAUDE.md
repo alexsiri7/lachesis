@@ -33,9 +33,12 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   settings.py      Pydantic-settings config
   github.py        GitHub API client (PAT-authenticated)
   db.py            SQLAlchemy persistence layer (user identity, repo registry)
+  web.py           Web dashboard route handlers and Jinja2 setup
   tools/
     __init__.py
     requirements.py  All 7 MCP tool implementations
+  templates/
+    dashboard.html   Read-only requirements dashboard (Jinja2)
   Dockerfile
   pyproject.toml
   requirements.txt
