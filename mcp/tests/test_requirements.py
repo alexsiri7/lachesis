@@ -24,6 +24,7 @@ from tools.requirements import (
     get_requirement,
     link_issues,
     list_requirements,
+    update_github_issue,
     update_requirement,
 )
 
@@ -1243,6 +1244,50 @@ async def test_list_requirements_short_name_case_insensitive(
         result = await list_requirements("lachesis")
 
     assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# update_github_issue tests
+# ---------------------------------------------------------------------------
+
+
+async def test_update_github_issue_returns_updated_fields(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        json={
+            "number": 42,
+            "title": "Closed issue",
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "state": "closed",
+        }
+    )
+    result = await update_github_issue("owner/repo", 42, {"state": "closed"})
+    assert result["number"] == 42
+    assert result["url"] == "https://github.com/owner/repo/issues/42"
+
+
+async def test_update_github_issue_raises_on_not_found(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(status_code=404)
+    with pytest.raises(FileNotFoundError, match="not found in"):
+        await update_github_issue("owner/repo", 99, {"state": "closed"})
+
+
+async def test_update_github_issue_rejects_unknown_fields() -> None:
+    with pytest.raises(ValueError, match="Unknown fields"):
+        await update_github_issue("owner/repo", 42, {"labels": ["bug"]})
+
+
+async def test_update_github_issue_rejects_invalid_state() -> None:
+    with pytest.raises(ValueError, match="Invalid state"):
+        await update_github_issue("owner/repo", 42, {"state": "merged"})
+
+
+async def test_update_github_issue_rejects_empty_fields() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        await update_github_issue("owner/repo", 42, {})
 
 
 # ---------------------------------------------------------------------------

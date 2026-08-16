@@ -26,6 +26,7 @@ from github import (
     get_repo_settings,
     list_files,
     update_file,
+    update_issue,
 )
 
 # ---------------------------------------------------------------------------
@@ -501,6 +502,40 @@ async def test_get_issue_no_linked_pr_returns_none(httpx_mock: HTTPXMock) -> Non
     result = await get_issue("owner/repo", 1)
     assert result is not None
     assert result["linked_pr"] is None
+
+
+# ---------------------------------------------------------------------------
+# update_issue
+# ---------------------------------------------------------------------------
+
+
+async def test_update_issue_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=404)
+    result = await update_issue("owner/repo", 42, {"state": "closed"})
+    assert result is None
+
+
+async def test_update_issue_returns_number_title_url(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "number": 42,
+            "title": "Updated title",
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "state": "closed",
+        }
+    )
+    result = await update_issue("owner/repo", 42, {"title": "Updated title", "state": "closed"})
+    assert result == {
+        "number": 42,
+        "title": "Updated title",
+        "url": "https://github.com/owner/repo/issues/42",
+    }
+
+
+async def test_update_issue_raises_on_non_404_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=422, json={"message": "Unprocessable Entity"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await update_issue("owner/repo", 42, {"state": "invalid"})
 
 
 # ---------------------------------------------------------------------------

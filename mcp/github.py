@@ -363,6 +363,38 @@ async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
     }
 
 
+async def update_issue(
+    repo: str, issue_number: int, fields: dict[str, Any]
+) -> dict[str, Any] | None:
+    """PATCH an issue's title, body, and/or state. Returns None on 404.
+
+    Accepted keys in *fields*: ``title``, ``body``, ``state`` (``"open"`` or ``"closed"``).
+    Returned keys: ``number``, ``title``, ``url``.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.patch(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}",
+            headers=_headers(),
+            json=fields,
+        )
+    if resp.status_code == 404:
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.update_issue failed repo=%s issue=%s status=%s",
+            repo,
+            issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "number": data["number"],
+        "title": data["title"],
+        "url": data["html_url"],
+    }
+
+
 async def add_to_project(project_id: str, issue_node_id: str) -> None:
     """Add an issue to a GitHub Projects v2 board."""
     query = """
