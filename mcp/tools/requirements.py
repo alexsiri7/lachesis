@@ -118,6 +118,7 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
     for pr_info in lachesis_prs:
         branch = pr_info["branch"]
         pr_url = pr_info["pr_url"]
+        pr_number = pr_info["pr_number"]
         pr_files = await github.list_files(repo, "requirements", branch=branch)
         for f in pr_files:
             if not f["name"].endswith(".md"):
@@ -135,6 +136,8 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
                     "title": post["title"],
                     "status": post["status"],
                     "github_issue": github_issue,
+                    "branch": branch,
+                    "pr_number": pr_number,
                     "pr_url": pr_url,
                     "warning": "no linked issues" if github_issue is None else None,
                 }
