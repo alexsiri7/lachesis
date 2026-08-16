@@ -247,12 +247,15 @@ def _check_refresh_token_health() -> None:
     now = datetime.now(UTC)
     buffer = timedelta(days=_REFRESH_TOKEN_WARN_DAYS)
     expiring_soon = [
-        t for t in tokens
+        t
+        for t in tokens
         if (
             t["expires_at"].replace(tzinfo=UTC)
             if t["expires_at"].tzinfo is None
             else t["expires_at"]
-        ) - now < buffer
+        )
+        - now
+        < buffer
     ]
     if expiring_soon:
         logger.warning(
@@ -261,9 +264,7 @@ def _check_refresh_token_health() -> None:
             _REFRESH_TOKEN_WARN_DAYS,
         )
     else:
-        logger.info(
-            "startup check: %d active refresh token(s), all healthy", len(tokens)
-        )
+        logger.info("startup check: %d active refresh token(s), all healthy", len(tokens))
 
 
 def with_user_context(app: ASGIApp) -> ASGIApp:
@@ -353,9 +354,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                                 user_id,
                                 exc_info=True,
                             )
-                    logger.info(
-                        "middleware: auto-refreshed expired token for sub=%s", user_id
-                    )
+                    logger.info("middleware: auto-refreshed expired token for sub=%s", user_id)
 
                     async def _send_with_new_token(event: MutableMapping[str, Any]) -> None:
                         if event["type"] == "http.response.start":
@@ -375,25 +374,29 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     )
                     base = settings.mcp_base_url.rstrip("/")
                     resource_uri = _RESOURCE_METADATA_URI.format(base=base)
-                    body = json.dumps({
-                        "error": "token_expired",
-                        "description": (
-                            "Access token has expired and no valid refresh token was found. "
-                            "Please re-authenticate via the OAuth flow."
-                        ),
-                    }).encode()
-                    await send({
-                        "type": "http.response.start",
-                        "status": 401,
-                        "headers": [
-                            [b"content-type", b"application/json"],
-                            [
-                                b"www-authenticate",
-                                f'Bearer realm="lachesis" error="invalid_token" '
-                                f'resource_metadata="{resource_uri}"'.encode(),
+                    body = json.dumps(
+                        {
+                            "error": "token_expired",
+                            "description": (
+                                "Access token has expired and no valid refresh token was found. "
+                                "Please re-authenticate via the OAuth flow."
+                            ),
+                        }
+                    ).encode()
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 401,
+                            "headers": [
+                                [b"content-type", b"application/json"],
+                                [
+                                    b"www-authenticate",
+                                    f'Bearer realm="lachesis" error="invalid_token" '
+                                    f'resource_metadata="{resource_uri}"'.encode(),
+                                ],
                             ],
-                        ],
-                    })
+                        }
+                    )
                     await send({"type": "http.response.body", "body": body})
                     return
 
