@@ -216,6 +216,32 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
             )
             raise
         pr_url = pr["url"]
+        # Attempt to enable automerge — graceful fallback if unavailable
+        try:
+            repo_settings = await github.get_repo_settings(repo)
+            if repo_settings["allow_auto_merge"]:
+                merge_method = "SQUASH" if repo_settings["allow_squash_merge"] else "MERGE"
+                await github.enable_automerge(pr["node_id"], merge_method)
+                if not repo_settings["delete_branch_on_merge"]:
+                    logger.info(
+                        "create_requirement: automerge enabled but delete_branch_on_merge "
+                        "is disabled on repo=%s — branch will not auto-delete",
+                        repo,
+                    )
+            else:
+                logger.info(
+                    "create_requirement: automerge not available on repo=%s "
+                    "(allow_auto_merge=False) — user must merge manually",
+                    repo,
+                )
+        except Exception as exc:
+            logger.warning(
+                "create_requirement: enable_automerge failed repo=%s pr=%s error=%r; "
+                "pr_url returned for manual merge",
+                repo,
+                pr["number"],
+                exc,
+            )
     result: dict[str, Any] = {"id": id_str, "path": path}
     if pr_url is not None:
         result["pr_url"] = pr_url

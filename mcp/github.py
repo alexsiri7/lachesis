@@ -179,7 +179,7 @@ async def create_pull_request(
         )
     resp.raise_for_status()
     data = resp.json()
-    return {"number": data["number"], "url": data["html_url"]}
+    return {"number": data["number"], "url": data["html_url"], "node_id": data["node_id"]}
 
 
 async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
@@ -451,3 +451,74 @@ async def get_issue_dependencies(repo: str, issue_number: int) -> dict[str, Any]
             exc,
         )
         raise
+
+
+async def get_repo_settings(repo: str) -> dict[str, Any]:
+    """Return merge/automerge settings for *repo*.
+
+    Returned keys: ``allow_auto_merge`` (bool), ``allow_squash_merge`` (bool),
+    ``delete_branch_on_merge`` (bool).
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}",
+            headers=_headers(),
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.get_repo_settings failed repo=%s status=%s",
+            repo,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "allow_auto_merge": data.get("allow_auto_merge", False),
+        "allow_squash_merge": data.get("allow_squash_merge", True),
+        "delete_branch_on_merge": data.get("delete_branch_on_merge", False),
+    }
+
+
+async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> None:
+    """Enable automerge on a pull request via GraphQL.
+
+    *merge_method* must be ``"SQUASH"``, ``"MERGE"``, or ``"REBASE"``.
+    Raises :class:`httpx.HTTPStatusError` on HTTP failure.
+    Logs a warning (without raising) on GraphQL-level errors.
+    """
+    query = """
+    mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
+      enablePullRequestAutoMerge(input: {
+        pullRequestId: $pullRequestId,
+        mergeMethod: $mergeMethod
+      }) {
+        pullRequest {
+          autoMergeRequest {
+            enabledAt
+          }
+        }
+      }
+    }
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            "https://api.github.com/graphql",
+            headers=_headers(),
+            json={
+                "query": query,
+                "variables": {
+                    "pullRequestId": pr_node_id,
+                    "mergeMethod": merge_method,
+                },
+            },
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.enable_automerge failed pr_node_id=%s status=%s",
+            pr_node_id,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    if "errors" in data:
+        logger.warning("github.enable_automerge graphql errors: %s", data["errors"])

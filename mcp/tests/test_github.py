@@ -400,18 +400,18 @@ async def test_create_branch_raises_on_error(httpx_mock: HTTPXMock) -> None:
 async def test_create_pull_request_returns_number_and_url(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
-        json={"number": 7, "html_url": "https://github.com/owner/repo/pull/7"},
+        json={"number": 7, "html_url": "https://github.com/owner/repo/pull/7", "node_id": "PR_abc123"},
     )
     result = await create_pull_request(
         "owner/repo", "title", "body text", "lachesis/req-001-feat", "main"
     )
-    assert result == {"number": 7, "url": "https://github.com/owner/repo/pull/7"}
+    assert result == {"number": 7, "url": "https://github.com/owner/repo/pull/7", "node_id": "PR_abc123"}
 
 
 async def test_create_pull_request_sends_correct_payload(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         status_code=201,
-        json={"number": 1, "html_url": "https://github.com/owner/repo/pull/1"},
+        json={"number": 1, "html_url": "https://github.com/owner/repo/pull/1", "node_id": "PR_def456"},
     )
     await create_pull_request("owner/repo", "My PR", "desc", "feature-branch", "main")
     body = json.loads(httpx_mock.get_requests()[0].content)
