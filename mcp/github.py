@@ -24,16 +24,21 @@ def _headers() -> dict[str, str]:
     }
 
 
-async def list_files(repo: str, path: str) -> list[dict[str, Any]]:
+async def list_files(repo: str, path: str, *, branch: str | None = None) -> list[dict[str, Any]]:
     """List files at *path* in *repo*. Returns ``[]`` on 404.
 
+    Pass *branch* to target a specific branch; defaults to the repo's default branch.
     If *path* resolves to a single file rather than a directory, returns a
     one-element list (GitHub Contents API returns a dict in that case).
     """
+    params: dict[str, str] = {}
+    if branch:
+        params["ref"] = branch
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
+            params=params,
         )
     if resp.status_code == 404:
         logger.warning("github.list_files 404 repo=%s path=%s", repo, path)
@@ -50,12 +55,19 @@ async def list_files(repo: str, path: str) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else [data]
 
 
-async def get_file(repo: str, path: str) -> tuple[str, str]:
-    """Return ``(decoded_content, sha)`` for *path*. Raises :class:`FileNotFoundError` on 404."""
+async def get_file(repo: str, path: str, *, branch: str | None = None) -> tuple[str, str]:
+    """Return ``(decoded_content, sha)`` for *path*. Raises :class:`FileNotFoundError` on 404.
+
+    Pass *branch* to target a specific branch; defaults to the repo's default branch.
+    """
+    params: dict[str, str] = {}
+    if branch:
+        params["ref"] = branch
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
+            params=params,
         )
     if resp.status_code == 404:
         raise FileNotFoundError(f"{path!r} not found in {repo!r}")
@@ -170,17 +182,44 @@ async def create_pull_request(
     return {"number": data["number"], "url": data["html_url"]}
 
 
-async def update_file(repo: str, path: str, content: str, sha: str, message: str) -> dict[str, Any]:
+async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
+    """Return the head branch of the first open PR whose ref starts with *head_prefix*, or ``None``."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/pulls",
+            headers=_headers(),
+            params={"state": "open", "per_page": 100},
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.find_pr_branch failed repo=%s status=%s",
+            repo,
+            resp.status_code,
+        )
+        resp.raise_for_status()
+    for pr in resp.json():
+        if pr["head"]["ref"].startswith(head_prefix):
+            return pr["head"]["ref"]  # type: ignore[no-any-return]
+    return None
+
+
+async def update_file(
+    repo: str, path: str, content: str, sha: str, message: str, *, branch: str | None = None
+) -> dict[str, Any]:
     """Update an existing file at *path* (requires current *sha*).
 
+    Pass *branch* to target a specific branch; defaults to the repo's default branch.
     Returns the raw GitHub Contents API response.
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    payload: dict[str, Any] = {"message": message, "content": encoded, "sha": sha}
+    if branch:
+        payload["branch"] = branch
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.put(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
-            json={"message": message, "content": encoded, "sha": sha},
+            json=payload,
         )
     if not resp.is_success:
         logger.warning(

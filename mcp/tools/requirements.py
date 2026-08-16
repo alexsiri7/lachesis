@@ -256,14 +256,27 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
     repo = await _resolve_repo(repo)
-    # Locate the requirement file
+    branch: str | None = None
+    # Locate the requirement file — first on the default branch
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+        # Requirement may live on an open PR branch (created via branch-protection fallback)
+        logger.warning(
+            "link_issues: requirement %r not on default branch for repo=%s, checking open PRs",
+            id,
+            repo,
+        )
+        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
+        if branch is None:
+            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+        files = await github.list_files(repo, "requirements", branch=branch)
+        matching = [f for f in files if f["name"].startswith(f"{id}-")]
+        if not matching:
+            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
 
     path = matching[0]["path"]
-    content, sha = await github.get_file(repo, path)
+    content, sha = await github.get_file(repo, path, branch=branch)
 
     # Parse frontmatter
     post = frontmatter.loads(content)
@@ -299,6 +312,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
         updated_content,
         sha,
         f"chore: link issues to requirement {id}",
+        branch=branch,
     )
     return cast(str, updated_content)
 
