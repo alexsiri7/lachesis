@@ -145,6 +145,16 @@ mcp.tool(
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_github_issue)
 
+mcp.tool(
+    description=(
+        "Return the dependency relationships of a GitHub issue: "
+        "blocked_by (issues this one depends on) and "
+        "blocking (issues that depend on this one). "
+        "Returns lists of issue numbers."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(req_tools.get_dependencies)
+
 # ---------------------------------------------------------------------------
 # Health check route
 # ---------------------------------------------------------------------------

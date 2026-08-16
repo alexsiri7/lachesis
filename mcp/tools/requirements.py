@@ -418,3 +418,15 @@ async def get_github_issue(repo: str, issue_number: int) -> dict[str, Any]:
     if issue is None:
         raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
     return issue
+
+
+async def get_dependencies(repo: str, issue_number: int) -> dict[str, Any]:
+    """Return the blocked_by and blocking dependency lists for a GitHub issue.
+
+    Returns: {"blocked_by": [int, ...], "blocking": [int, ...]}
+    """
+    repo = await _resolve_repo(repo)
+    deps = await github.get_issue_dependencies(repo, issue_number)
+    if deps is None:
+        raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
+    return deps
