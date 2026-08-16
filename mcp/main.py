@@ -246,17 +246,17 @@ def _check_refresh_token_health() -> None:
         return
     now = datetime.now(UTC)
     buffer = timedelta(days=_REFRESH_TOKEN_WARN_DAYS)
-    expiring_soon = []
+    expiring_count = 0
     for t in tokens:
         exp_dt = t["expires_at"]
         if exp_dt.tzinfo is None:
             exp_dt = exp_dt.replace(tzinfo=UTC)
         if exp_dt - now < buffer:
-            expiring_soon.append(t)
-    if expiring_soon:
+            expiring_count += 1
+    if expiring_count:
         logger.warning(
             "startup check: %d refresh token(s) expiring within %d days",
-            len(expiring_soon),
+            expiring_count,
             _REFRESH_TOKEN_WARN_DAYS,
         )
     else:
@@ -279,6 +279,9 @@ def _apply_user_context(user_id: str, email: str, lachesis_uid: str | None) -> N
 
 
 def with_user_context(app: ASGIApp) -> ASGIApp:
+    _base = settings.mcp_base_url.rstrip("/")
+    _resource_uri = _RESOURCE_METADATA_URI.format(base=_base)
+
     async def wrapper(
         scope: MutableMapping[str, Any],
         receive: Callable[[], Awaitable[MutableMapping[str, Any]]],
@@ -361,8 +364,6 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                 logger.warning(
                     "middleware: expired token with no valid refresh token for sub=%s", user_id
                 )
-                base = settings.mcp_base_url.rstrip("/")
-                resource_uri = _RESOURCE_METADATA_URI.format(base=base)
                 body = json.dumps(
                     {
                         "error": "token_expired",
@@ -381,7 +382,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                             [
                                 b"www-authenticate",
                                 f'Bearer realm="lachesis" error="invalid_token" '
-                                f'resource_metadata="{resource_uri}"'.encode(),
+                                f'resource_metadata="{_resource_uri}"'.encode(),
                             ],
                         ],
                     }
@@ -390,8 +391,6 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                 return
 
         # No token or completely invalid token → generic 401
-        base = settings.mcp_base_url.rstrip("/")
-        resource_uri = _RESOURCE_METADATA_URI.format(base=base)
         body = b'{"error":"unauthorized"}'
         await send(
             {
@@ -401,7 +400,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     [b"content-type", b"application/json"],
                     [
                         b"www-authenticate",
-                        f'Bearer resource_metadata="{resource_uri}"'.encode(),
+                        f'Bearer resource_metadata="{_resource_uri}"'.encode(),
                     ],
                 ],
             }
