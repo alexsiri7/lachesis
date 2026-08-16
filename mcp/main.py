@@ -227,6 +227,25 @@ mcp.custom_route("/web/logout", methods=["GET"])(web_logout)
 _RESOURCE_METADATA_URI = "{base}/.well-known/oauth-protected-resource"
 
 _REFRESH_TOKEN_WARN_DAYS = 5
+
+
+def _set_user_context(user_id: str, email: str, lachesis_uid: str | None) -> None:
+    """Populate request-scoped context vars for the authenticated user.
+
+    Sets ``current_user_id`` always.  If *lachesis_uid* is known, sets
+    ``current_db_user_id`` directly; otherwise falls back to upsert_user.
+    """
+    current_user_id.set(user_id)
+    if lachesis_uid:
+        current_db_user_id.set(lachesis_uid)
+    else:
+        try:
+            db_user = _db.upsert_user(user_id, email)
+            current_db_user_id.set(str(db_user["id"]))
+        except Exception:
+            logger.warning(
+                "middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True
+            )
 _startup_check_done = False
 
 
@@ -245,14 +264,13 @@ def _check_refresh_token_health() -> None:
         return
     now = datetime.now(UTC)
     buffer = timedelta(days=_REFRESH_TOKEN_WARN_DAYS)
-    expiring_soon = [
-        t for t in tokens
-        if (
-            t["expires_at"].replace(tzinfo=UTC)
-            if t["expires_at"].tzinfo is None
-            else t["expires_at"]
-        ) - now < buffer
-    ]
+    expiring_soon = []
+    for t in tokens:
+        expires_at = t["expires_at"]
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at - now < buffer:
+            expiring_soon.append(t)
     if expiring_soon:
         logger.warning(
             "startup check: %d refresh token(s) expiring within %d days",
@@ -266,6 +284,8 @@ def _check_refresh_token_health() -> None:
 
 
 def with_user_context(app: ASGIApp) -> ASGIApp:
+    _resource_uri = _RESOURCE_METADATA_URI.format(base=settings.mcp_base_url.rstrip("/"))
+
     async def wrapper(
         scope: MutableMapping[str, Any],
         receive: Callable[[], Awaitable[MutableMapping[str, Any]]],
@@ -307,17 +327,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
         if resolved is not None:
             # Valid token — normal path
             user_id, email, lachesis_uid = resolved
-            current_user_id.set(user_id)
-            if lachesis_uid:
-                current_db_user_id.set(lachesis_uid)
-            else:
-                try:
-                    db_user = _db.upsert_user(user_id, email)
-                    current_db_user_id.set(str(db_user["id"]))
-                except Exception:
-                    logger.warning(
-                        "middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True
-                    )
+            _set_user_context(user_id, email, lachesis_uid)
             await app(scope, receive, send)
             return
 
@@ -341,22 +351,8 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     if not lachesis_uid:
                         lachesis_uid = rt_data.get("lachesis_uid")
                     new_access_token = create_jwt(user_id, email, lachesis_uid)
-                    current_user_id.set(user_id)
-                    if lachesis_uid:
-                        current_db_user_id.set(lachesis_uid)
-                    else:
-                        try:
-                            db_user = _db.upsert_user(user_id, email)
-                            current_db_user_id.set(str(db_user["id"]))
-                        except Exception:
-                            logger.warning(
-                                "middleware: upsert_user fallback failed for sub=%s",
-                                user_id,
-                                exc_info=True,
-                            )
-                    logger.info(
-                        "middleware: auto-refreshed expired token for sub=%s", user_id
-                    )
+                    _set_user_context(user_id, email, lachesis_uid)
+                    logger.info("middleware: auto-refreshed expired token for sub=%s", user_id)
 
                     async def _send_with_new_token(event: MutableMapping[str, Any]) -> None:
                         if event["type"] == "http.response.start":
@@ -376,8 +372,6 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                             "middleware: expired token with no valid refresh token for sub=%s",
                             user_id,
                         )
-                    base = settings.mcp_base_url.rstrip("/")
-                    resource_uri = _RESOURCE_METADATA_URI.format(base=base)
                     body = json.dumps({
                         "error": "token_expired",
                         "description": (
@@ -393,7 +387,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                             [
                                 b"www-authenticate",
                                 f'Bearer realm="lachesis" error="invalid_token" '
-                                f'resource_metadata="{resource_uri}"'.encode(),
+                                f'resource_metadata="{_resource_uri}"'.encode(),
                             ],
                         ],
                     })
@@ -401,8 +395,6 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     return
 
         # No token or completely invalid token → generic 401
-        base = settings.mcp_base_url.rstrip("/")
-        resource_uri = _RESOURCE_METADATA_URI.format(base=base)
         body = b'{"error":"unauthorized"}'
         await send(
             {
@@ -412,7 +404,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     [b"content-type", b"application/json"],
                     [
                         b"www-authenticate",
-                        f'Bearer resource_metadata="{resource_uri}"'.encode(),
+                        f'Bearer resource_metadata="{_resource_uri}"'.encode(),
                     ],
                 ],
             }
