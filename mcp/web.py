@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 from typing import Any, cast
 from urllib.parse import urlencode
@@ -22,6 +23,14 @@ from oauth import create_jwt, exchange_google_code
 from settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_section(body: str, heading: str) -> str:
+    """Return the text content of a '## {heading}' section from a markdown body."""
+    pattern = rf"(?:^|\n)## {re.escape(heading)}\s*\n(.*?)(?=\n## |\Z)"
+    m = re.search(pattern, body or "", re.DOTALL)
+    return m.group(1).strip() if m else ""
+
 
 # ---------------------------------------------------------------------------
 # Jinja2 setup
@@ -116,6 +125,8 @@ async def web_index(request: Request) -> Response:
                         "title": post.get("title", ""),
                         "status": post.get("status", ""),
                         "github_issue": post.get("github_issue"),
+                        "why": _extract_section(post.content, "Why"),
+                        "what": _extract_section(post.content, "What"),
                     }
                 )
 

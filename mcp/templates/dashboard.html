@@ -15,7 +15,7 @@
   {% if not repo.requirements %}
     <p class="text-gray-400 text-sm">No requirements found.</p>
   {% endif %}
-  {% for status in ["idea", "planned", "in-progress", "done"] %}
+  {% for status in ["draft", "idea", "planned", "in-progress", "done"] %}
     {% set reqs = repo.requirements | selectattr("status", "equalto", status) | list %}
     {% if reqs %}
     <div class="mb-4">
@@ -24,19 +24,59 @@
       </h3>
       <ul class="space-y-1">
         {% for req in reqs %}
-        <li class="flex items-center gap-3 text-sm">
-          <span class="font-mono text-gray-400">{{ req.id }}</span>
-          <span>{{ req.title }}</span>
-          {% if req.issue %}
-            <a href="{{ req.issue.url }}" target="_blank"
-               class="ml-auto flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border
-               {% if req.issue.state == 'open' %}border-green-400 text-green-700{% else %}border-purple-400 text-purple-700{% endif %}">
-              #{{ req.issue.number }}
-              <span>{{ req.issue.state }}</span>
-            </a>
-          {% elif req.github_issue %}
-            <span class="ml-auto text-xs text-gray-400">#{{ req.github_issue }} (loading failed)</span>
-          {% endif %}
+        <li>
+          <details class="group">
+            <summary class="flex items-center gap-3 text-sm cursor-pointer list-none select-none
+                           hover:bg-gray-50 rounded px-2 py-1 -mx-2">
+              <span class="text-gray-400">&#9654;</span>
+              <span class="font-mono text-gray-400 shrink-0">{{ req.id }}</span>
+              <span class="flex-1">{{ req.title }}</span>
+              {% set badge_class = {
+                "draft": "border-gray-300 text-gray-500",
+                "idea": "border-yellow-300 text-yellow-700",
+                "planned": "border-blue-300 text-blue-700",
+                "in-progress": "border-orange-300 text-orange-700",
+                "done": "border-green-400 text-green-700"
+              }[req.status] | default("border-gray-300 text-gray-500") %}
+              <span class="text-xs px-2 py-0.5 rounded-full border {{ badge_class }} shrink-0">
+                {{ req.status }}
+              </span>
+              {% if req.github_issue %}
+                <span class="text-xs text-gray-500 shrink-0">1 issue</span>
+              {% else %}
+                <span class="text-xs text-gray-300 shrink-0">0 issues</span>
+              {% endif %}
+            </summary>
+            <div class="mt-2 ml-8 pl-3 border-l border-gray-100 text-sm text-gray-700 space-y-3">
+              {% if req.why %}
+              <div>
+                <p class="text-xs font-semibold text-gray-400 uppercase mb-1">Why</p>
+                <pre class="whitespace-pre-wrap font-sans text-gray-700">{{ req.why }}</pre>
+              </div>
+              {% endif %}
+              {% if req.what %}
+              <div>
+                <p class="text-xs font-semibold text-gray-400 uppercase mb-1">What</p>
+                <pre class="whitespace-pre-wrap font-sans text-gray-700">{{ req.what }}</pre>
+              </div>
+              {% endif %}
+              {% if req.issue %}
+              <div>
+                <p class="text-xs font-semibold text-gray-400 uppercase mb-1">Issues</p>
+                <a href="{{ req.issue.url }}" target="_blank"
+                   class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border
+                   {% if req.issue.state == 'open' %}border-green-400 text-green-700{% else %}border-purple-400 text-purple-700{% endif %}">
+                  #{{ req.issue.number }} {{ req.issue.state }} ↗
+                </a>
+              </div>
+              {% elif req.github_issue %}
+              <div>
+                <p class="text-xs font-semibold text-gray-400 uppercase mb-1">Issues</p>
+                <span class="text-xs text-gray-400">#{{ req.github_issue }} (details unavailable)</span>
+              </div>
+              {% endif %}
+            </div>
+          </details>
         </li>
         {% endfor %}
       </ul>
