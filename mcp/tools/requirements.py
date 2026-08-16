@@ -21,6 +21,21 @@ logger = logging.getLogger(__name__)
 
 _VALID_STATUSES = {"draft", "idea", "planned", "in-progress", "done"}
 
+_INSTRUCTIONS = """\
+Lachesis workflow — follow these steps in order:
+
+1. create_requirement — capture intent (title, why, what). Requirement starts as 'draft'.
+2. create_github_issues — break it into implementation tasks. Pass issues with title and body.
+3. link_issues — attach the issue numbers to the requirement. Status advances to 'idea'.
+
+A requirement without linked issues is a draft. Archon will not act on drafts.
+"""
+
+
+async def get_initial_instructions() -> str:
+    """Return the standard Lachesis workflow for new Claude sessions."""
+    return _INSTRUCTIONS
+
 
 async def _resolve_repo(repo: str) -> str:
     """Resolve a short name (e.g. 'lachesis') to a registered 'owner/repo' string.

@@ -178,11 +178,8 @@ async def create_pull_request(
     return {"number": data["number"], "url": data["html_url"], "node_id": data["node_id"]}
 
 
-async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
-    """Return the head branch of the first open PR whose ref starts with *head_prefix*.
-
-    Returns ``None`` if no matching PR is found.
-    """
+async def _list_open_prs(repo: str) -> list[dict[str, Any]]:
+    """Return raw PR objects for all open PRs in *repo* (up to 100)."""
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/pulls",
@@ -190,23 +187,24 @@ async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
             params={"state": "open", "per_page": 100},
         )
     if not resp.is_success:
-        logger.warning(
-            "github.find_pr_branch failed repo=%s status=%s",
-            repo,
-            resp.status_code,
-        )
+        logger.warning("github._list_open_prs failed repo=%s status=%s", repo, resp.status_code)
         resp.raise_for_status()
+    return resp.json()  # type: ignore[no-any-return]
+
+
+async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
+    """Return the head branch of the first open PR whose ref starts with *head_prefix*.
+
+    Returns ``None`` if no matching PR is found.
+    """
     try:
-        for pr in resp.json():
+        for pr in await _list_open_prs(repo):
             if pr["head"]["ref"].startswith(head_prefix):
                 return pr["head"]["ref"]  # type: ignore[no-any-return]
     except (KeyError, TypeError) as exc:
         logger.warning(
-            "github.find_pr_branch unexpected response shape repo=%s error=%r",
-            repo,
-            exc,
+            "github.find_pr_branch unexpected response shape repo=%s error=%r", repo, exc
         )
-        return None
     return None
 
 
@@ -215,18 +213,9 @@ async def list_lachesis_prs(repo: str) -> list[dict[str, str]]:
 
     Returns list of {"branch": str, "pr_url": str}.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
-        resp = await http.get(
-            f"{_BASE_URL}/repos/{repo}/pulls",
-            headers=_headers(),
-            params={"state": "open", "per_page": 100},
-        )
-    if not resp.is_success:
-        logger.warning("github.list_lachesis_prs failed repo=%s status=%s", repo, resp.status_code)
-        resp.raise_for_status()
     result: list[dict[str, str]] = []
     try:
-        for pr in resp.json():
+        for pr in await _list_open_prs(repo):
             ref = pr["head"]["ref"]
             if ref.startswith("lachesis/"):
                 result.append({"branch": ref, "pr_url": pr["html_url"]})

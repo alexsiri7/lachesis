@@ -122,6 +122,14 @@ Status is set manually or by Claude based on GitHub issue state — Lachesis doe
 
 ## MCP Tools
 
+### `get_initial_instructions`
+Returns the standard Lachesis workflow. Call this at the start of a new session to orient Claude before capturing requirements.
+
+**Input**: _(none)_
+**Output**: String — the standard workflow steps (create_requirement → create_github_issues → link_issues)
+
+---
+
 ### `list_requirements`
 Returns all requirements for a given repo.
 
@@ -230,9 +238,11 @@ Marks a GitHub issue as blocked by another issue.
 
 ### Starting a session
 
-1. Developer asks Claude what's in progress across a repo
-2. Claude calls `list_requirements` filtered by `in_progress`
-3. Claude summarises open requirements and their linked issues
+1. Developer starts a new Claude session with Lachesis connected
+2. Claude calls `get_initial_instructions` to load the prescribed workflow
+3. Developer asks what's in progress across a repo
+4. Claude calls `list_requirements` filtered by `in_progress`
+5. Claude summarises open requirements and their linked issues
 
 ---
 

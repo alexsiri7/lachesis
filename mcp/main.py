@@ -172,6 +172,14 @@ mcp.tool(
     ),
 )(req_tools.add_dependency)
 
+mcp.tool(
+    description=(
+        "Return the standard Lachesis workflow. Call this at the start of a session "
+        "to learn the correct order: create_requirement → create_github_issues → link_issues."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(req_tools.get_initial_instructions)
+
 # ---------------------------------------------------------------------------
 # Health check route
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from tools.requirements import (
     get_dashboard,
     get_dependencies,
     get_github_issue,
+    get_initial_instructions,
     get_requirement,
     link_issues,
     list_requirements,
@@ -1782,3 +1783,23 @@ async def test_get_dashboard_includes_pr_branch_requirements(
     assert "pr_url" not in main_req
     assert pr_req["pr_url"] == pr_url
     assert result["summary"]["total"] == 2
+
+
+# ---------------------------------------------------------------------------
+# get_initial_instructions tests
+# ---------------------------------------------------------------------------
+
+
+async def test_get_initial_instructions_returns_string() -> None:
+    """Returns a non-empty string."""
+    result = await get_initial_instructions()
+    assert isinstance(result, str)
+    assert result.strip()
+
+
+async def test_get_initial_instructions_mentions_required_tools() -> None:
+    """Instructions reference all three required workflow tools."""
+    result = await get_initial_instructions()
+    assert "create_requirement" in result
+    assert "create_github_issues" in result
+    assert "link_issues" in result
