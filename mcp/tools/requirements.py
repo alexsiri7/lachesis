@@ -527,13 +527,17 @@ async def update_github_issue(
 
     Returns ``number``, ``title``, and ``url`` of the updated issue.
     """
+    if not fields:
+        raise ValueError("fields must not be empty")
     unknown = set(fields) - {"title", "body", "state"}
     if unknown:
         raise ValueError(f"Unknown fields: {unknown!r}. Allowed: title, body, state")
     if "state" in fields and fields["state"] not in {"open", "closed"}:
         raise ValueError(f"Invalid state {fields['state']!r}. Must be 'open' or 'closed'")
-    if not fields:
-        raise ValueError("fields must not be empty")
+    if "title" in fields and not str(fields["title"]).strip():
+        raise ValueError("title must not be empty")
+    if "body" in fields and fields["body"] is not None and not str(fields["body"]).strip():
+        raise ValueError("body must not be empty")
     repo = await _resolve_repo(repo)
     result = await github.update_issue(repo, issue_number, fields)
     if result is None:
