@@ -195,6 +195,14 @@ Returns the dependency relationships of a GitHub issue.
 
 ---
 
+### `add_dependency`
+Marks a GitHub issue as blocked by another issue.
+
+**Input**: `repo`, `issue_number` (integer), `blocked_by_issue_number` (integer)
+**Output**: `{blocked_by: [int, ...], blocking: [int, ...]}` — updated dependency state after the relationship is created
+
+---
+
 ## Typical Workflow
 
 ### Capturing a new requirement

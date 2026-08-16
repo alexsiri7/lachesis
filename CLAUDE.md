@@ -2,7 +2,7 @@
 
 ## What this is
 
-A hosted FastMCP server providing 9 MCP tools for requirements management, writing/reading Markdown files directly to GitHub repos via the GitHub API.
+A hosted FastMCP server providing 10 MCP tools for requirements management, writing/reading Markdown files directly to GitHub repos via the GitHub API.
 
 See [docs/PRD.md](docs/PRD.md) for the full product spec.
 
@@ -36,7 +36,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   web.py           Web dashboard route handlers and Jinja2 setup
   tools/
     __init__.py
-    requirements.py  All 9 MCP tool implementations (includes read-only get_github_issue, get_dependencies)
+    requirements.py  All 10 MCP tool implementations (includes read-only get_github_issue, get_dependencies; write tool add_dependency)
   templates/
     dashboard.html   Read-only requirements dashboard (Jinja2)
   Dockerfile
