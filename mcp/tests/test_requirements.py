@@ -1118,18 +1118,15 @@ async def test_get_github_issue_raises_on_404(httpx_mock: HTTPXMock) -> None:
 # get_dependencies tests
 # ---------------------------------------------------------------------------
 
-_GET_DEPS_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies"
-
-_DEPS_JSON = {
-    "blocked_by": [{"number": 38, "id": 1001}],
-    "blocking": [{"number": 45, "id": 1003}],
-}
+_GET_DEPS_BLOCKED_BY_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies/blocked_by"
+_GET_DEPS_BLOCKING_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies/blocking"
 
 
 @pytest.mark.anyio
 async def test_get_dependencies_returns_blocked_by_and_blocking(httpx_mock: HTTPXMock) -> None:
     """Happy path: returns structured blocked_by and blocking lists."""
-    httpx_mock.add_response(method="GET", url=_GET_DEPS_URL, json=_DEPS_JSON)
+    httpx_mock.add_response(method="GET", url=_GET_DEPS_BLOCKED_BY_URL, json=[{"number": 38, "id": 1001}])
+    httpx_mock.add_response(method="GET", url=_GET_DEPS_BLOCKING_URL, json=[{"number": 45, "id": 1003}])
 
     result = await get_dependencies("owner/repo", 42)
 
@@ -1142,8 +1139,13 @@ async def test_get_dependencies_raises_on_404(httpx_mock: HTTPXMock) -> None:
     """Raises FileNotFoundError when GitHub returns 404 for the issue."""
     httpx_mock.add_response(
         method="GET",
-        url="https://api.github.com/repos/owner/repo/issues/99/dependencies",
+        url="https://api.github.com/repos/owner/repo/issues/99/dependencies/blocked_by",
         status_code=404,
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/99/dependencies/blocking",
+        json=[],
     )
 
     with pytest.raises(FileNotFoundError, match="Issue #99 not found"):
@@ -1155,10 +1157,11 @@ async def test_get_dependencies_propagates_http_error(httpx_mock: HTTPXMock) -> 
     """Non-404 HTTP errors from GitHub must propagate as HTTPStatusError."""
     httpx_mock.add_response(
         method="GET",
-        url=_GET_DEPS_URL,
+        url=_GET_DEPS_BLOCKED_BY_URL,
         status_code=500,
         json={"message": "server error"},
     )
+    httpx_mock.add_response(method="GET", url=_GET_DEPS_BLOCKING_URL, json=[])
 
     with pytest.raises(httpx.HTTPStatusError):
         await get_dependencies("owner/repo", 42)
@@ -1167,9 +1170,8 @@ async def test_get_dependencies_propagates_http_error(httpx_mock: HTTPXMock) -> 
 @pytest.mark.anyio
 async def test_get_dependencies_returns_empty_lists_when_no_deps(httpx_mock: HTTPXMock) -> None:
     """An issue with no dependencies returns empty blocked_by and blocking."""
-    httpx_mock.add_response(
-        method="GET", url=_GET_DEPS_URL, json={"blocked_by": [], "blocking": []}
-    )
+    httpx_mock.add_response(method="GET", url=_GET_DEPS_BLOCKED_BY_URL, json=[])
+    httpx_mock.add_response(method="GET", url=_GET_DEPS_BLOCKING_URL, json=[])
 
     result = await get_dependencies("owner/repo", 42)
 
@@ -1183,7 +1185,8 @@ async def test_get_dependencies_returns_empty_lists_when_no_deps(httpx_mock: HTT
 _ADD_DEP_ISSUE_URL = "https://api.github.com/repos/owner/repo/issues/10"
 _ADD_DEP_BLOCKER_URL = "https://api.github.com/repos/owner/repo/issues/5"
 _ADD_DEP_POST_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocked_by"
-_ADD_DEP_GET_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies"
+_ADD_DEP_GET_BLOCKED_BY_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocked_by"
+_ADD_DEP_GET_BLOCKING_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocking"
 
 _ADD_DEP_SUBJECT_JSON = {
     "id": 2000,
@@ -1215,9 +1218,10 @@ async def test_add_dependency_happy_path(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(method="POST", url=_ADD_DEP_POST_URL, status_code=200, json={})
     httpx_mock.add_response(
         method="GET",
-        url=_ADD_DEP_GET_URL,
-        json={"blocked_by": [{"number": 5, "id": 1001}], "blocking": []},
+        url=_ADD_DEP_GET_BLOCKED_BY_URL,
+        json=[{"number": 5, "id": 1001}],
     )
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_GET_BLOCKING_URL, json=[])
 
     result = await add_dependency("owner/repo", 10, 5)
 
@@ -1254,7 +1258,8 @@ async def test_add_dependency_raises_when_target_disappears_post_mutation(httpx_
     httpx_mock.add_response(method="GET", url=_ADD_DEP_ISSUE_URL, json=_ADD_DEP_SUBJECT_JSON)
     httpx_mock.add_response(method="GET", url=_ADD_DEP_BLOCKER_URL, json=_ADD_DEP_BLOCKER_JSON)
     httpx_mock.add_response(method="POST", url=_ADD_DEP_POST_URL, status_code=200, json={})
-    httpx_mock.add_response(method="GET", url=_ADD_DEP_GET_URL, status_code=404)
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_GET_BLOCKED_BY_URL, status_code=404)
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_GET_BLOCKING_URL, json=[])
 
     with pytest.raises(FileNotFoundError, match="Issue #10 not found"):
         await add_dependency("owner/repo", 10, 5)
