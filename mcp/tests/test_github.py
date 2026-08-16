@@ -434,3 +434,15 @@ async def test_get_issue_dependencies_raises_on_error(httpx_mock: HTTPXMock) -> 
     httpx_mock.add_response(method="GET", url=_GET_DEPS_URL, status_code=500, json={})
     with pytest.raises(httpx.HTTPStatusError):
         await get_issue_dependencies("owner/repo", 42)
+
+
+async def test_get_issue_dependencies_returns_empty_lists_when_no_deps(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url=_GET_DEPS_URL,
+        json={"blocked_by": [], "blocking": []},
+    )
+    result = await get_issue_dependencies("owner/repo", 42)
+    assert result == {"blocked_by": [], "blocking": []}

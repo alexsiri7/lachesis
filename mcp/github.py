@@ -326,13 +326,21 @@ async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int)
 
 
 async def get_issue_dependencies(repo: str, issue_number: int) -> dict[str, Any] | None:
-    """Return blocked_by and blocking issue numbers for *issue_number*, or ``None`` on 404."""
+    """Return blocked_by and blocking issue numbers for *issue_number*, or ``None`` on 404.
+
+    Returned keys: ``blocked_by`` (list of ints), ``blocking`` (list of ints).
+    """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/dependencies",
             headers=_headers(),
         )
     if resp.status_code == 404:
+        logger.debug(
+            "github.get_issue_dependencies 404 repo=%s issue=%s (issue not found or feature unavailable)",
+            repo,
+            issue_number,
+        )
         return None
     if not resp.is_success:
         logger.warning(
@@ -343,7 +351,16 @@ async def get_issue_dependencies(repo: str, issue_number: int) -> dict[str, Any]
         )
     resp.raise_for_status()
     data = resp.json()
-    return {
-        "blocked_by": [item["number"] for item in data.get("blocked_by", [])],
-        "blocking": [item["number"] for item in data.get("blocking", [])],
-    }
+    try:
+        return {
+            "blocked_by": [item["number"] for item in data.get("blocked_by", [])],
+            "blocking": [item["number"] for item in data.get("blocking", [])],
+        }
+    except KeyError as exc:
+        logger.warning(
+            "github.get_issue_dependencies unexpected item schema repo=%s issue=%s missing key=%s",
+            repo,
+            issue_number,
+            exc,
+        )
+        raise
