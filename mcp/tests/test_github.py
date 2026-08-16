@@ -10,6 +10,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from github import (
+    _headers,
     add_issue_dependency,
     add_to_project,
     create_branch,
@@ -23,6 +24,17 @@ from github import (
     list_files,
     update_file,
 )
+
+# ---------------------------------------------------------------------------
+# _headers
+# ---------------------------------------------------------------------------
+
+
+def test_headers_includes_correct_github_api_version() -> None:
+    headers = _headers()
+    assert headers["X-GitHub-Api-Version"] == "2026-03-10"
+    assert headers["Accept"] == "application/vnd.github+json"
+    assert "Authorization" in headers
 
 # ---------------------------------------------------------------------------
 # list_files
@@ -410,28 +422,55 @@ async def test_get_issue_no_linked_pr_returns_none(httpx_mock: HTTPXMock) -> Non
 # get_issue_dependencies
 # ---------------------------------------------------------------------------
 
-_GET_DEPS_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies"
-
-_DEPS_JSON = {
-    "blocked_by": [{"number": 38, "id": 1001}, {"number": 41, "id": 1002}],
-    "blocking": [{"number": 45, "id": 1003}],
-}
+_BLOCKED_BY_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies/blocked_by"
+_BLOCKING_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies/blocking"
 
 
 async def test_get_issue_dependencies_returns_parsed_numbers(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(method="GET", url=_GET_DEPS_URL, json=_DEPS_JSON)
+    httpx_mock.add_response(
+        method="GET",
+        url=_BLOCKED_BY_URL,
+        json=[{"number": 38, "id": 1001}, {"number": 41, "id": 1002}],
+    )
+    httpx_mock.add_response(method="GET", url=_BLOCKING_URL, json=[{"number": 45, "id": 1003}])
     result = await get_issue_dependencies("owner/repo", 42)
     assert result == {"blocked_by": [38, 41], "blocking": [45]}
 
 
-async def test_get_issue_dependencies_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(method="GET", url=_GET_DEPS_URL, status_code=404)
+@pytest.mark.parametrize("which_404", ["blocked_by", "blocking"])
+async def test_get_issue_dependencies_returns_none_when_either_endpoint_is_404(
+    httpx_mock: HTTPXMock, which_404: str
+) -> None:
+    blocked_by_code = 404 if which_404 == "blocked_by" else 200
+    blocking_code = 404 if which_404 == "blocking" else 200
+    httpx_mock.add_response(
+        method="GET",
+        url=_BLOCKED_BY_URL,
+        status_code=blocked_by_code,
+        json=[] if blocked_by_code == 200 else {},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=_BLOCKING_URL,
+        status_code=blocking_code,
+        json=[] if blocking_code == 200 else {},
+    )
     result = await get_issue_dependencies("owner/repo", 42)
     assert result is None
 
 
 async def test_get_issue_dependencies_raises_on_error(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(method="GET", url=_GET_DEPS_URL, status_code=500, json={})
+    httpx_mock.add_response(method="GET", url=_BLOCKED_BY_URL, status_code=500, json={})
+    httpx_mock.add_response(method="GET", url=_BLOCKING_URL, json=[])
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_issue_dependencies("owner/repo", 42)
+
+
+async def test_get_issue_dependencies_raises_on_error_from_blocking_endpoint(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(method="GET", url=_BLOCKED_BY_URL, json=[])
+    httpx_mock.add_response(method="GET", url=_BLOCKING_URL, status_code=500, json={})
     with pytest.raises(httpx.HTTPStatusError):
         await get_issue_dependencies("owner/repo", 42)
 
@@ -439,10 +478,7 @@ async def test_get_issue_dependencies_raises_on_error(httpx_mock: HTTPXMock) -> 
 async def test_get_issue_dependencies_returns_empty_lists_when_no_deps(
     httpx_mock: HTTPXMock,
 ) -> None:
-    httpx_mock.add_response(
-        method="GET",
-        url=_GET_DEPS_URL,
-        json={"blocked_by": [], "blocking": []},
-    )
+    httpx_mock.add_response(method="GET", url=_BLOCKED_BY_URL, json=[])
+    httpx_mock.add_response(method="GET", url=_BLOCKING_URL, json=[])
     result = await get_issue_dependencies("owner/repo", 42)
     assert result == {"blocked_by": [], "blocking": []}
