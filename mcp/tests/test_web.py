@@ -1,14 +1,177 @@
-"""Unit tests for mcp/web.py — _extract_section helper."""
+"""Unit tests for mcp/web.py — _extract_section helper and session auth."""
 
 from __future__ import annotations
 
-import sys
 import os
+import sys
+import time
+from unittest.mock import MagicMock
+
+import httpx
+import pytest
+from httpx import ASGITransport
+from jose import jwt as jose_jwt
 
 # Ensure mcp/ is on the path so we can import web directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from web import _extract_section
+from web import _COOKIE_NAME, _extract_section, _get_web_user_status
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_TEST_SECRET = "test-secret"
+_TEST_EMAIL = "user@example.com"
+
+
+def _make_jwt(email: str, exp_delta_seconds: int = 3600) -> str:
+    """Build a real signed JWT suitable for testing."""
+    exp = int(time.time()) + exp_delta_seconds
+    payload = {"sub": "google-sub", "email": email, "exp": exp}
+    return str(jose_jwt.encode(payload, _TEST_SECRET, algorithm="HS256"))
+
+
+def _make_request(cookie_value: str | None) -> object:
+    """Build a minimal fake request with the session cookie set."""
+    req = MagicMock()
+    req.cookies = {_COOKIE_NAME: cookie_value} if cookie_value else {}
+    return req
+
+
+# ---------------------------------------------------------------------------
+# _get_web_user_status unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_get_web_user_status_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("web.settings.secret_key", _TEST_SECRET)
+    monkeypatch.setattr("web.settings.allowed_email", _TEST_EMAIL)
+    token = _make_jwt(_TEST_EMAIL)
+    status, payload = _get_web_user_status(_make_request(token))
+    assert status == "ok"
+    assert payload is not None
+    assert payload["email"] == _TEST_EMAIL
+
+
+def test_get_web_user_status_expired(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("web.settings.secret_key", _TEST_SECRET)
+    monkeypatch.setattr("web.settings.allowed_email", _TEST_EMAIL)
+    token = _make_jwt(_TEST_EMAIL, exp_delta_seconds=-1)
+    status, payload = _get_web_user_status(_make_request(token))
+    assert status == "expired"
+    assert payload is None
+
+
+def test_get_web_user_status_missing_no_cookie(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("web.settings.secret_key", _TEST_SECRET)
+    monkeypatch.setattr("web.settings.allowed_email", _TEST_EMAIL)
+    status, payload = _get_web_user_status(_make_request(None))
+    assert status == "missing"
+    assert payload is None
+
+
+def test_get_web_user_status_missing_invalid_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("web.settings.secret_key", _TEST_SECRET)
+    monkeypatch.setattr("web.settings.allowed_email", _TEST_EMAIL)
+    status, payload = _get_web_user_status(_make_request("not.a.valid.jwt"))
+    assert status == "missing"
+    assert payload is None
+
+
+def test_get_web_user_status_missing_wrong_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("web.settings.secret_key", _TEST_SECRET)
+    monkeypatch.setattr("web.settings.allowed_email", "other@example.com")
+    token = _make_jwt(_TEST_EMAIL)
+    status, payload = _get_web_user_status(_make_request(token))
+    assert status == "missing"
+    assert payload is None
+
+
+# ---------------------------------------------------------------------------
+# web_index expired-session route tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def app() -> object:
+    from main import app as _app
+
+    return _app
+
+
+@pytest.mark.asyncio
+async def test_web_index_expired_session_redirects_and_clears_cookie(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expired session on GET /web/ must redirect to login?reason=expired and clear the cookie."""
+    monkeypatch.setattr("web.settings.secret_key", _TEST_SECRET)
+    monkeypatch.setattr("web.settings.allowed_email", _TEST_EMAIL)
+    expired_token = _make_jwt(_TEST_EMAIL, exp_delta_seconds=-1)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),  # type: ignore[arg-type]
+        base_url="http://test",
+        follow_redirects=False,
+    ) as client:
+        client.cookies.set(_COOKIE_NAME, expired_token)
+        resp = await client.get("/web/")
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/web/login?reason=expired"
+    # Cookie should be cleared (Set-Cookie with max-age=0 or past expiry date)
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert _COOKIE_NAME in set_cookie
+    assert "max-age=0" in set_cookie.lower() or "expires=" in set_cookie.lower()
+
+
+# ---------------------------------------------------------------------------
+# web_login anti-loop guard and expired banner tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_web_login_expired_session_shows_login_page_not_redirect(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expired session must NOT redirect from login page — that would cause an infinite loop."""
+    monkeypatch.setattr("web.settings.secret_key", _TEST_SECRET)
+    monkeypatch.setattr("web.settings.allowed_email", _TEST_EMAIL)
+    monkeypatch.setattr("web.settings.mcp_base_url", "http://test")
+    expired_token = _make_jwt(_TEST_EMAIL, exp_delta_seconds=-1)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),  # type: ignore[arg-type]
+        base_url="http://test",
+        follow_redirects=False,
+    ) as client:
+        client.cookies.set(_COOKIE_NAME, expired_token)
+        resp = await client.get("/web/login?reason=expired")
+
+    assert resp.status_code == 200
+    assert "Reconnect with Google" in resp.text
+    assert "session has expired" in resp.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_web_login_no_session_shows_default_sign_in(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No session renders the login page with the default 'Sign in with Google' button."""
+    monkeypatch.setattr("web.settings.secret_key", _TEST_SECRET)
+    monkeypatch.setattr("web.settings.allowed_email", _TEST_EMAIL)
+    monkeypatch.setattr("web.settings.mcp_base_url", "http://test")
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),  # type: ignore[arg-type]
+        base_url="http://test",
+        follow_redirects=False,
+    ) as client:
+        resp = await client.get("/web/login")
+
+    assert resp.status_code == 200
+    assert "Sign in with Google" in resp.text
+    assert "session has expired" not in resp.text.lower()
 
 
 def test_extracts_section_in_middle():

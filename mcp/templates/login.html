@@ -3,9 +3,14 @@
 {% block content %}
 <div class="flex flex-col items-center justify-center mt-24 gap-6">
   <h1 class="text-2xl font-bold">Lachesis Dashboard</h1>
+  {% if expired %}
+  <div class="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded px-4 py-3 text-sm">
+    Your session has expired. Please sign in again.
+  </div>
+  {% endif %}
   <a href="{{ login_url }}"
      class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium">
-    Sign in with Google
+    {% if expired %}Reconnect with Google{% else %}Sign in with Google{% endif %}
   </a>
 </div>
 {% endblock %}
