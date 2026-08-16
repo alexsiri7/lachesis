@@ -486,7 +486,13 @@ async def test_create_github_issues_fetches_external_blocker(httpx_mock: HTTPXMo
     httpx_mock.add_response(
         method="GET",
         url="https://api.github.com/repos/owner/repo/issues/3",
-        json={"id": 999, "number": 3, "title": "Old", "state": "open", "html_url": "https://github.com/owner/repo/issues/3"},
+        json={
+            "id": 999,
+            "number": 3,
+            "title": "Old",
+            "state": "open",
+            "html_url": "https://github.com/owner/repo/issues/3",
+        },
     )
     # Dependency POST
     httpx_mock.add_response(
@@ -612,7 +618,9 @@ async def test_create_requirement_increments_past_highest_id(httpx_mock: HTTPXMo
 async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTTPXMock) -> None:
     """On 409 from create_file, creates branch and PR, returns pr_url."""
     httpx_mock.add_response(json=[])  # list_files → empty
-    httpx_mock.add_response(status_code=409, json={"message": "Protected branch"})  # create_file → 409
+    httpx_mock.add_response(
+        status_code=409, json={"message": "Protected branch"}
+    )  # create_file → 409  # noqa: E501
     httpx_mock.add_response(json={"object": {"sha": "deadbeef"}})  # get_branch_sha
     httpx_mock.add_response(status_code=201, json={})  # create_branch
     httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch

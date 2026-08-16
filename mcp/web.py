@@ -146,7 +146,9 @@ async def web_index(request: Request) -> Response:
                 except Exception as exc:
                     logger.warning(
                         "web_index: failed to parse file repo=%s path=%s: %s",
-                        repo_name, f["path"], exc
+                        repo_name,
+                        f["path"],
+                        exc,
                     )
                     continue
                 parsed.append(

@@ -79,7 +79,9 @@ async def get_file(repo: str, path: str) -> tuple[str, str]:
     return content, data["sha"]
 
 
-async def create_file(repo: str, path: str, content: str, message: str, *, branch: str | None = None) -> dict[str, Any]:
+async def create_file(
+    repo: str, path: str, content: str, message: str, *, branch: str | None = None
+) -> dict[str, Any]:
     """Create a new file at *path* in *repo*. Returns the raw GitHub Contents API response.
 
     Pass *branch* to target a specific branch; defaults to the repo's default branch.
@@ -145,7 +147,9 @@ async def create_branch(repo: str, branch_name: str, sha: str) -> None:
     resp.raise_for_status()
 
 
-async def create_pull_request(repo: str, title: str, body: str, head: str, base: str) -> dict[str, Any]:
+async def create_pull_request(
+    repo: str, title: str, body: str, head: str, base: str
+) -> dict[str, Any]:
     """Create a pull request and return ``{number, url}``."""
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.post(
