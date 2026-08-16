@@ -136,6 +136,15 @@ mcp.tool(
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dashboard)
 
+mcp.tool(
+    description=(
+        "Return the current state of a GitHub issue: "
+        "title, body, state (open/closed), assignees, labels, "
+        "and linked PR URL if any."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(req_tools.get_github_issue)
+
 # ---------------------------------------------------------------------------
 # Health check route
 # ---------------------------------------------------------------------------

@@ -260,6 +260,10 @@ async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
         "id": data["id"],
         "title": data["title"],
         "state": data["state"],  # "open" | "closed"
+        "body": data.get("body") or "",
+        "assignees": [a["login"] for a in data.get("assignees", [])],
+        "labels": [lb["name"] for lb in data.get("labels", [])],
+        "linked_pr": data.get("pull_request", {}).get("html_url"),
         "url": data["html_url"],
     }
 
