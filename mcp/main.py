@@ -155,6 +155,15 @@ mcp.tool(
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dependencies)
 
+mcp.tool(
+    description=(
+        "Mark a GitHub issue as blocked by another issue. "
+        "Returns the updated dependency state for the issue: "
+        "blocked_by (issues this one depends on) and "
+        "blocking (issues that depend on this one)."
+    ),
+)(req_tools.add_dependency)
+
 # ---------------------------------------------------------------------------
 # Health check route
 # ---------------------------------------------------------------------------

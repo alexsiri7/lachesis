@@ -45,7 +45,7 @@ def _is_expired(entry: Entry, now_ts: float, now_dt: datetime) -> bool:
     if isinstance(exp, datetime):
         return now_dt > exp
     # numeric (epoch seconds)
-    return bool(now_ts > exp)
+    return now_ts > exp
 
 
 def _cleanup_expired(store: dict[str, Entry]) -> None:

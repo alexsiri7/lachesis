@@ -14,6 +14,7 @@ from pytest_httpx import HTTPXMock
 
 from auth import current_db_user_id
 from tools.requirements import (
+    add_dependency,
     create_github_issues,
     create_requirement,
     delete_requirement,
@@ -1173,3 +1174,87 @@ async def test_get_dependencies_returns_empty_lists_when_no_deps(httpx_mock: HTT
     result = await get_dependencies("owner/repo", 42)
 
     assert result == {"blocked_by": [], "blocking": []}
+
+
+# ---------------------------------------------------------------------------
+# add_dependency tests
+# ---------------------------------------------------------------------------
+
+_ADD_DEP_ISSUE_URL = "https://api.github.com/repos/owner/repo/issues/10"
+_ADD_DEP_BLOCKER_URL = "https://api.github.com/repos/owner/repo/issues/5"
+_ADD_DEP_POST_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies/blocked_by"
+_ADD_DEP_GET_URL = "https://api.github.com/repos/owner/repo/issues/10/dependencies"
+
+_ADD_DEP_SUBJECT_JSON = {
+    "id": 2000,
+    "number": 10,
+    "title": "Subject",
+    "state": "open",
+    "body": "",
+    "assignees": [],
+    "labels": [],
+    "html_url": "https://github.com/owner/repo/issues/10",
+}
+_ADD_DEP_BLOCKER_JSON = {
+    "id": 1001,
+    "number": 5,
+    "title": "Blocker",
+    "state": "open",
+    "body": "",
+    "assignees": [],
+    "labels": [],
+    "html_url": "https://github.com/owner/repo/issues/5",
+}
+
+
+@pytest.mark.anyio
+async def test_add_dependency_happy_path(httpx_mock: HTTPXMock) -> None:
+    """Happy path: validates both issues, POSTs database id (not issue number), returns updated deps."""
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_ISSUE_URL, json=_ADD_DEP_SUBJECT_JSON)
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_BLOCKER_URL, json=_ADD_DEP_BLOCKER_JSON)
+    httpx_mock.add_response(method="POST", url=_ADD_DEP_POST_URL, status_code=200, json={})
+    httpx_mock.add_response(
+        method="GET",
+        url=_ADD_DEP_GET_URL,
+        json={"blocked_by": [{"number": 5, "id": 1001}], "blocking": []},
+    )
+
+    result = await add_dependency("owner/repo", 10, 5)
+
+    assert result == {"blocked_by": [5], "blocking": []}
+    # Verify the POST body uses the database id, not the issue number
+    post_req = [r for r in httpx_mock.get_requests() if r.method == "POST"][0]
+    assert json.loads(post_req.content) == {"issue_id": 1001}
+
+
+@pytest.mark.anyio
+async def test_add_dependency_raises_when_subject_not_found(httpx_mock: HTTPXMock) -> None:
+    """Raises FileNotFoundError when the subject issue does not exist."""
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_ISSUE_URL, status_code=404, json={})
+    # blocker lookup runs in parallel; allow it to return anything
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_BLOCKER_URL, json=_ADD_DEP_BLOCKER_JSON)
+
+    with pytest.raises(FileNotFoundError, match="Issue #10 not found"):
+        await add_dependency("owner/repo", 10, 5)
+
+
+@pytest.mark.anyio
+async def test_add_dependency_raises_when_blocker_not_found(httpx_mock: HTTPXMock) -> None:
+    """Raises FileNotFoundError when the blocked_by issue does not exist."""
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_ISSUE_URL, json=_ADD_DEP_SUBJECT_JSON)
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_BLOCKER_URL, status_code=404, json={})
+
+    with pytest.raises(FileNotFoundError, match="Issue #5 not found"):
+        await add_dependency("owner/repo", 10, 5)
+
+
+@pytest.mark.anyio
+async def test_add_dependency_raises_when_target_disappears_post_mutation(httpx_mock: HTTPXMock) -> None:
+    """Raises FileNotFoundError when get_issue_dependencies returns None after the POST."""
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_ISSUE_URL, json=_ADD_DEP_SUBJECT_JSON)
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_BLOCKER_URL, json=_ADD_DEP_BLOCKER_JSON)
+    httpx_mock.add_response(method="POST", url=_ADD_DEP_POST_URL, status_code=200, json={})
+    httpx_mock.add_response(method="GET", url=_ADD_DEP_GET_URL, status_code=404)
+
+    with pytest.raises(FileNotFoundError, match="Issue #10 not found"):
+        await add_dependency("owner/repo", 10, 5)

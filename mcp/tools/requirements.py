@@ -5,6 +5,7 @@ Real implementations are delivered in issues #4-#10.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import date
@@ -426,6 +427,28 @@ async def get_dependencies(repo: str, issue_number: int) -> dict[str, Any]:
     Returns: {"blocked_by": [int, ...], "blocking": [int, ...]}
     """
     repo = await _resolve_repo(repo)
+    deps = await github.get_issue_dependencies(repo, issue_number)
+    if deps is None:
+        raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
+    return deps
+
+
+async def add_dependency(repo: str, issue_number: int, blocked_by_issue_number: int) -> dict[str, Any]:
+    """Mark issue_number as blocked by blocked_by_issue_number.
+
+    Returns the updated dependency state: {"blocked_by": [int, ...], "blocking": [int, ...]}
+    """
+    repo = await _resolve_repo(repo)
+    # Validate both issues exist before mutating (parallelize to save one round trip)
+    issue, blocked_by_issue = await asyncio.gather(
+        github.get_issue(repo, issue_number),
+        github.get_issue(repo, blocked_by_issue_number),
+    )
+    if issue is None:
+        raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
+    if blocked_by_issue is None:
+        raise FileNotFoundError(f"Issue #{blocked_by_issue_number} not found in {repo!r}")
+    await github.add_issue_dependency(repo, issue_number, blocked_by_issue["id"])
     deps = await github.get_issue_dependencies(repo, issue_number)
     if deps is None:
         raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
