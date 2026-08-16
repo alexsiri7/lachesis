@@ -18,6 +18,7 @@ from tools.requirements import (
     create_requirement,
     delete_requirement,
     get_dashboard,
+    get_github_issue,
     get_requirement,
     link_issues,
     list_requirements,
@@ -486,7 +487,16 @@ async def test_create_github_issues_fetches_external_blocker(httpx_mock: HTTPXMo
     httpx_mock.add_response(
         method="GET",
         url="https://api.github.com/repos/owner/repo/issues/3",
-        json={"id": 999, "number": 3, "title": "Old", "state": "open", "html_url": "https://github.com/owner/repo/issues/3"},
+        json={
+            "id": 999,
+            "number": 3,
+            "title": "Old",
+            "state": "open",
+            "body": "Existing issue body",
+            "assignees": [],
+            "labels": [],
+            "html_url": "https://github.com/owner/repo/issues/3",
+        },
     )
     # Dependency POST
     httpx_mock.add_response(
@@ -612,7 +622,9 @@ async def test_create_requirement_increments_past_highest_id(httpx_mock: HTTPXMo
 async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTTPXMock) -> None:
     """On 409 from create_file, creates branch and PR, returns pr_url."""
     httpx_mock.add_response(json=[])  # list_files → empty
-    httpx_mock.add_response(status_code=409, json={"message": "Protected branch"})  # create_file → 409
+    httpx_mock.add_response(
+        status_code=409, json={"message": "Protected branch"}
+    )  # create_file → 409
     httpx_mock.add_response(json={"object": {"sha": "deadbeef"}})  # get_branch_sha
     httpx_mock.add_response(status_code=201, json={})  # create_branch
     httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
@@ -1049,3 +1061,52 @@ async def test_list_requirements_short_name_case_insensitive(
         result = await list_requirements("lachesis")
 
     assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# get_github_issue tests
+# ---------------------------------------------------------------------------
+
+_ISSUE_URL = "https://api.github.com/repos/owner/repo/issues/42"
+
+_ISSUE_JSON = {
+    "id": 1,
+    "number": 42,
+    "title": "Fix auth bug",
+    "state": "open",
+    "body": "Detailed description",
+    "assignees": [{"login": "alice"}],
+    "labels": [{"name": "bug"}],
+    "pull_request": {"html_url": "https://github.com/owner/repo/pull/7"},
+    "html_url": "https://github.com/owner/repo/issues/42",
+}
+
+
+@pytest.mark.anyio
+async def test_get_github_issue_returns_issue_fields(httpx_mock: HTTPXMock) -> None:
+    """Happy path: returns all expected fields extracted from GitHub API response."""
+    httpx_mock.add_response(method="GET", url=_ISSUE_URL, json=_ISSUE_JSON)
+
+    result = await get_github_issue("owner/repo", 42)
+
+    assert result["number"] == 42
+    assert result["title"] == "Fix auth bug"
+    assert result["body"] == "Detailed description"
+    assert result["assignees"] == ["alice"]
+    assert result["labels"] == ["bug"]
+    assert result["linked_pr"] == "https://github.com/owner/repo/pull/7"
+    assert result["state"] == "open"
+    assert result["url"] == "https://github.com/owner/repo/issues/42"
+
+
+@pytest.mark.anyio
+async def test_get_github_issue_raises_on_404(httpx_mock: HTTPXMock) -> None:
+    """Raises FileNotFoundError when GitHub returns 404 for the issue."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/99",
+        status_code=404,
+    )
+
+    with pytest.raises(FileNotFoundError, match="Issue #99 not found"):
+        await get_github_issue("owner/repo", 99)

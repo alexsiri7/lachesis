@@ -179,6 +179,14 @@ Creates one or more GitHub issues in the repo and returns their numbers and titl
 
 ---
 
+### `get_github_issue`
+Returns the current state of a GitHub issue.
+
+**Input**: `repo`, `issue_number` (integer)
+**Output**: `{id, number, title, body, state, assignees, labels, linked_pr, url}`
+
+---
+
 ## Typical Workflow
 
 ### Capturing a new requirement

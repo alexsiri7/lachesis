@@ -11,9 +11,7 @@ from auth import current_db_user_id
 
 logger = logging.getLogger(__name__)
 
-_GITHUB_URL_RE = re.compile(
-    r"(?:https?://)?github\.com/([^/]+/[^/]+?)(?:\.git)?/?$"
-)
+_GITHUB_URL_RE = re.compile(r"(?:https?://)?github\.com/([^/]+/[^/]+?)(?:\.git)?/?$")
 
 
 def normalize_repo(repo: str) -> str:

@@ -79,7 +79,9 @@ async def get_file(repo: str, path: str) -> tuple[str, str]:
     return content, data["sha"]
 
 
-async def create_file(repo: str, path: str, content: str, message: str, *, branch: str | None = None) -> dict[str, Any]:
+async def create_file(
+    repo: str, path: str, content: str, message: str, *, branch: str | None = None
+) -> dict[str, Any]:
     """Create a new file at *path* in *repo*. Returns the raw GitHub Contents API response.
 
     Pass *branch* to target a specific branch; defaults to the repo's default branch.
@@ -145,7 +147,9 @@ async def create_branch(repo: str, branch_name: str, sha: str) -> None:
     resp.raise_for_status()
 
 
-async def create_pull_request(repo: str, title: str, body: str, head: str, base: str) -> dict[str, Any]:
+async def create_pull_request(
+    repo: str, title: str, body: str, head: str, base: str
+) -> dict[str, Any]:
     """Create a pull request and return ``{number, url}``."""
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.post(
@@ -238,7 +242,12 @@ async def create_issue(
 
 
 async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
-    """Return ``{number, title, state, url}`` for *issue_number*, or ``None`` on 404."""
+    """Return issue fields for *issue_number*, or ``None`` on 404.
+
+    Returned keys: ``number``, ``id``, ``title``, ``state`` (``"open"``/``"closed"``),
+    ``body``, ``assignees`` (list of logins), ``labels`` (list of names),
+    ``linked_pr`` (html_url of the linked PR or ``None``), ``url``.
+    """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}",
@@ -260,6 +269,10 @@ async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
         "id": data["id"],
         "title": data["title"],
         "state": data["state"],  # "open" | "closed"
+        "body": data.get("body") or "",
+        "assignees": [a["login"] for a in data.get("assignees", [])],
+        "labels": [lb["name"] for lb in data.get("labels", [])],
+        "linked_pr": data.get("pull_request", {}).get("html_url"),
         "url": data["html_url"],
     }
 

@@ -16,6 +16,7 @@ import httpx
 import db
 import github
 from auth import current_db_user_id
+
 from .repos import normalize_repo
 
 logger = logging.getLogger(__name__)
@@ -405,3 +406,15 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
         "repos": aggregated,
         "summary": {"total": total, "by_status": status_counts, "unlinked_count": unlinked_count},
     }
+
+
+async def get_github_issue(repo: str, issue_number: int) -> dict[str, Any]:
+    """Return the current state of a GitHub issue.
+
+    Returns title, body, state (open/closed), assignees, labels, and linked PR URL.
+    """
+    repo = await _resolve_repo(repo)
+    issue = await github.get_issue(repo, issue_number)
+    if issue is None:
+        raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
+    return issue
