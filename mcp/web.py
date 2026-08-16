@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 from typing import Any, cast
 from urllib.parse import urlencode
@@ -22,6 +23,19 @@ from oauth import create_jwt, exchange_google_code
 from settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_section(body: str, heading: str) -> str:
+    """Return the text content of a '## {heading}' section from a markdown body."""
+    normalized = (body or "").replace("\r\n", "\n")
+    pattern = rf"(?:^|\n)## {re.escape(heading)}\s*\n(.*?)(?=\n## |\Z)"
+    m = re.search(pattern, normalized, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    if normalized:
+        logger.debug("_extract_section: section '%s' not found in body (len=%d)", heading, len(normalized))
+    return ""
+
 
 # ---------------------------------------------------------------------------
 # Jinja2 setup
@@ -108,14 +122,23 @@ async def web_index(request: Request) -> Response:
             for f in files:
                 if not f["name"].endswith(".md"):
                     continue
-                content, _ = await github.get_file(repo_name, f["path"])
-                post = frontmatter.loads(content)
+                try:
+                    content, _ = await github.get_file(repo_name, f["path"])
+                    post = frontmatter.loads(content)
+                except Exception as exc:
+                    logger.warning(
+                        "web_index: failed to parse file repo=%s path=%s: %s",
+                        repo_name, f["path"], exc
+                    )
+                    continue
                 parsed.append(
                     {
                         "id": post.get("id", ""),
                         "title": post.get("title", ""),
                         "status": post.get("status", ""),
                         "github_issue": post.get("github_issue"),
+                        "why": _extract_section(post.content, "Why"),
+                        "what": _extract_section(post.content, "What"),
                     }
                 )
 
