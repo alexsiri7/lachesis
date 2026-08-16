@@ -17,6 +17,7 @@ from github import (
     create_file,
     create_issue,
     create_pull_request,
+    find_pr_branch,
     get_branch_sha,
     get_file,
     get_issue,
@@ -35,6 +36,7 @@ def test_headers_includes_correct_github_api_version() -> None:
     assert headers["X-GitHub-Api-Version"] == "2026-03-10"
     assert headers["Accept"] == "application/vnd.github+json"
     assert "Authorization" in headers
+
 
 # ---------------------------------------------------------------------------
 # list_files
@@ -162,6 +164,87 @@ async def test_update_file_sends_base64_encoded_content(httpx_mock: HTTPXMock) -
     request = httpx_mock.get_requests()[0]
     body = json.loads(request.content)
     assert base64.b64decode(body["content"]).decode() == raw
+
+
+async def test_update_file_includes_branch_in_payload(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+    await update_file("owner/repo", "req.md", "content", "sha1", "msg", branch="feature-branch")
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert body["branch"] == "feature-branch"
+
+
+async def test_update_file_omits_branch_when_not_provided(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+    await update_file("owner/repo", "req.md", "content", "sha1", "msg")
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert "branch" not in body
+
+
+# ---------------------------------------------------------------------------
+# list_files — branch param
+# ---------------------------------------------------------------------------
+
+
+async def test_list_files_sends_ref_param_when_branch_provided(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json=[])
+    await list_files("owner/repo", "requirements", branch="lachesis/req-001-user-auth")
+    request = httpx_mock.get_requests()[0]
+    assert "ref=lachesis" in str(request.url)
+
+
+async def test_list_files_omits_ref_param_when_no_branch(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json=[])
+    await list_files("owner/repo", "requirements")
+    request = httpx_mock.get_requests()[0]
+    assert "ref=" not in str(request.url)
+
+
+# ---------------------------------------------------------------------------
+# get_file — branch param
+# ---------------------------------------------------------------------------
+
+
+async def test_get_file_sends_ref_param_when_branch_provided(httpx_mock: HTTPXMock) -> None:
+    raw = "# Hello"
+    encoded = base64.b64encode(raw.encode()).decode("ascii")
+    httpx_mock.add_response(json={"content": encoded, "sha": "abc"})
+    await get_file("owner/repo", "requirements/001-auth.md", branch="lachesis/req-001-user-auth")
+    request = httpx_mock.get_requests()[0]
+    assert "ref=lachesis" in str(request.url)
+
+
+# ---------------------------------------------------------------------------
+# find_pr_branch
+# ---------------------------------------------------------------------------
+
+
+async def test_find_pr_branch_returns_matching_ref(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json=[
+            {"head": {"ref": "lachesis/req-002-other"}},
+            {"head": {"ref": "lachesis/req-001-user-auth"}},
+        ]
+    )
+    result = await find_pr_branch("owner/repo", "lachesis/req-001-")
+    assert result == "lachesis/req-001-user-auth"
+
+
+async def test_find_pr_branch_returns_none_when_no_match(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json=[{"head": {"ref": "lachesis/req-002-other"}}])
+    result = await find_pr_branch("owner/repo", "lachesis/req-001-")
+    assert result is None
+
+
+async def test_find_pr_branch_returns_none_when_empty(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json=[])
+    result = await find_pr_branch("owner/repo", "lachesis/req-001-")
+    assert result is None
+
+
+async def test_find_pr_branch_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await find_pr_branch("owner/repo", "lachesis/req-001-")
 
 
 # ---------------------------------------------------------------------------
