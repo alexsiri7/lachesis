@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -354,3 +356,195 @@ async def test_callback_upsert_failure_is_nonfatal(
 
     # Must still redirect even when Supabase is down
     assert resp.status_code == 302
+
+
+# ---------------------------------------------------------------------------
+# /oauth/token endpoint — authorization_code grant (Finding #3: upsert_refresh_token)
+# ---------------------------------------------------------------------------
+
+
+def _pkce_pair() -> tuple[str, str]:
+    """Return a (verifier, challenge) PKCE pair for testing."""
+    verifier = "test-code-verifier-abc123"
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+@pytest.fixture()
+def seeded_auth_code() -> str:
+    """Pre-seed an auth code in auth_codes and return the code string."""
+    from oauth_state import auth_codes, cleanup_and_store
+
+    _, challenge = _pkce_pair()
+    code = "test-auth-code-xyz987"
+    cleanup_and_store(
+        auth_codes,
+        code,
+        {
+            "user_id": "uid123",
+            "email": "allowed@example.com",
+            "lachesis_uid": "db-uuid-456",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "https://claude.ai/callback",
+            "scope": "mcp",
+            "client_id": "test-client",
+        },
+    )
+    return code
+
+
+@pytest.mark.asyncio
+async def test_token_endpoint_authorization_code_calls_upsert_refresh_token(
+    app: object, seeded_auth_code: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_db.upsert_refresh_token is called with user_id when issuing tokens via authorization_code."""
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    verifier, _ = _pkce_pair()
+    with patch("oauth._db.upsert_refresh_token") as mock_upsert:
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            resp = await client.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": seeded_auth_code,
+                    "redirect_uri": "https://claude.ai/callback",
+                    "client_id": "test-client",
+                    "code_verifier": verifier,
+                },
+            )
+    assert resp.status_code == 200
+    mock_upsert.assert_called_once()
+    _rt, rt_data, _expires = mock_upsert.call_args[0]
+    assert rt_data["user_id"] == "uid123"
+    assert rt_data["email"] == "allowed@example.com"
+
+
+@pytest.mark.asyncio
+async def test_token_endpoint_authorization_code_returns_access_and_refresh_tokens(
+    app: object, seeded_auth_code: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Token response includes access_token, refresh_token, token_type, and scope."""
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    verifier, _ = _pkce_pair()
+    with patch("oauth._db.upsert_refresh_token"):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            resp = await client.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": seeded_auth_code,
+                    "redirect_uri": "https://claude.ai/callback",
+                    "client_id": "test-client",
+                    "code_verifier": verifier,
+                },
+            )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "access_token" in body
+    assert "refresh_token" in body
+    assert body["token_type"] == "bearer"
+    assert body["scope"] == "mcp"
+
+
+# ---------------------------------------------------------------------------
+# /oauth/token endpoint — refresh_token grant (Finding #4: rotation path)
+# ---------------------------------------------------------------------------
+
+_STORED_REFRESH_DATA = {
+    "user_id": "uid123",
+    "email": "allowed@example.com",
+    "lachesis_uid": "db-uuid-456",
+    "client_id": "test-client",
+    "scope": "mcp",
+}
+
+
+@pytest.mark.asyncio
+async def test_token_endpoint_refresh_token_grant_returns_new_tokens(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """grant_type=refresh_token with a valid token returns new access_token and refresh_token."""
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    with (
+        patch("oauth._db.get_refresh_token", return_value=_STORED_REFRESH_DATA),
+        patch("oauth._db.delete_refresh_token"),
+        patch("oauth._db.upsert_refresh_token"),
+    ):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            resp = await client.post(
+                "/oauth/token",
+                data={"grant_type": "refresh_token", "refresh_token": "old-rt-abc"},
+            )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "access_token" in body
+    assert "refresh_token" in body
+    assert body["token_type"] == "bearer"
+
+
+@pytest.mark.asyncio
+async def test_token_endpoint_refresh_token_grant_rotates_old_token(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Old refresh token is deleted (rotated out) when a new one is issued."""
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    with (
+        patch("oauth._db.get_refresh_token", return_value=_STORED_REFRESH_DATA),
+        patch("oauth._db.delete_refresh_token") as mock_delete,
+        patch("oauth._db.upsert_refresh_token"),
+    ):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            await client.post(
+                "/oauth/token",
+                data={"grant_type": "refresh_token", "refresh_token": "old-rt-abc"},
+            )
+    mock_delete.assert_called_once_with("old-rt-abc")
+
+
+@pytest.mark.asyncio
+async def test_token_endpoint_refresh_token_grant_invalid_token_returns_400(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid or expired refresh_token returns 400."""
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    with patch("oauth._db.get_refresh_token", return_value=None):
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            resp = await client.post(
+                "/oauth/token",
+                data={"grant_type": "refresh_token", "refresh_token": "bad-token"},
+            )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_token_endpoint_refresh_token_grant_missing_token_returns_400(
+    app: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing refresh_token field with grant_type=refresh_token returns 400."""
+    monkeypatch.setattr("oauth.settings.secret_key", "test-secret")
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),  # type: ignore[arg-type]
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/oauth/token",
+            data={"grant_type": "refresh_token"},
+        )
+    assert resp.status_code == 400
