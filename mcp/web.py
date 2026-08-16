@@ -118,6 +118,7 @@ async def web_index(request: Request) -> Response:
     if status != "ok":
         return RedirectResponse(url="/web/login", status_code=302)
 
+    assert user is not None  # guaranteed when status == "ok"
     lachesis_uid = user.get("lachesis_uid")
     if not lachesis_uid:
         logger.warning("web_index: JWT has no lachesis_uid for sub=%s", user.get("sub"))
