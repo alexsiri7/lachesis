@@ -94,6 +94,7 @@ async def create_file(repo: str, path: str, content: str, message: str, *, branc
             headers=_headers(),
             json=payload,
         )
+    # 409 is handled by the caller (branch-protection fallback); skip the warning
     if not resp.is_success and resp.status_code != 409:
         logger.warning(
             "github.create_file failed repo=%s path=%s status=%s",
@@ -101,7 +102,7 @@ async def create_file(repo: str, path: str, content: str, message: str, *, branc
             path,
             resp.status_code,
         )
-    resp.raise_for_status()
+    resp.raise_for_status()  # propagates 409 to caller as HTTPStatusError
     return resp.json()  # type: ignore[no-any-return]
 
 
