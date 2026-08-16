@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 import frontmatter
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from jose import JWTError
+from jose.exceptions import ExpiredSignatureError
 from jose import jwt as jose_jwt
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
@@ -62,19 +63,29 @@ def _render(template_name: str, **ctx: Any) -> HTMLResponse:
     return HTMLResponse(tmpl.render(**ctx))
 
 
-def _get_web_user(request: Request) -> dict[str, Any] | None:
-    """Decode the web session cookie. Returns {sub, email, lachesis_uid} or None."""
+def _get_web_user_status(
+    request: Request,
+) -> tuple[str, dict[str, Any] | None]:
+    """Decode the web session cookie.
+
+    Returns:
+        ("ok", payload)      — valid session
+        ("expired", None)    — JWT exists but has expired
+        ("missing", None)    — no cookie, invalid token, or wrong email
+    """
     token = request.cookies.get(_COOKIE_NAME)
     if not token or not settings.secret_key:
-        return None
+        return ("missing", None)
     try:
         payload = jose_jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+    except ExpiredSignatureError:
+        return ("expired", None)
     except JWTError:
-        return None
+        return ("missing", None)
     email = payload.get("email", "")
     if settings.allowed_email and email != settings.allowed_email:
-        return None
-    return cast(dict[str, Any], payload)
+        return ("missing", None)
+    return ("ok", cast(dict[str, Any], payload))
 
 
 def _google_auth_url(redirect_uri: str, state: str) -> str:
@@ -96,8 +107,12 @@ def _google_auth_url(redirect_uri: str, state: str) -> str:
 
 async def web_index(request: Request) -> Response:
     """GET /web/ -- redirect to login if no valid session, else show dashboard."""
-    user = _get_web_user(request)
-    if user is None:
+    status, user = _get_web_user_status(request)
+    if status == "expired":
+        resp = RedirectResponse(url="/web/login?reason=expired", status_code=302)
+        resp.delete_cookie(_COOKIE_NAME)
+        return resp
+    if status != "ok" or user is None:
         return RedirectResponse(url="/web/login", status_code=302)
 
     lachesis_uid = user.get("lachesis_uid")
@@ -177,16 +192,17 @@ async def web_index(request: Request) -> Response:
 
 async def web_login(request: Request) -> Response:
     """GET /web/login -- show login page with Google sign-in button."""
-    user = _get_web_user(request)
-    if user is not None:
+    status, user = _get_web_user_status(request)
+    if status == "ok" and user is not None:
         return RedirectResponse(url="/web/", status_code=302)
 
+    expired = request.query_params.get("reason") == "expired"
     state = secrets.token_urlsafe(16)
     base = settings.mcp_base_url.rstrip("/")
     redirect_uri = f"{base}/web/callback"
     login_url = _google_auth_url(redirect_uri, state)
 
-    response = _render("login.html", user_email=None, login_url=login_url)
+    response = _render("login.html", user_email=None, login_url=login_url, expired=expired)
     # Store state in short-lived cookie (10 min) to verify in callback
     response.set_cookie(
         _OAUTH_STATE_COOKIE,
