@@ -18,6 +18,7 @@ from github import (
     create_pull_request,
     get_branch_sha,
     get_file,
+    get_issue,
     list_files,
     update_file,
 )
@@ -328,3 +329,77 @@ async def test_create_pull_request_raises_on_error(httpx_mock: HTTPXMock) -> Non
     httpx_mock.add_response(status_code=422, json={"message": "Validation Failed"})
     with pytest.raises(httpx.HTTPStatusError):
         await create_pull_request("owner/repo", "title", "body", "branch", "main")
+
+
+# ---------------------------------------------------------------------------
+# get_issue
+# ---------------------------------------------------------------------------
+
+
+async def test_get_issue_returns_all_fields(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "id": 100,
+            "number": 5,
+            "title": "Test issue",
+            "state": "open",
+            "body": "Some description",
+            "assignees": [{"login": "bob"}],
+            "labels": [{"name": "enhancement"}],
+            "pull_request": {"html_url": "https://github.com/o/r/pull/3"},
+            "html_url": "https://github.com/o/r/issues/5",
+        }
+    )
+    result = await get_issue("owner/repo", 5)
+    assert result is not None
+    assert result["number"] == 5
+    assert result["id"] == 100
+    assert result["title"] == "Test issue"
+    assert result["state"] == "open"
+    assert result["body"] == "Some description"
+    assert result["assignees"] == ["bob"]
+    assert result["labels"] == ["enhancement"]
+    assert result["linked_pr"] == "https://github.com/o/r/pull/3"
+    assert result["url"] == "https://github.com/o/r/issues/5"
+
+
+async def test_get_issue_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=404)
+    result = await get_issue("owner/repo", 999)
+    assert result is None
+
+
+async def test_get_issue_null_body_coerced_to_empty_string(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "id": 1,
+            "number": 1,
+            "title": "T",
+            "state": "open",
+            "body": None,
+            "assignees": [],
+            "labels": [],
+            "html_url": "https://github.com/o/r/issues/1",
+        }
+    )
+    result = await get_issue("owner/repo", 1)
+    assert result is not None
+    assert result["body"] == ""
+
+
+async def test_get_issue_no_linked_pr_returns_none(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "id": 1,
+            "number": 1,
+            "title": "T",
+            "state": "open",
+            "body": "",
+            "assignees": [],
+            "labels": [],
+            "html_url": "https://github.com/o/r/issues/1",
+        }
+    )
+    result = await get_issue("owner/repo", 1)
+    assert result is not None
+    assert result["linked_pr"] is None

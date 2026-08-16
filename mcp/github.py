@@ -242,7 +242,12 @@ async def create_issue(
 
 
 async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
-    """Return ``{number, title, state, url}`` for *issue_number*, or ``None`` on 404."""
+    """Return issue fields for *issue_number*, or ``None`` on 404.
+
+    Returned keys: ``number``, ``id``, ``title``, ``state`` (``"open"``/``"closed"``),
+    ``body``, ``assignees`` (list of logins), ``labels`` (list of names),
+    ``linked_pr`` (html_url of the linked PR or ``None``), ``url``.
+    """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}",
