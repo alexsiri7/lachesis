@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, MutableMapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import sentry_sdk
@@ -18,7 +18,12 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 import db as _db
-from auth import current_db_user_id, current_user_id, decode_jwt_ignoring_expiry, resolve_user_id_from_jwt
+from auth import (
+    current_db_user_id,
+    current_user_id,
+    decode_jwt_ignoring_expiry,
+    resolve_user_id_from_jwt,
+)
 from settings import settings
 from tools import repos as repo_tools
 from tools import requirements as req_tools
@@ -60,7 +65,8 @@ mcp: FastMCP = FastMCP(
 # ---------------------------------------------------------------------------
 # OAuth 2.1 + discovery routes
 # ---------------------------------------------------------------------------
-from oauth import create_jwt, register_routes as _register_oauth_routes  # noqa: E402
+from oauth import create_jwt  # noqa: E402
+from oauth import register_routes as _register_oauth_routes  # noqa: E402
 
 _register_oauth_routes(mcp)
 
@@ -242,7 +248,11 @@ def _check_refresh_token_health() -> None:
     buffer = timedelta(days=_REFRESH_TOKEN_WARN_DAYS)
     expiring_soon = [
         t for t in tokens
-        if (t["expires_at"].replace(tzinfo=UTC) if t["expires_at"].tzinfo is None else t["expires_at"]) - now < buffer
+        if (
+            t["expires_at"].replace(tzinfo=UTC)
+            if t["expires_at"].tzinfo is None
+            else t["expires_at"]
+        ) - now < buffer
     ]
     if expiring_soon:
         logger.warning(
@@ -339,7 +349,9 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                             current_db_user_id.set(str(db_user["id"]))
                         except Exception:
                             logger.warning(
-                                "middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True
+                                "middleware: upsert_user fallback failed for sub=%s",
+                                user_id,
+                                exc_info=True,
                             )
                     logger.info(
                         "middleware: auto-refreshed expired token for sub=%s", user_id

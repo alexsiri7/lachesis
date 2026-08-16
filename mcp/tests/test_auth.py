@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from jose import jwt as jose_jwt
 
@@ -87,8 +89,6 @@ def test_resolve_tuple_shape_is_str_str_str_or_none(monkeypatch: pytest.MonkeyPa
 # ---------------------------------------------------------------------------
 # decode_jwt_ignoring_expiry tests
 # ---------------------------------------------------------------------------
-
-import time
 
 
 def _make_expired_jwt(

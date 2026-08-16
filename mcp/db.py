@@ -237,4 +237,7 @@ def list_active_refresh_tokens() -> list[dict[str, Any]]:
     with _engine().connect() as conn:
         result = conn.execute(sql)
         rows = result.mappings().all()
-    return [{"token": str(r["token"]), "data": dict(r["data"]), "expires_at": r["expires_at"]} for r in rows]
+    return [
+        {"token": str(r["token"]), "data": dict(r["data"]), "expires_at": r["expires_at"]}
+        for r in rows
+    ]
