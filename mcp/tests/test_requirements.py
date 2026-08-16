@@ -1567,6 +1567,22 @@ async def test_delete_requirement_raises_when_not_found_on_main_or_pr(
         await delete_requirement("owner/repo", "001")
 
 
+async def test_delete_requirement_refuses_done_on_pr_branch(httpx_mock: HTTPXMock) -> None:
+    """delete_requirement still refuses done status when req lives on a PR branch."""
+    pr_branch = "lachesis/req-001-user-auth"
+    # 1. list_files on main → no match
+    httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
+    # 2. find_pr_branch → GET /pulls?state=open
+    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}}])
+    # 3. list_files on PR branch
+    httpx_mock.add_response(json=_LIST_RESP)
+    # 4. get_file on PR branch → done status
+    httpx_mock.add_response(json=_make_file_response(_DONE_MD, "branchsha"))
+
+    with pytest.raises(ValueError, match="done requirement"):
+        await delete_requirement("owner/repo", "001")
+
+
 # ---------------------------------------------------------------------------
 # get_dashboard — PR branch support
 # ---------------------------------------------------------------------------
