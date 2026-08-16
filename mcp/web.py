@@ -115,7 +115,7 @@ async def web_index(request: Request) -> Response:
         resp = RedirectResponse(url="/web/login?reason=expired", status_code=302)
         resp.delete_cookie(_COOKIE_NAME)
         return resp
-    if status != "ok" or user is None:
+    if status != "ok":
         return RedirectResponse(url="/web/login", status_code=302)
 
     lachesis_uid = user.get("lachesis_uid")
@@ -198,7 +198,7 @@ async def web_index(request: Request) -> Response:
 async def web_login(request: Request) -> Response:
     """GET /web/login -- show login page with Google sign-in button."""
     status, user = _get_web_user_status(request)
-    if status == "ok" and user is not None:
+    if status == "ok":
         return RedirectResponse(url="/web/", status_code=302)
 
     expired = request.query_params.get("reason") == "expired"
