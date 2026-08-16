@@ -1101,7 +1101,7 @@ async def test_get_github_issue_returns_issue_fields(httpx_mock: HTTPXMock) -> N
 
 @pytest.mark.anyio
 async def test_get_github_issue_raises_on_404(httpx_mock: HTTPXMock) -> None:
-    """Returns FileNotFoundError when GitHub returns 404 for the issue."""
+    """Raises FileNotFoundError when GitHub returns 404 for the issue."""
     httpx_mock.add_response(
         method="GET",
         url="https://api.github.com/repos/owner/repo/issues/99",
