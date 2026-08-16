@@ -55,6 +55,28 @@ async def _resolve_repo(repo: str) -> str:
     return normalized
 
 
+async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, str | None]:
+    """Locate a requirement file on the default branch or an open PR branch.
+
+    Returns ``(path, content, sha, branch)``.  *branch* is ``None`` for the
+    default branch.  Raises :class:`FileNotFoundError` if not found.
+    """
+    files = await github.list_files(repo, "requirements")
+    matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    branch: str | None = None
+    if not matching:
+        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
+        if branch is None:
+            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+        files = await github.list_files(repo, "requirements", branch=branch)
+        matching = [f for f in files if f["name"].startswith(f"{id}-")]
+        if not matching:
+            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+    path = matching[0]["path"]
+    content, sha = await github.get_file(repo, path, branch=branch)
+    return path, content, sha, branch
+
+
 async def list_requirements(repo: str) -> list[dict[str, Any]]:
     """Return all requirements for a given repo (id, title, status, github_issue)."""
     repo = await _resolve_repo(repo)
@@ -112,19 +134,7 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
 async def get_requirement(repo: str, id: str) -> str:
     """Return the full markdown content of a single requirement file."""
     repo = await _resolve_repo(repo)
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        lachesis_prs = await github.list_lachesis_prs(repo)
-        for pr_info in lachesis_prs:
-            branch = pr_info["branch"]
-            pr_files = await github.list_files(repo, "requirements", branch=branch)
-            pr_matching = [f for f in pr_files if f["name"].startswith(f"{id}-")]
-            if pr_matching:
-                content, _ = await github.get_file(repo, pr_matching[0]["path"], branch=branch)
-                return content
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-    content, _ = await github.get_file(repo, matching[0]["path"])
+    _, content, _, _ = await _locate_requirement(repo, id)
     return content
 
 
@@ -257,26 +267,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     """Update fields (title, why, what, status) in an existing requirement."""
     repo = await _resolve_repo(repo)
-    branch: str | None = None
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        logger.info(
-            "update_requirement: requirement %r not on default branch "
-            "for repo=%s, checking open PRs",
-            id,
-            repo,
-        )
-        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
-        if branch is None:
-            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-        files = await github.list_files(repo, "requirements", branch=branch)
-        matching = [f for f in files if f["name"].startswith(f"{id}-")]
-        if not matching:
-            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-
-    path = matching[0]["path"]
-    content, sha = await github.get_file(repo, path, branch=branch)
+    path, content, sha, branch = await _locate_requirement(repo, id)
     post = frontmatter.loads(content)
 
     allowed = {"title", "why", "what", "status"}
@@ -317,29 +308,7 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
     repo = await _resolve_repo(repo)
-    branch: str | None = None
-    # Locate the requirement file
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        logger.info(
-            "delete_requirement: requirement %r not on default branch "
-            "for repo=%s, checking open PRs",
-            id,
-            repo,
-        )
-        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
-        if branch is None:
-            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-        files = await github.list_files(repo, "requirements", branch=branch)
-        matching = [f for f in files if f["name"].startswith(f"{id}-")]
-        if not matching:
-            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-
-    path = matching[0]["path"]
-    content, sha = await github.get_file(repo, path, branch=branch)
-
-    # Parse frontmatter to check status
+    path, content, sha, branch = await _locate_requirement(repo, id)
     post = frontmatter.loads(content)
     if post.get("status") == "done":
         raise ValueError(
@@ -355,29 +324,7 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
     repo = await _resolve_repo(repo)
-    branch: str | None = None
-    # Locate the requirement file — first on the default branch
-    files = await github.list_files(repo, "requirements")
-    matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    if not matching:
-        # Requirement may live on an open PR branch (created via branch-protection fallback)
-        logger.info(
-            "link_issues: requirement %r not on default branch for repo=%s, checking open PRs",
-            id,
-            repo,
-        )
-        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
-        if branch is None:
-            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-        files = await github.list_files(repo, "requirements", branch=branch)
-        matching = [f for f in files if f["name"].startswith(f"{id}-")]
-        if not matching:
-            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-
-    path = matching[0]["path"]
-    content, sha = await github.get_file(repo, path, branch=branch)
-
-    # Parse frontmatter
+    path, content, sha, branch = await _locate_requirement(repo, id)
     post = frontmatter.loads(content)
 
     # Update metadata
