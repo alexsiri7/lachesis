@@ -39,3 +39,31 @@ def resolve_user_id_from_jwt(token: str) -> tuple[str, str, str | None] | None:
         return None
     lachesis_uid = payload.get("lachesis_uid")
     return str(sub), email, (str(lachesis_uid) if lachesis_uid else None)
+
+
+def decode_jwt_ignoring_expiry(token: str) -> tuple[str, str, str | None] | None:
+    """Like resolve_user_id_from_jwt but skips expiry validation.
+
+    Used to extract user identity from an expired access token so the middleware
+    can attempt a proactive refresh using a stored Lachesis refresh token.
+    Returns (google_sub, email, lachesis_uid) or None if otherwise invalid.
+    """
+    if not settings.secret_key:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=["HS256"],
+            options={"verify_exp": False},
+        )
+    except JWTError:
+        return None
+    sub = payload.get("sub")
+    if not sub:
+        return None
+    email = payload.get("email", "")
+    if settings.allowed_email and email != settings.allowed_email:
+        return None
+    lachesis_uid = payload.get("lachesis_uid")
+    return str(sub), email, (str(lachesis_uid) if lachesis_uid else None)

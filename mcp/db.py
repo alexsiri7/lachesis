@@ -206,3 +206,38 @@ def delete_refresh_token(token: str) -> None:
     sql = text("DELETE FROM lachesis_refresh_tokens WHERE token = :token")
     with _engine().begin() as conn:
         conn.execute(sql, {"token": token})
+
+
+def get_refresh_token_by_user_id(user_id: str) -> tuple[str, dict[str, Any]] | None:
+    """Return the most recent valid refresh token for a given Google sub ID, or None."""
+    sql = text(
+        """
+        SELECT token, data FROM lachesis_refresh_tokens
+        WHERE data->>'user_id' = :user_id AND expires_at > now()
+        ORDER BY created_at DESC LIMIT 1
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql, {"user_id": user_id})
+        row = result.mappings().first()
+    if row is None:
+        return None
+    return str(row["token"]), dict(row["data"])
+
+
+def list_active_refresh_tokens() -> list[dict[str, Any]]:
+    """Return all non-expired refresh tokens, ordered by expiry (soonest first)."""
+    sql = text(
+        """
+        SELECT token, data, expires_at FROM lachesis_refresh_tokens
+        WHERE expires_at > now()
+        ORDER BY expires_at ASC
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql)
+        rows = result.mappings().all()
+    return [
+        {"token": str(r["token"]), "data": dict(r["data"]), "expires_at": r["expires_at"]}
+        for r in rows
+    ]

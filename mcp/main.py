@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable, MutableMapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import sentry_sdk
@@ -16,7 +18,12 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 import db as _db
-from auth import current_db_user_id, current_user_id, resolve_user_id_from_jwt
+from auth import (
+    current_db_user_id,
+    current_user_id,
+    decode_jwt_ignoring_expiry,
+    resolve_user_id_from_jwt,
+)
 from settings import settings
 from tools import repos as repo_tools
 from tools import requirements as req_tools
@@ -58,6 +65,7 @@ mcp: FastMCP = FastMCP(
 # ---------------------------------------------------------------------------
 # OAuth 2.1 + discovery routes
 # ---------------------------------------------------------------------------
+from oauth import create_jwt  # noqa: E402
 from oauth import register_routes as _register_oauth_routes  # noqa: E402
 
 _register_oauth_routes(mcp)
@@ -219,6 +227,44 @@ mcp.custom_route("/web/logout", methods=["GET"])(web_logout)
 # ---------------------------------------------------------------------------
 _RESOURCE_METADATA_URI = "{base}/.well-known/oauth-protected-resource"
 
+_REFRESH_TOKEN_WARN_DAYS = 5
+_startup_check_done = False
+
+
+def _check_refresh_token_health() -> None:
+    """Log refresh token health. Runs once on first request. Non-fatal if DB unavailable."""
+    try:
+        tokens = _db.list_active_refresh_tokens()
+    except Exception as exc:
+        logger.warning("startup token health check failed: %s", exc)
+        return
+    if not tokens:
+        logger.warning(
+            "startup check: no active refresh tokens found — "
+            "MCP clients will need to re-authenticate"
+        )
+        return
+    now = datetime.now(UTC)
+    buffer = timedelta(days=_REFRESH_TOKEN_WARN_DAYS)
+    expiring_soon = [
+        t for t in tokens
+        if (
+            t["expires_at"].replace(tzinfo=UTC)
+            if t["expires_at"].tzinfo is None
+            else t["expires_at"]
+        ) - now < buffer
+    ]
+    if expiring_soon:
+        logger.warning(
+            "startup check: %d refresh token(s) expiring within %d days",
+            len(expiring_soon),
+            _REFRESH_TOKEN_WARN_DAYS,
+        )
+    else:
+        logger.info(
+            "startup check: %d active refresh token(s), all healthy", len(tokens)
+        )
+
 
 def with_user_context(app: ASGIApp) -> ASGIApp:
     async def wrapper(
@@ -226,9 +272,16 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
         receive: Callable[[], Awaitable[MutableMapping[str, Any]]],
         send: Callable[[MutableMapping[str, Any]], Awaitable[None]],
     ) -> None:
+        global _startup_check_done
+
         if scope["type"] != "http":
             await app(scope, receive, send)
             return
+
+        # Run startup health check once on first HTTP request
+        if not _startup_check_done:
+            _startup_check_done = True
+            _check_refresh_token_health()
 
         headers = dict(scope.get("headers", []))
         auth_header = headers.get(b"authorization", b"").decode("ascii", errors="replace")
@@ -252,40 +305,116 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
 
         resolved = resolve_user_id_from_jwt(token) if token else None
 
-        if resolved is None:
-            base = settings.mcp_base_url.rstrip("/")
-            resource_uri = _RESOURCE_METADATA_URI.format(base=base)
-            body = b'{"error":"unauthorized"}'
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 401,
-                    "headers": [
-                        [b"content-type", b"application/json"],
-                        [
-                            b"www-authenticate",
-                            f'Bearer resource_metadata="{resource_uri}"'.encode(),
-                        ],
-                    ],
-                }
-            )
-            await send({"type": "http.response.body", "body": body})
+        if resolved is not None:
+            # Valid token — normal path
+            user_id, email, lachesis_uid = resolved
+            current_user_id.set(user_id)
+            if lachesis_uid:
+                current_db_user_id.set(lachesis_uid)
+            else:
+                try:
+                    db_user = _db.upsert_user(user_id, email)
+                    current_db_user_id.set(str(db_user["id"]))
+                except Exception:
+                    logger.warning(
+                        "middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True
+                    )
+            await app(scope, receive, send)
             return
 
-        user_id, email, lachesis_uid = resolved
-        current_user_id.set(user_id)
-        if lachesis_uid:
-            current_db_user_id.set(lachesis_uid)
-        else:
-            # Token predates lachesis_uid claim — look up / create the DB user now
-            try:
-                db_user = _db.upsert_user(user_id, email)
-                current_db_user_id.set(str(db_user["id"]))
-            except Exception:
-                logger.warning(
-                    "middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True
-                )
-        await app(scope, receive, send)
+        # JWT failed validation — check if it's an expired (but otherwise valid) token
+        if token:
+            decoded = decode_jwt_ignoring_expiry(token)
+            if decoded is not None:
+                user_id, email, lachesis_uid = decoded
+                # Look up a valid refresh token for this user
+                try:
+                    rt = _db.get_refresh_token_by_user_id(user_id)
+                except Exception as exc:
+                    logger.warning(
+                        "middleware: refresh token lookup failed for sub=%s: %s", user_id, exc
+                    )
+                    rt = None
+                if rt is not None:
+                    _rt_token, rt_data = rt
+                    if not lachesis_uid:
+                        lachesis_uid = rt_data.get("lachesis_uid")
+                    new_access_token = create_jwt(user_id, email, lachesis_uid)
+                    current_user_id.set(user_id)
+                    if lachesis_uid:
+                        current_db_user_id.set(lachesis_uid)
+                    else:
+                        try:
+                            db_user = _db.upsert_user(user_id, email)
+                            current_db_user_id.set(str(db_user["id"]))
+                        except Exception:
+                            logger.warning(
+                                "middleware: upsert_user fallback failed for sub=%s",
+                                user_id,
+                                exc_info=True,
+                            )
+                    logger.info(
+                        "middleware: auto-refreshed expired token for sub=%s", user_id
+                    )
+
+                    async def _send_with_new_token(event: MutableMapping[str, Any]) -> None:
+                        if event["type"] == "http.response.start":
+                            headers_list = list(event.get("headers", []))
+                            headers_list.append(
+                                [b"x-lachesis-access-token", new_access_token.encode()]
+                            )
+                            event = {**event, "headers": headers_list}
+                        await send(event)
+
+                    await app(scope, receive, _send_with_new_token)
+                    return
+                else:
+                    # Expired JWT + no valid refresh token → actionable 401
+                    logger.warning(
+                        "middleware: expired token with no valid refresh token for sub=%s", user_id
+                    )
+                    base = settings.mcp_base_url.rstrip("/")
+                    resource_uri = _RESOURCE_METADATA_URI.format(base=base)
+                    body = json.dumps({
+                        "error": "token_expired",
+                        "description": (
+                            "Access token has expired and no valid refresh token was found. "
+                            "Please re-authenticate via the OAuth flow."
+                        ),
+                    }).encode()
+                    await send({
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [
+                            [b"content-type", b"application/json"],
+                            [
+                                b"www-authenticate",
+                                f'Bearer realm="lachesis" error="invalid_token" '
+                                f'resource_metadata="{resource_uri}"'.encode(),
+                            ],
+                        ],
+                    })
+                    await send({"type": "http.response.body", "body": body})
+                    return
+
+        # No token or completely invalid token → generic 401
+        base = settings.mcp_base_url.rstrip("/")
+        resource_uri = _RESOURCE_METADATA_URI.format(base=base)
+        body = b'{"error":"unauthorized"}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    [b"content-type", b"application/json"],
+                    [
+                        b"www-authenticate",
+                        f'Bearer resource_metadata="{resource_uri}"'.encode(),
+                    ],
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
     return wrapper
 
