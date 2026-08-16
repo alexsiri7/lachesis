@@ -187,6 +187,14 @@ Returns the current state of a GitHub issue.
 
 ---
 
+### `get_dependencies`
+Returns the dependency relationships of a GitHub issue.
+
+**Input**: `repo`, `issue_number` (integer)
+**Output**: `{blocked_by: [int, ...], blocking: [int, ...]}` — lists of issue numbers this issue depends on and issues that depend on it
+
+---
+
 ## Typical Workflow
 
 ### Capturing a new requirement

@@ -18,6 +18,7 @@ from tools.requirements import (
     create_requirement,
     delete_requirement,
     get_dashboard,
+    get_dependencies,
     get_github_issue,
     get_requirement,
     link_issues,
@@ -1110,3 +1111,65 @@ async def test_get_github_issue_raises_on_404(httpx_mock: HTTPXMock) -> None:
 
     with pytest.raises(FileNotFoundError, match="Issue #99 not found"):
         await get_github_issue("owner/repo", 99)
+
+
+# ---------------------------------------------------------------------------
+# get_dependencies tests
+# ---------------------------------------------------------------------------
+
+_GET_DEPS_URL = "https://api.github.com/repos/owner/repo/issues/42/dependencies"
+
+_DEPS_JSON = {
+    "blocked_by": [{"number": 38, "id": 1001}],
+    "blocking": [{"number": 45, "id": 1003}],
+}
+
+
+@pytest.mark.anyio
+async def test_get_dependencies_returns_blocked_by_and_blocking(httpx_mock: HTTPXMock) -> None:
+    """Happy path: returns structured blocked_by and blocking lists."""
+    httpx_mock.add_response(method="GET", url=_GET_DEPS_URL, json=_DEPS_JSON)
+
+    result = await get_dependencies("owner/repo", 42)
+
+    assert result["blocked_by"] == [38]
+    assert result["blocking"] == [45]
+
+
+@pytest.mark.anyio
+async def test_get_dependencies_raises_on_404(httpx_mock: HTTPXMock) -> None:
+    """Raises FileNotFoundError when GitHub returns 404 for the issue."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/99/dependencies",
+        status_code=404,
+    )
+
+    with pytest.raises(FileNotFoundError, match="Issue #99 not found"):
+        await get_dependencies("owner/repo", 99)
+
+
+@pytest.mark.anyio
+async def test_get_dependencies_propagates_http_error(httpx_mock: HTTPXMock) -> None:
+    """Non-404 HTTP errors from GitHub must propagate as HTTPStatusError."""
+    httpx_mock.add_response(
+        method="GET",
+        url=_GET_DEPS_URL,
+        status_code=500,
+        json={"message": "server error"},
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_dependencies("owner/repo", 42)
+
+
+@pytest.mark.anyio
+async def test_get_dependencies_returns_empty_lists_when_no_deps(httpx_mock: HTTPXMock) -> None:
+    """An issue with no dependencies returns empty blocked_by and blocking."""
+    httpx_mock.add_response(
+        method="GET", url=_GET_DEPS_URL, json={"blocked_by": [], "blocking": []}
+    )
+
+    result = await get_dependencies("owner/repo", 42)
+
+    assert result == {"blocked_by": [], "blocking": []}
