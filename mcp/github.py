@@ -358,9 +358,9 @@ async def get_issue_dependencies(repo: str, issue_number: int) -> dict[str, Any]
             "blocked_by": [item["number"] for item in blocked_by_resp.json()],
             "blocking": [item["number"] for item in blocking_resp.json()],
         }
-    except KeyError as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         logger.warning(
-            "github.get_issue_dependencies unexpected item schema repo=%s issue=%s missing key=%s",
+            "github.get_issue_dependencies unexpected response shape repo=%s issue=%s error=%r",
             repo,
             issue_number,
             exc,
