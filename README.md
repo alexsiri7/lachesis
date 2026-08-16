@@ -22,9 +22,11 @@ Lachesis captures requirements as Markdown files inside each repo (`requirements
 
 ## Integrating with Lachesis
 
-At the start of every session, integrations (Claude Code, Archon, or any MCP client) should call `get_initial_instructions`. This returns the workflow guidelines Claude needs to work correctly with Lachesis — for example, that every `create_requirement` call should be followed by `create_github_issues` and `link_issues` so the requirement reaches `idea` status with actionable tasks attached.
+> **Note**: The `get_initial_instructions` tool is planned but not yet implemented (see #74).
 
-The guidelines live on the Lachesis server, so they stay in sync automatically. No external system prompt maintenance required.
+Once available, integrations (Claude Code, Archon, or any MCP client) should call `get_initial_instructions` at the start of every session. This will return the workflow guidelines Claude needs to work correctly with Lachesis — for example, that every `create_requirement` call should be followed by `create_github_issues` and `link_issues` so the requirement reaches `idea` status with actionable tasks attached.
+
+The guidelines will live on the Lachesis server, so they stay in sync automatically. No external system prompt maintenance required.
 
 ## Development
 
