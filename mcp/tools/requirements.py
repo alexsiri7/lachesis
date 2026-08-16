@@ -60,21 +60,52 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
     repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
     results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
     for f in files:
         if not f["name"].endswith(".md"):
             continue
         content, _ = await github.get_file(repo, f["path"])
         post = frontmatter.loads(content)
+        req_id = post["id"]
+        seen_ids.add(req_id)
         github_issue = post.get("github_issue")
         results.append(
             {
-                "id": post["id"],
+                "id": req_id,
                 "title": post["title"],
                 "status": post["status"],
                 "github_issue": github_issue,
                 "warning": "no linked issues" if github_issue is None else None,
             }
         )
+
+    lachesis_prs = await github.list_lachesis_prs(repo)
+    for pr_info in lachesis_prs:
+        branch = pr_info["branch"]
+        pr_url = pr_info["pr_url"]
+        pr_files = await github.list_files(repo, "requirements", branch=branch)
+        for f in pr_files:
+            if not f["name"].endswith(".md"):
+                continue
+            content, _ = await github.get_file(repo, f["path"], branch=branch)
+            post = frontmatter.loads(content)
+            req_id = post["id"]
+            if req_id in seen_ids:
+                continue
+            seen_ids.add(req_id)
+            github_issue = post.get("github_issue")
+            results.append(
+                {
+                    "id": req_id,
+                    "title": post["title"],
+                    "status": post["status"],
+                    "github_issue": github_issue,
+                    "pr_url": pr_url,
+                    "warning": "no linked issues" if github_issue is None else None,
+                }
+            )
+
     return results
 
 
@@ -84,6 +115,14 @@ async def get_requirement(repo: str, id: str) -> str:
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
+        lachesis_prs = await github.list_lachesis_prs(repo)
+        for pr_info in lachesis_prs:
+            branch = pr_info["branch"]
+            pr_files = await github.list_files(repo, "requirements", branch=branch)
+            pr_matching = [f for f in pr_files if f["name"].startswith(f"{id}-")]
+            if pr_matching:
+                content, _ = await github.get_file(repo, pr_matching[0]["path"], branch=branch)
+                return content
         raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
     content, _ = await github.get_file(repo, matching[0]["path"])
     return content
@@ -186,13 +225,26 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     """Update fields (title, why, what, status) in an existing requirement."""
     repo = await _resolve_repo(repo)
+    branch: str | None = None
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+        logger.info(
+            "update_requirement: requirement %r not on default branch "
+            "for repo=%s, checking open PRs",
+            id,
+            repo,
+        )
+        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
+        if branch is None:
+            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+        files = await github.list_files(repo, "requirements", branch=branch)
+        matching = [f for f in files if f["name"].startswith(f"{id}-")]
+        if not matching:
+            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
 
     path = matching[0]["path"]
-    content, sha = await github.get_file(repo, path)
+    content, sha = await github.get_file(repo, path, branch=branch)
     post = frontmatter.loads(content)
 
     allowed = {"title", "why", "what", "status"}
@@ -224,21 +276,36 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     post["updated"] = date.today().isoformat()
 
     updated_content = frontmatter.dumps(post)
-    await github.update_file(repo, path, updated_content, sha, f"chore: update requirement {id}")
+    await github.update_file(
+        repo, path, updated_content, sha, f"chore: update requirement {id}", branch=branch
+    )
     return cast(str, updated_content)
 
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
     repo = await _resolve_repo(repo)
+    branch: str | None = None
     # Locate the requirement file
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
-        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+        logger.info(
+            "delete_requirement: requirement %r not on default branch "
+            "for repo=%s, checking open PRs",
+            id,
+            repo,
+        )
+        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
+        if branch is None:
+            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+        files = await github.list_files(repo, "requirements", branch=branch)
+        matching = [f for f in files if f["name"].startswith(f"{id}-")]
+        if not matching:
+            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
 
     path = matching[0]["path"]
-    content, sha = await github.get_file(repo, path)
+    content, sha = await github.get_file(repo, path, branch=branch)
 
     # Parse frontmatter to check status
     post = frontmatter.loads(content)
@@ -249,7 +316,7 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
         )
 
     # Delete the file
-    await github.delete_file(repo, path, sha, f"chore: delete requirement {id}")
+    await github.delete_file(repo, path, sha, f"chore: delete requirement {id}", branch=branch)
     return {"deleted": path}
 
 
@@ -387,11 +454,14 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
         try:
             files = await github.list_files(repo_name, "requirements")
             requirements: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
             for f in files:
                 if not f["name"].endswith(".md"):
                     continue
                 content, _ = await github.get_file(repo_name, f["path"])
                 post = frontmatter.loads(content)
+                req_id = post["id"]
+                seen_ids.add(req_id)
                 req_status = post.get("status", "")
                 status_counts[req_status] = status_counts.get(req_status, 0) + 1
                 if status is not None and req_status != status:
@@ -399,13 +469,44 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                 github_issue = post.get("github_issue")
                 requirements.append(
                     {
-                        "id": post["id"],
+                        "id": req_id,
                         "title": post["title"],
                         "status": req_status,
                         "github_issue": github_issue,
                         "warning": "no linked issues" if github_issue is None else None,
                     }
                 )
+
+            lachesis_prs = await github.list_lachesis_prs(repo_name)
+            for pr_info in lachesis_prs:
+                branch = pr_info["branch"]
+                pr_url = pr_info["pr_url"]
+                pr_files = await github.list_files(repo_name, "requirements", branch=branch)
+                for f in pr_files:
+                    if not f["name"].endswith(".md"):
+                        continue
+                    content, _ = await github.get_file(repo_name, f["path"], branch=branch)
+                    post = frontmatter.loads(content)
+                    req_id = post["id"]
+                    if req_id in seen_ids:
+                        continue
+                    seen_ids.add(req_id)
+                    req_status = post.get("status", "")
+                    status_counts[req_status] = status_counts.get(req_status, 0) + 1
+                    if status is not None and req_status != status:
+                        continue
+                    github_issue = post.get("github_issue")
+                    requirements.append(
+                        {
+                            "id": req_id,
+                            "title": post["title"],
+                            "status": req_status,
+                            "github_issue": github_issue,
+                            "pr_url": pr_url,
+                            "warning": "no linked issues" if github_issue is None else None,
+                        }
+                    )
+
             aggregated.append({"repo": repo_name, "requirements": requirements})
         except Exception:
             logger.warning("get_dashboard: failed to fetch requirements from %s", repo_name)

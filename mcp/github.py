@@ -214,6 +214,33 @@ async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
     return None
 
 
+async def list_lachesis_prs(repo: str) -> list[dict[str, str]]:
+    """Return all open PRs whose head branch starts with 'lachesis/'.
+
+    Returns list of {"branch": str, "pr_url": str}.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/pulls",
+            headers=_headers(),
+            params={"state": "open", "per_page": 100},
+        )
+    if not resp.is_success:
+        logger.warning("github.list_lachesis_prs failed repo=%s status=%s", repo, resp.status_code)
+        resp.raise_for_status()
+    result: list[dict[str, str]] = []
+    try:
+        for pr in resp.json():
+            ref = pr["head"]["ref"]
+            if ref.startswith("lachesis/"):
+                result.append({"branch": ref, "pr_url": pr["html_url"]})
+    except (KeyError, TypeError) as exc:
+        logger.warning(
+            "github.list_lachesis_prs unexpected response shape repo=%s error=%r", repo, exc
+        )
+    return result
+
+
 async def update_file(
     repo: str, path: str, content: str, sha: str, message: str, *, branch: str | None = None
 ) -> dict[str, Any]:
@@ -243,14 +270,22 @@ async def update_file(
     return resp.json()  # type: ignore[no-any-return]
 
 
-async def delete_file(repo: str, path: str, sha: str, message: str) -> None:
-    """Delete the file at *path* (requires current *sha*)."""
+async def delete_file(
+    repo: str, path: str, sha: str, message: str, *, branch: str | None = None
+) -> None:
+    """Delete the file at *path* (requires current *sha*).
+
+    Pass *branch* to target a specific branch; defaults to the repo's default branch.
+    """
+    payload: dict[str, Any] = {"message": message, "sha": sha}
+    if branch:
+        payload["branch"] = branch
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.request(
             "DELETE",
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
-            json={"message": message, "sha": sha},
+            json=payload,
         )
     if not resp.is_success:
         logger.warning(
