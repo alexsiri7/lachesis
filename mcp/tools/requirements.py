@@ -262,7 +262,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
         # Requirement may live on an open PR branch (created via branch-protection fallback)
-        logger.warning(
+        logger.info(
             "link_issues: requirement %r not on default branch for repo=%s, checking open PRs",
             id,
             repo,

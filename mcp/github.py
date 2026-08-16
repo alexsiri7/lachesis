@@ -200,9 +200,17 @@ async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
             resp.status_code,
         )
         resp.raise_for_status()
-    for pr in resp.json():
-        if pr["head"]["ref"].startswith(head_prefix):
-            return pr["head"]["ref"]  # type: ignore[no-any-return]
+    try:
+        for pr in resp.json():
+            if pr["head"]["ref"].startswith(head_prefix):
+                return pr["head"]["ref"]  # type: ignore[no-any-return]
+    except (KeyError, TypeError) as exc:
+        logger.warning(
+            "github.find_pr_branch unexpected response shape repo=%s error=%r",
+            repo,
+            exc,
+        )
+        return None
     return None
 
 

@@ -166,10 +166,17 @@ async def test_link_issues_found_on_pr_branch_writes_back_to_branch(
     assert post["github_issue"] == 42
 
     # update_file request must include branch in payload
-    update_request = httpx_mock.get_requests()[4]
+    requests = httpx_mock.get_requests()
+    update_request = requests[4]
     body = json.loads(update_request.content)
     assert body["branch"] == pr_branch
     assert body["sha"] == "branchsha"
+
+    # list_files (request 2) and get_file (request 3) must use PR branch ref
+    # Branch name is URL-encoded in the query string (slashes → %2F)
+    pr_branch_encoded = pr_branch.replace("/", "%2F")
+    assert f"ref={pr_branch_encoded}" in str(requests[2].url)
+    assert f"ref={pr_branch_encoded}" in str(requests[3].url)
 
 
 async def test_link_issues_raises_when_not_found_on_main_or_pr_branch(
