@@ -31,9 +31,7 @@ async def list_files(repo: str, path: str, *, branch: str | None = None) -> list
     If *path* resolves to a single file rather than a directory, returns a
     one-element list (GitHub Contents API returns a dict in that case).
     """
-    params: dict[str, str] = {}
-    if branch:
-        params["ref"] = branch
+    params = {"ref": branch} if branch else {}
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
@@ -60,9 +58,7 @@ async def get_file(repo: str, path: str, *, branch: str | None = None) -> tuple[
 
     Pass *branch* to target a specific branch; defaults to the repo's default branch.
     """
-    params: dict[str, str] = {}
-    if branch:
-        params["ref"] = branch
+    params = {"ref": branch} if branch else {}
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
@@ -359,6 +355,38 @@ async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
         "assignees": [a["login"] for a in data.get("assignees", [])],
         "labels": [lb["name"] for lb in data.get("labels", [])],
         "linked_pr": data.get("pull_request", {}).get("html_url"),
+        "url": data["html_url"],
+    }
+
+
+async def update_issue(
+    repo: str, issue_number: int, fields: dict[str, Any]
+) -> dict[str, Any] | None:
+    """PATCH an issue's title, body, and/or state. Returns None on 404.
+
+    Accepted keys in *fields*: ``title``, ``body``, ``state`` (``"open"`` or ``"closed"``).
+    Returned keys: ``number``, ``title``, ``url``.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.patch(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}",
+            headers=_headers(),
+            json=fields,
+        )
+    if resp.status_code == 404:
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.update_issue failed repo=%s issue=%s status=%s",
+            repo,
+            issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "number": data["number"],
+        "title": data["title"],
         "url": data["html_url"],
     }
 

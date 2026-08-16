@@ -147,6 +147,14 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Update a GitHub issue's title, body, and/or state. "
+        "fields accepts: title (str), body (str), state ('open' or 'closed'). "
+        "Returns the updated issue number, title, and URL."
+    ),
+)(req_tools.update_github_issue)
+
+mcp.tool(
+    description=(
         "Return the dependency relationships of a GitHub issue: "
         "blocked_by (issues this one depends on) and "
         "blocking (issues that depend on this one). "

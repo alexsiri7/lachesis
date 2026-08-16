@@ -187,6 +187,14 @@ Returns the current state of a GitHub issue.
 
 ---
 
+### `update_github_issue`
+Updates a GitHub issue's title, body, and/or state.
+
+**Input**: `repo`, `issue_number` (integer), `fields` (object — any combination of `title`, `body`, `state` (`"open"` or `"closed"`))
+**Output**: `{number, title, url}` of the updated issue
+
+---
+
 ### `get_dependencies`
 Returns the dependency relationships of a GitHub issue.
 
