@@ -337,7 +337,7 @@ async def get_issue_dependencies(repo: str, issue_number: int) -> dict[str, Any]
         )
     if resp.status_code == 404:
         logger.debug(
-            "github.get_issue_dependencies 404 repo=%s issue=%s (issue not found or feature unavailable)",
+            "github.get_issue_dependencies repo=%s issue=%s: 404 (not found)",
             repo,
             issue_number,
         )

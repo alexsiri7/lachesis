@@ -1166,7 +1166,9 @@ async def test_get_dependencies_propagates_http_error(httpx_mock: HTTPXMock) -> 
 @pytest.mark.anyio
 async def test_get_dependencies_returns_empty_lists_when_no_deps(httpx_mock: HTTPXMock) -> None:
     """An issue with no dependencies returns empty blocked_by and blocking."""
-    httpx_mock.add_response(method="GET", url=_GET_DEPS_URL, json={"blocked_by": [], "blocking": []})
+    httpx_mock.add_response(
+        method="GET", url=_GET_DEPS_URL, json={"blocked_by": [], "blocking": []}
+    )
 
     result = await get_dependencies("owner/repo", 42)
 
