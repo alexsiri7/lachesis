@@ -267,6 +267,21 @@ def _check_refresh_token_health() -> None:
         logger.info("startup check: %d active refresh token(s), all healthy", len(tokens))
 
 
+def _apply_user_context(user_id: str, email: str, lachesis_uid: str | None) -> None:
+    """Set current_user_id and current_db_user_id context vars for this request."""
+    current_user_id.set(user_id)
+    if lachesis_uid:
+        current_db_user_id.set(lachesis_uid)
+    else:
+        try:
+            db_user = _db.upsert_user(user_id, email)
+            current_db_user_id.set(str(db_user["id"]))
+        except Exception:
+            logger.warning(
+                "middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True
+            )
+
+
 def with_user_context(app: ASGIApp) -> ASGIApp:
     async def wrapper(
         scope: MutableMapping[str, Any],
@@ -309,17 +324,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
         if resolved is not None:
             # Valid token — normal path
             user_id, email, lachesis_uid = resolved
-            current_user_id.set(user_id)
-            if lachesis_uid:
-                current_db_user_id.set(lachesis_uid)
-            else:
-                try:
-                    db_user = _db.upsert_user(user_id, email)
-                    current_db_user_id.set(str(db_user["id"]))
-                except Exception:
-                    logger.warning(
-                        "middleware: upsert_user fallback failed for sub=%s", user_id, exc_info=True
-                    )
+            _apply_user_context(user_id, email, lachesis_uid)
             await app(scope, receive, send)
             return
 
@@ -341,19 +346,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     if not lachesis_uid:
                         lachesis_uid = rt_data.get("lachesis_uid")
                     new_access_token = create_jwt(user_id, email, lachesis_uid)
-                    current_user_id.set(user_id)
-                    if lachesis_uid:
-                        current_db_user_id.set(lachesis_uid)
-                    else:
-                        try:
-                            db_user = _db.upsert_user(user_id, email)
-                            current_db_user_id.set(str(db_user["id"]))
-                        except Exception:
-                            logger.warning(
-                                "middleware: upsert_user fallback failed for sub=%s",
-                                user_id,
-                                exc_info=True,
-                            )
+                    _apply_user_context(user_id, email, lachesis_uid)
                     logger.info("middleware: auto-refreshed expired token for sub=%s", user_id)
 
                     async def _send_with_new_token(event: MutableMapping[str, Any]) -> None:
