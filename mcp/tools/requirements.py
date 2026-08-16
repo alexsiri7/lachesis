@@ -216,11 +216,17 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
             )
             raise
         pr_url = pr["url"]
-        # Attempt to enable automerge — graceful fallback if unavailable
+        # Attempt to enable automerge — best-effort; PR creation already succeeded,
+        # so any automerge failure is swallowed and the pr_url is returned for manual merge.
         try:
             repo_settings = await github.get_repo_settings(repo)
             if repo_settings["allow_auto_merge"]:
-                merge_method = "SQUASH" if repo_settings["allow_squash_merge"] else "MERGE"
+                if repo_settings["allow_squash_merge"]:
+                    merge_method = "SQUASH"
+                elif repo_settings["allow_merge_commit"]:
+                    merge_method = "MERGE"
+                else:
+                    merge_method = "REBASE"
                 await github.enable_automerge(pr["node_id"], merge_method)
                 if not repo_settings["delete_branch_on_merge"]:
                     logger.info(

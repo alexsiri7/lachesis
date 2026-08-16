@@ -457,6 +457,7 @@ async def get_repo_settings(repo: str) -> dict[str, Any]:
     """Return merge/automerge settings for *repo*.
 
     Returned keys: ``allow_auto_merge`` (bool), ``allow_squash_merge`` (bool),
+    ``allow_merge_commit`` (bool), ``allow_rebase_merge`` (bool),
     ``delete_branch_on_merge`` (bool).
     """
     async with httpx.AsyncClient(timeout=10.0) as http:
@@ -475,6 +476,8 @@ async def get_repo_settings(repo: str) -> dict[str, Any]:
     return {
         "allow_auto_merge": data.get("allow_auto_merge", False),
         "allow_squash_merge": data.get("allow_squash_merge", True),
+        "allow_merge_commit": data.get("allow_merge_commit", True),
+        "allow_rebase_merge": data.get("allow_rebase_merge", True),
         "delete_branch_on_merge": data.get("delete_branch_on_merge", False),
     }
 
@@ -483,8 +486,10 @@ async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> Non
     """Enable automerge on a pull request via GraphQL.
 
     *merge_method* must be ``"SQUASH"``, ``"MERGE"``, or ``"REBASE"``.
-    Raises :class:`httpx.HTTPStatusError` on HTTP failure.
-    Logs a warning (without raising) on GraphQL-level errors.
+
+    Raises :class:`httpx.HTTPStatusError` on HTTP-level failure (non-2xx response).
+    Raises :class:`RuntimeError` on GraphQL-level errors (HTTP 200 but
+    ``data["errors"]`` is present, e.g. insufficient permissions or ineligible PR).
     """
     query = """
     mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
@@ -522,3 +527,4 @@ async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> Non
     data = resp.json()
     if "errors" in data:
         logger.warning("github.enable_automerge graphql errors: %s", data["errors"])
+        raise RuntimeError(f"GraphQL errors enabling automerge: {data['errors']}")
