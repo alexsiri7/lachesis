@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from jose import jwt as jose_jwt
 
-from auth import resolve_user_id_from_jwt
+from auth import decode_jwt_ignoring_expiry, resolve_user_id_from_jwt
 
 SECRET = "test-secret"
 
@@ -82,3 +82,60 @@ def test_resolve_tuple_shape_is_str_str_str_or_none(monkeypatch: pytest.MonkeyPa
     assert isinstance(user_id_without, str)
     assert isinstance(email_without, str)
     assert lachesis_uid_without is None
+
+
+# ---------------------------------------------------------------------------
+# decode_jwt_ignoring_expiry tests
+# ---------------------------------------------------------------------------
+
+import time
+
+
+def _make_expired_jwt(
+    sub: str,
+    email: str,
+    lachesis_uid: str | None = None,
+    secret: str = SECRET,
+) -> str:
+    """Mint an expired HS256 JWT for testing."""
+    payload: dict[str, object] = {"sub": sub, "email": email, "exp": int(time.time()) - 1}
+    if lachesis_uid is not None:
+        payload["lachesis_uid"] = lachesis_uid
+    return str(jose_jwt.encode(payload, secret, algorithm="HS256"))
+
+
+def test_decode_jwt_ignoring_expiry_returns_tuple_for_expired_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("auth.settings.secret_key", SECRET)
+    monkeypatch.setattr("auth.settings.allowed_email", "user@example.com")
+    token = _make_expired_jwt("google-sub", "user@example.com", lachesis_uid="db-uuid-123")
+    result = decode_jwt_ignoring_expiry(token)
+    assert result == ("google-sub", "user@example.com", "db-uuid-123")
+
+
+def test_decode_jwt_ignoring_expiry_returns_none_without_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("auth.settings.secret_key", "")
+    monkeypatch.setattr("auth.settings.allowed_email", "user@example.com")
+    token = _make_expired_jwt("google-sub", "user@example.com")
+    assert decode_jwt_ignoring_expiry(token) is None
+
+
+def test_decode_jwt_ignoring_expiry_returns_none_for_invalid_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("auth.settings.secret_key", SECRET)
+    monkeypatch.setattr("auth.settings.allowed_email", "user@example.com")
+    token = _make_expired_jwt("google-sub", "user@example.com", secret="wrong-secret")
+    assert decode_jwt_ignoring_expiry(token) is None
+
+
+def test_decode_jwt_ignoring_expiry_returns_none_for_wrong_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("auth.settings.secret_key", SECRET)
+    monkeypatch.setattr("auth.settings.allowed_email", "user@example.com")
+    token = _make_expired_jwt("google-sub", "attacker@evil.com")
+    assert decode_jwt_ignoring_expiry(token) is None
