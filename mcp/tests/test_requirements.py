@@ -1467,6 +1467,24 @@ async def test_get_requirement_raises_when_not_on_main_or_any_pr(httpx_mock: HTT
         await get_requirement("owner/repo", "001")
 
 
+async def test_get_requirement_raises_when_pr_exists_but_file_not_there(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """FileNotFoundError when open PRs exist but none contain the requested requirement."""
+    pr_branch = "lachesis/req-002-other"
+    # 1. list_files on main → only 002
+    httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
+    # 2. list_lachesis_prs → one PR
+    httpx_mock.add_response(
+        json=[{"head": {"ref": pr_branch}, "html_url": "https://github.com/owner/repo/pull/1"}]
+    )
+    # 3. list_files on PR branch → also only 002, not 001
+    httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
+
+    with pytest.raises(FileNotFoundError, match="001"):
+        await get_requirement("owner/repo", "001")
+
+
 # ---------------------------------------------------------------------------
 # update_requirement — PR branch support
 # ---------------------------------------------------------------------------
@@ -1593,4 +1611,46 @@ async def test_get_dashboard_includes_pr_branch_requirements(
     pr_req = next(r for r in reqs if r["id"] == "002")
     assert "pr_url" not in main_req
     assert pr_req["pr_url"] == pr_url
+    assert result["summary"]["total"] == 2
+
+
+async def test_get_dashboard_status_filter_applies_to_pr_branch_requirements(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """Status filter excludes PR-branch requirements that don't match the requested status."""
+    pr_branch = "lachesis/req-002-new-feature"
+    pr_url = "https://github.com/owner/repo/pull/7"
+    # PR-branch requirement has status "draft" — should be excluded when filtering for "planned"
+    pr_md = (
+        "---\nid: '002'\ntitle: New Feature\nstatus: draft\n"
+        "github_issue: null\ncreated: '2026-08-01'\nupdated: '2026-08-01'\n---\n\nBody.\n"
+    )
+    with patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]):
+        # 1. list_files on main
+        httpx_mock.add_response(json=_LIST_RESP)
+        # 2. get_file for 001 on main (status: "planned" — matches filter)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        # 3. list_lachesis_prs
+        httpx_mock.add_response(json=[{"head": {"ref": pr_branch}, "html_url": pr_url}])
+        # 4. list_files on PR branch
+        httpx_mock.add_response(
+            json=[{"name": "002-new-feature.md", "path": "requirements/002-new-feature.md"}]
+        )
+        # 5. get_file for 002 on PR branch (status: "draft" — does not match "planned")
+        httpx_mock.add_response(
+            json={
+                "name": "002-new-feature.md",
+                "path": "requirements/002-new-feature.md",
+                "content": base64.b64encode(pr_md.encode()).decode("ascii"),
+                "sha": "sha2",
+                "type": "file",
+            }
+        )
+        result = await get_dashboard(status="planned")
+
+    reqs = result["repos"][0]["requirements"]
+    # Only the main-branch "planned" requirement should appear; the "draft" PR req is filtered out
+    assert len(reqs) == 1
+    assert reqs[0]["id"] == "001"
+    # Both requirements counted in summary total regardless of filter
     assert result["summary"]["total"] == 2

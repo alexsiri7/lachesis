@@ -80,6 +80,7 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
             }
         )
 
+    # Augment with requirements from open PR branches (dedup: main-branch wins on ID conflict)
     lachesis_prs = await github.list_lachesis_prs(repo)
     for pr_info in lachesis_prs:
         branch = pr_info["branch"]
@@ -115,6 +116,11 @@ async def get_requirement(repo: str, id: str) -> str:
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
+        logger.info(
+            "get_requirement: requirement %r not on default branch for repo=%s, checking open PRs",
+            id,
+            repo,
+        )
         lachesis_prs = await github.list_lachesis_prs(repo)
         for pr_info in lachesis_prs:
             branch = pr_info["branch"]
@@ -477,8 +483,17 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                     }
                 )
 
-            lachesis_prs = await github.list_lachesis_prs(repo_name)
-            for pr_info in lachesis_prs:
+            aggregated.append({"repo": repo_name, "requirements": requirements})
+        except Exception:
+            logger.warning(
+                "get_dashboard: failed to fetch requirements from %s", repo_name, exc_info=True
+            )
+            continue
+
+        # Augment with requirements from open PR branches (dedup: main-branch wins on ID conflict)
+        lachesis_prs = await github.list_lachesis_prs(repo_name)
+        for pr_info in lachesis_prs:
+            try:
                 branch = pr_info["branch"]
                 pr_url = pr_info["pr_url"]
                 pr_files = await github.list_files(repo_name, "requirements", branch=branch)
@@ -496,7 +511,7 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                     if status is not None and req_status != status:
                         continue
                     github_issue = post.get("github_issue")
-                    requirements.append(
+                    aggregated[-1]["requirements"].append(
                         {
                             "id": req_id,
                             "title": post["title"],
@@ -506,10 +521,13 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                             "warning": "no linked issues" if github_issue is None else None,
                         }
                     )
-
-            aggregated.append({"repo": repo_name, "requirements": requirements})
-        except Exception:
-            logger.warning("get_dashboard: failed to fetch requirements from %s", repo_name)
+            except Exception:
+                logger.warning(
+                    "get_dashboard: failed to fetch PR branch %s for repo=%s",
+                    pr_info.get("branch", "<unknown>"),
+                    repo_name,
+                    exc_info=True,
+                )
 
     total = sum(status_counts.values())
     unlinked_count = sum(

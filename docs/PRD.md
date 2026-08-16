@@ -122,11 +122,16 @@ Status is set manually or by Claude based on GitHub issue state — Lachesis doe
 
 ## MCP Tools
 
+> **Branch lookup**: For tools that read or modify requirement files (`list_requirements`, `get_requirement`, `update_requirement`, `delete_requirement`), Lachesis searches the repo's default branch first, then falls back to any open PR branches whose head branch starts with `lachesis/`. This means requirements that have been created but not yet merged are visible and editable through these tools. The default branch always wins if the same requirement ID exists in both locations.
+
 ### `list_requirements`
-Returns all requirements for a given repo.
+Returns all requirements for a given repo — including requirements on open PR branches whose head branch starts with `lachesis/`.
 
 **Input**: `repo` (string, e.g. `alexuser/filmduel`)
-**Output**: Array of requirement summaries (id, title, status, github_issue)
+**Output**: Array of requirement summaries (id, title, status, github_issue, pr_url?)
+
+- Requirements merged to the default branch have no `pr_url`.
+- Requirements that exist only on an open PR branch include `pr_url` (the GitHub PR URL). If the same requirement ID exists on both the default branch and a PR branch, the default-branch version takes precedence and no `pr_url` is set.
 
 ---
 

@@ -18,7 +18,7 @@ Lachesis captures requirements as Markdown files inside each repo (`requirements
 
 ## MCP Tools
 
-`list_requirements` · `get_requirement` · `create_requirement` · `update_requirement` · `delete_requirement` · `link_issues` · `create_github_issues`
+`list_requirements` · `get_requirement` · `create_requirement` · `update_requirement` · `delete_requirement` · `link_issues` · `create_github_issues` · `get_github_issue` · `get_dependencies` · `add_dependency`
 
 ## Development
 

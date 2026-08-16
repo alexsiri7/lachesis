@@ -17,12 +17,14 @@ from github import (
     create_file,
     create_issue,
     create_pull_request,
+    delete_file,
     find_pr_branch,
     get_branch_sha,
     get_file,
     get_issue,
     get_issue_dependencies,
     list_files,
+    list_lachesis_prs,
     update_file,
 )
 
@@ -565,3 +567,83 @@ async def test_get_issue_dependencies_returns_empty_lists_when_no_deps(
     httpx_mock.add_response(method="GET", url=_BLOCKING_URL, json=[])
     result = await get_issue_dependencies("owner/repo", 42)
     assert result == {"blocked_by": [], "blocking": []}
+
+
+# ---------------------------------------------------------------------------
+# list_lachesis_prs
+# ---------------------------------------------------------------------------
+
+
+async def test_list_lachesis_prs_filters_non_lachesis_branches(httpx_mock: HTTPXMock) -> None:
+    """Only PRs whose head ref starts with 'lachesis/' are returned."""
+    httpx_mock.add_response(
+        json=[
+            {"head": {"ref": "lachesis/req-001-auth"}, "html_url": "https://github.com/o/r/pull/1"},
+            {"head": {"ref": "feature/unrelated"}, "html_url": "https://github.com/o/r/pull/2"},
+        ]
+    )
+    result = await list_lachesis_prs("owner/repo")
+    assert len(result) == 1
+    assert result[0]["branch"] == "lachesis/req-001-auth"
+    assert result[0]["pr_url"] == "https://github.com/o/r/pull/1"
+
+
+async def test_list_lachesis_prs_returns_empty_on_no_lachesis_prs(httpx_mock: HTTPXMock) -> None:
+    """Empty list returned when no open PRs match the lachesis/ prefix."""
+    httpx_mock.add_response(json=[])
+    result = await list_lachesis_prs("owner/repo")
+    assert result == []
+
+
+async def test_list_lachesis_prs_partial_result_on_malformed_response(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Malformed PR entry (missing head.ref) triggers the except branch without raising."""
+    httpx_mock.add_response(json=[{"head": {}}])
+    # Should not raise; bad entry triggers except branch and is skipped/partial returned
+    result = await list_lachesis_prs("owner/repo")
+    assert isinstance(result, list)
+
+
+async def test_list_lachesis_prs_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    """Non-success HTTP response raises HTTPStatusError."""
+    httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await list_lachesis_prs("owner/repo")
+
+
+# ---------------------------------------------------------------------------
+# delete_file
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_file_omits_branch_when_not_provided(httpx_mock: HTTPXMock) -> None:
+    """delete_file sends sha and message but no branch key when branch is omitted."""
+    httpx_mock.add_response(status_code=200, json={"commit": {}, "content": None})
+    await delete_file("owner/repo", "requirements/001-auth.md", "deadbeef", "chore: delete")
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert "branch" not in body
+    assert body["sha"] == "deadbeef"
+    assert body["message"] == "chore: delete"
+
+
+async def test_delete_file_includes_branch_when_provided(httpx_mock: HTTPXMock) -> None:
+    """delete_file includes branch in payload when branch kwarg is supplied."""
+    httpx_mock.add_response(status_code=200, json={"commit": {}, "content": None})
+    await delete_file(
+        "owner/repo",
+        "requirements/001-auth.md",
+        "deadbeef",
+        "chore: delete",
+        branch="lachesis/req-001-auth",
+    )
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert body["branch"] == "lachesis/req-001-auth"
+    assert body["sha"] == "deadbeef"
+
+
+async def test_delete_file_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    """delete_file raises HTTPStatusError on non-success response."""
+    httpx_mock.add_response(status_code=422, json={"message": "Unprocessable Entity"})
+    with pytest.raises(httpx.HTTPStatusError):
+        await delete_file("owner/repo", "requirements/001-auth.md", "deadbeef", "chore: delete")
