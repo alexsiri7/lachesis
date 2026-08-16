@@ -211,7 +211,7 @@ async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
 async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
     """Return all open PRs whose head branch starts with 'lachesis/'.
 
-    Returns list of {"branch": str, "pr_url": str, "pr_number": int}.
+    Returns list of {"branch": str, "pr_number": int, "pr_url": str}.
     """
     result: list[dict[str, Any]] = []
     try:

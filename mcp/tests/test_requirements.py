@@ -1634,6 +1634,8 @@ async def test_list_requirements_deduplicates_pr_and_main(httpx_mock: HTTPXMock)
     assert len(result) == 1
     assert result[0]["id"] == "001"
     assert "pr_url" not in result[0]
+    assert "branch" not in result[0]
+    assert "pr_number" not in result[0]
 
 
 async def test_list_requirements_no_prs_returns_main_only(httpx_mock: HTTPXMock) -> None:

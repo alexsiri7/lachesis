@@ -134,7 +134,8 @@ Returns the standard Lachesis workflow. Call this at the start of a new session 
 Returns all requirements for a given repo.
 
 **Input**: `repo` (string, e.g. `alexuser/filmduel`)
-**Output**: Array of requirement summaries (id, title, status, github_issue)
+**Output**: Array of requirement summaries (id, title, status, github_issue).
+For requirements on open PR branches, each item also includes: branch, pr_number, pr_url.
 
 ---
 
