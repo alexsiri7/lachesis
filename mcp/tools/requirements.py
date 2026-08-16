@@ -1,7 +1,4 @@
-"""Stub implementations for all 7 Lachesis MCP tools.
-
-Real implementations are delivered in issues #4-#10.
-"""
+"""MCP tool implementations for Lachesis requirements management."""
 
 from __future__ import annotations
 
@@ -316,7 +313,6 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
             "Create a new requirement to remove the feature."
         )
 
-    # Delete the file
     await github.delete_file(repo, path, sha, f"chore: delete requirement {id}", branch=branch)
     return {"deleted": path}
 
