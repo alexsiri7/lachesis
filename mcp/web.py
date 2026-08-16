@@ -12,7 +12,8 @@ from urllib.parse import urlencode
 
 import frontmatter
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from jose import JWTError, jwt as jose_jwt
+from jose import JWTError
+from jose import jwt as jose_jwt
 from jose.exceptions import ExpiredSignatureError
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
@@ -33,7 +34,9 @@ def _extract_section(body: str, heading: str) -> str:
     if m:
         return m.group(1).strip()
     if normalized:
-        logger.debug("_extract_section: section '%s' not found in body (len=%d)", heading, len(normalized))
+        logger.debug(
+            "_extract_section: section '%s' not found in body (len=%d)", heading, len(normalized)
+        )
     return ""
 
 

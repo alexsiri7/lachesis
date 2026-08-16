@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import sys
 import os
+import sys
 import time
 from unittest.mock import MagicMock
 
@@ -15,8 +15,7 @@ from jose import jwt as jose_jwt
 # Ensure mcp/ is on the path so we can import web directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from web import _extract_section, _get_web_user_status, _COOKIE_NAME
-
+from web import _COOKIE_NAME, _extract_section, _get_web_user_status
 
 # ---------------------------------------------------------------------------
 # Helpers
