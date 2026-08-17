@@ -694,7 +694,7 @@ async def test_create_requirement_scans_pr_branches_for_id(httpx_mock: HTTPXMock
                 "number": 42,
             }
         ]
-    )  # _list_open_prs (called by list_lachesis_prs)
+    )  # list_lachesis_prs → fetches open PRs from GitHub API
     httpx_mock.add_response(
         json=[{"name": "002-pending-feature.md", "path": "requirements/002-pending-feature.md"}]
     )  # list_files (PR branch)
@@ -705,6 +705,48 @@ async def test_create_requirement_scans_pr_branches_for_id(httpx_mock: HTTPXMock
     # Must skip 002 (claimed by open PR) and assign 003
     assert result["id"] == "003"
     assert result["path"] == "requirements/003-new-feature.md"
+
+
+async def test_create_requirement_slug_collision_via_pr_branch(httpx_mock: HTTPXMock) -> None:
+    """Slug de-duplication considers filenames from PR branches as well as main."""
+    httpx_mock.add_response(json=[])  # list_files (main) — empty
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": "lachesis/req-001-my-feature"},
+                "html_url": "https://github.com/owner/repo/pull/1",
+                "number": 1,
+            }
+        ]
+    )  # list_lachesis_prs → fetches open PRs from GitHub API
+    httpx_mock.add_response(
+        json=[{"name": "001-my-feature.md", "path": "requirements/001-my-feature.md"}]
+    )  # list_files (PR branch)
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file
+
+    result = await create_requirement("owner/repo", "My Feature", "Why", "What")
+
+    # ID is 002 (001 claimed by PR branch); slug must not collide with 001-my-feature.md
+    assert result["id"] == "002"
+    assert result["path"] == "requirements/002-my-feature.md"
+
+
+async def test_create_requirement_pr_scan_http_error_falls_back_to_main_ids(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """When the PR-branch scan fails with an HTTP error, create_requirement proceeds using main-branch IDs only."""
+    httpx_mock.add_response(
+        json=[{"name": "001-auth.md", "path": "requirements/001-auth.md"}]
+    )  # list_files (main)
+    httpx_mock.add_response(
+        status_code=500, json={"message": "Internal Server Error"}
+    )  # list_lachesis_prs → HTTP error (triggers graceful fallback)
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file
+
+    # Should succeed despite the PR scan failure, using main-only IDs
+    result = await create_requirement("owner/repo", "New Feature", "Why", "What")
+    assert result["id"] == "002"
+    assert result["path"] == "requirements/002-new-feature.md"
 
 
 async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTTPXMock) -> None:
