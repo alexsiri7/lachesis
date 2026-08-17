@@ -734,7 +734,8 @@ async def test_create_requirement_slug_collision_via_pr_branch(httpx_mock: HTTPX
 async def test_create_requirement_pr_scan_http_error_falls_back_to_main_ids(
     httpx_mock: HTTPXMock,
 ) -> None:
-    """When the PR-branch scan fails with an HTTP error, create_requirement proceeds using main-branch IDs only."""
+    """When the PR-branch scan fails with an HTTP error, create_requirement
+    proceeds using main-branch IDs only."""
     httpx_mock.add_response(
         json=[{"name": "001-auth.md", "path": "requirements/001-auth.md"}]
     )  # list_files (main)
