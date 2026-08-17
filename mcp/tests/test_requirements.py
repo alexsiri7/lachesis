@@ -611,6 +611,7 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
 async def test_create_requirement_returns_id_and_path(httpx_mock: HTTPXMock) -> None:
     """Returns id and path for the created requirement."""
     httpx_mock.add_response(json=_LIST_RESP)  # list_files → existing [001-user-auth.md]
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file
 
     result = await create_requirement("owner/repo", "New Feature", "Because X", "Do Y")
@@ -622,6 +623,7 @@ async def test_create_requirement_returns_id_and_path(httpx_mock: HTTPXMock) -> 
 async def test_create_requirement_empty_repo_assigns_001(httpx_mock: HTTPXMock) -> None:
     """When requirements/ is empty or absent, first ID is 001."""
     httpx_mock.add_response(json=[])  # list_files → no files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
     result = await create_requirement("owner/repo", "First req", "Why", "What")
@@ -632,7 +634,8 @@ async def test_create_requirement_empty_repo_assigns_001(httpx_mock: HTTPXMock) 
 
 async def test_create_requirement_slug_derived_from_title(httpx_mock: HTTPXMock) -> None:
     """Slug lowercases and hyphenates title."""
-    httpx_mock.add_response(json=[])
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
     result = await create_requirement("owner/repo", "Hello World!", "Why", "What")
@@ -642,12 +645,13 @@ async def test_create_requirement_slug_derived_from_title(httpx_mock: HTTPXMock)
 
 async def test_create_requirement_sends_draft_status(httpx_mock: HTTPXMock) -> None:
     """Created file has status 'draft' and github_issue null."""
-    httpx_mock.add_response(json=[])
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
     await create_requirement("owner/repo", "Test req", "Why text", "What text")
 
-    create_request = httpx_mock.get_requests()[1]
+    create_request = httpx_mock.get_requests()[2]
     body = json.loads(create_request.content)
     decoded = base64.b64decode(body["content"]).decode("utf-8")
     post = frontmatter.loads(decoded)
@@ -665,7 +669,8 @@ async def test_create_requirement_increments_past_highest_id(httpx_mock: HTTPXMo
         {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
         {"name": "005-deploy.md", "path": "requirements/005-deploy.md"},
     ]
-    httpx_mock.add_response(json=existing)
+    httpx_mock.add_response(json=existing)  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
     result = await create_requirement("owner/repo", "New Feature", "Why", "What")
@@ -674,9 +679,38 @@ async def test_create_requirement_increments_past_highest_id(httpx_mock: HTTPXMo
     assert result["path"] == "requirements/006-new-feature.md"
 
 
+async def test_create_requirement_scans_pr_branches_for_id(httpx_mock: HTTPXMock) -> None:
+    """ID assignment accounts for requirements in open lachesis/* PR branches."""
+    # main has 001-user-auth.md
+    httpx_mock.add_response(
+        json=[{"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"}]
+    )  # list_files (main)
+    # One open lachesis/* PR with 002-pending-feature.md on its branch
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": "lachesis/req-002-pending-feature"},
+                "html_url": "https://github.com/owner/repo/pull/42",
+                "number": 42,
+            }
+        ]
+    )  # _list_open_prs (called by list_lachesis_prs)
+    httpx_mock.add_response(
+        json=[{"name": "002-pending-feature.md", "path": "requirements/002-pending-feature.md"}]
+    )  # list_files (PR branch)
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file
+
+    result = await create_requirement("owner/repo", "New Feature", "Why", "What")
+
+    # Must skip 002 (claimed by open PR) and assign 003
+    assert result["id"] == "003"
+    assert result["path"] == "requirements/003-new-feature.md"
+
+
 async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTTPXMock) -> None:
     """On 409 from create_file, creates branch and PR, returns pr_url."""
     httpx_mock.add_response(json=[])  # list_files → empty
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(
         status_code=409, json={"message": "Protected branch"}
     )  # create_file → 409
@@ -705,10 +739,10 @@ async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTT
     assert result["id"] == "001"
     assert result["path"] == "requirements/001-my-feature.md"
     assert result["pr_url"] == "https://github.com/owner/repo/pull/5"
-    # request order: [0]=list_files, [1]=create_file(409),
-    #                [2]=get_branch_sha, [3]=create_branch, [4]=create_file(branch),
-    #                [5]=create_pr, [6]=get_repo_settings, [7]=enable_automerge
-    branch_create_file_req = httpx_mock.get_requests()[4]
+    # request order: [0]=list_files, [1]=list_lachesis_prs, [2]=create_file(409),
+    #                [3]=get_branch_sha, [4]=create_branch, [5]=create_file(branch),
+    #                [6]=create_pr, [7]=get_repo_settings, [8]=enable_automerge
+    branch_create_file_req = httpx_mock.get_requests()[5]
     body = json.loads(branch_create_file_req.content)
     assert body["branch"] == "lachesis/req-001-my-feature"
 
@@ -716,6 +750,7 @@ async def test_create_requirement_falls_back_to_branch_pr_on_409(httpx_mock: HTT
 async def test_create_requirement_automerge_enabled_when_available(httpx_mock: HTTPXMock) -> None:
     """When repo allows automerge and squash, enablePullRequestAutoMerge is called."""
     httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(status_code=409, json={"message": "Protected"})
     httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
     httpx_mock.add_response(status_code=201, json={})  # create_branch
@@ -741,7 +776,7 @@ async def test_create_requirement_automerge_enabled_when_available(httpx_mock: H
 
     assert result["pr_url"] == "https://github.com/o/r/pull/5"
     # Verify GraphQL request used SQUASH merge method
-    graphql_req = httpx_mock.get_requests()[7]  # 8th request
+    graphql_req = httpx_mock.get_requests()[8]  # 9th request
     body = json.loads(graphql_req.content)
     assert body["variables"]["mergeMethod"] == "SQUASH"
     assert body["variables"]["pullRequestId"] == "PR_abc"
@@ -751,7 +786,8 @@ async def test_create_requirement_automerge_falls_back_gracefully_when_disabled(
     httpx_mock: HTTPXMock,
 ) -> None:
     """When repo has allow_auto_merge=False, returns pr_url without error."""
-    httpx_mock.add_response(json=[])
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(status_code=409, json={"message": "Protected"})
     httpx_mock.add_response(json={"object": {"sha": "abc"}})
     httpx_mock.add_response(status_code=201, json={})
@@ -771,8 +807,8 @@ async def test_create_requirement_automerge_falls_back_gracefully_when_disabled(
     result = await create_requirement("owner/repo", "My Feature", "Why", "What")
 
     assert result["pr_url"] == "https://github.com/o/r/pull/5"
-    # Only 7 requests — no GraphQL mutation sent
-    assert len(httpx_mock.get_requests()) == 7
+    # Only 8 requests — no GraphQL mutation sent
+    assert len(httpx_mock.get_requests()) == 8
 
 
 async def test_create_requirement_automerge_exception_falls_back_to_pr_url(
@@ -780,6 +816,7 @@ async def test_create_requirement_automerge_exception_falls_back_to_pr_url(
 ) -> None:
     """If get_repo_settings raises (HTTP 500), pr_url is still returned (graceful fallback)."""
     httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(status_code=409, json={"message": "Protected"})
     httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
     httpx_mock.add_response(status_code=201, json={})  # create_branch
@@ -801,6 +838,7 @@ async def test_create_requirement_automerge_uses_merge_when_squash_disabled(
 ) -> None:
     """When allow_squash_merge=False and allow_merge_commit=True, mergeMethod is MERGE."""
     httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(status_code=409, json={"message": "Protected"})
     httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
     httpx_mock.add_response(status_code=201, json={})  # create_branch
@@ -830,7 +868,7 @@ async def test_create_requirement_automerge_uses_merge_when_squash_disabled(
     result = await create_requirement("owner/repo", "My Feature", "Why", "What")
 
     assert result["pr_url"] == "https://github.com/o/r/pull/5"
-    graphql_req = httpx_mock.get_requests()[7]  # 8th request
+    graphql_req = httpx_mock.get_requests()[8]  # 9th request
     body = json.loads(graphql_req.content)
     assert body["variables"]["mergeMethod"] == "MERGE"
 
@@ -838,18 +876,20 @@ async def test_create_requirement_automerge_uses_merge_when_squash_disabled(
 async def test_create_requirement_non_409_error_propagates(httpx_mock: HTTPXMock) -> None:
     """Non-409 errors from create_file must propagate, not trigger the branch fallback."""
     httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})  # create_file → 403
 
     with pytest.raises(httpx.HTTPStatusError) as exc_info:
         await create_requirement("owner/repo", "My Feature", "Why", "What")
     assert exc_info.value.response.status_code == 403
-    # Only 2 requests made — no branch/PR calls
-    assert len(httpx_mock.get_requests()) == 2
+    # Only 3 requests made — no branch/PR calls
+    assert len(httpx_mock.get_requests()) == 3
 
 
 async def test_create_requirement_no_pr_url_on_direct_write(httpx_mock: HTTPXMock) -> None:
     """When create_file succeeds directly, pr_url is absent from response."""
     httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file success
 
     result = await create_requirement("owner/repo", "Direct Write", "Why", "What")
@@ -860,6 +900,7 @@ async def test_create_requirement_no_pr_url_on_direct_write(httpx_mock: HTTPXMoc
 async def test_create_requirement_409_uses_correct_branch_name(httpx_mock: HTTPXMock) -> None:
     """Branch name follows lachesis/req-{id}-{slug} pattern."""
     httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
     httpx_mock.add_response(status_code=409, json={"message": "Protected branch"})
     httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
     httpx_mock.add_response(status_code=201, json={})  # create_branch — capture this
@@ -883,8 +924,8 @@ async def test_create_requirement_409_uses_correct_branch_name(httpx_mock: HTTPX
 
     await create_requirement("owner/repo", "Hello World", "Why", "What")
 
-    # 3rd request (index 2) is get_branch_sha, 4th (index 3) is create_branch
-    create_branch_req = httpx_mock.get_requests()[3]
+    # 4th request (index 3) is get_branch_sha, 5th (index 4) is create_branch
+    create_branch_req = httpx_mock.get_requests()[4]
     body = json.loads(create_branch_req.content)
     assert body["ref"] == "refs/heads/lachesis/req-001-hello-world"
 

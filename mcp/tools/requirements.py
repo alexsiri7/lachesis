@@ -165,9 +165,15 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     # 1. List existing files to determine next ID and detect slug collisions
     files = await github.list_files(repo, "requirements")
 
-    # 2. Assign next ID
+    # 2. Assign next ID — scan main + all open lachesis/* PR branches
+    all_files = list(files)
+    lachesis_prs = await github.list_lachesis_prs(repo)
+    for pr_info in lachesis_prs:
+        pr_files = await github.list_files(repo, "requirements", branch=pr_info["branch"])
+        all_files.extend(pr_files)
+
     ids = []
-    for f in files:
+    for f in all_files:
         name = f["name"]
         prefix = name.split("-")[0]
         if prefix.isdigit():
@@ -180,7 +186,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     slug = slug.strip("-")
 
     # 4. Handle slug collisions
-    existing_names = {f["name"] for f in files}
+    existing_names = {f["name"] for f in all_files}
     candidate = f"{id_str}-{slug}.md"
     suffix = 2
     while candidate in existing_names:
