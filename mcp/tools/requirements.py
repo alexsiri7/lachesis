@@ -175,7 +175,8 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
                 all_files.extend(pr_files)
             except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
                 logger.warning(
-                    "create_requirement: failed to list files on PR branch=%s repo=%s error=%r; skipping",
+                    "create_requirement: failed to list files on PR branch=%s repo=%s"
+                    " error=%r; skipping",
                     pr_info["branch"],
                     repo,
                     exc,

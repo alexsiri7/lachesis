@@ -278,6 +278,24 @@ def _apply_user_context(user_id: str, email: str, lachesis_uid: str | None) -> N
             )
 
 
+async def _send_401(
+    send: Callable[[MutableMapping[str, Any]], Awaitable[None]],
+    body: bytes,
+    www_authenticate: str,
+) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                [b"content-type", b"application/json"],
+                [b"www-authenticate", www_authenticate.encode()],
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
 def with_user_context(app: ASGIApp) -> ASGIApp:
     _base = settings.mcp_base_url.rstrip("/")
     _resource_uri = _RESOURCE_METADATA_URI.format(base=_base)
@@ -341,7 +359,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     )
                     rt = None
                 if rt is not None:
-                    _rt_token, rt_data = rt
+                    _, rt_data = rt
                     if not lachesis_uid:
                         lachesis_uid = rt_data.get("lachesis_uid")
                     new_access_token = create_jwt(user_id, email, lachesis_uid)
@@ -364,7 +382,7 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                 logger.warning(
                     "middleware: expired token with no valid refresh token for sub=%s", user_id
                 )
-                body = json.dumps(
+                expired_body = json.dumps(
                     {
                         "error": "token_expired",
                         "description": (
@@ -373,39 +391,20 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                         ),
                     }
                 ).encode()
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 401,
-                        "headers": [
-                            [b"content-type", b"application/json"],
-                            [
-                                b"www-authenticate",
-                                f'Bearer realm="lachesis" error="invalid_token" '
-                                f'resource_metadata="{_resource_uri}"'.encode(),
-                            ],
-                        ],
-                    }
+                await _send_401(
+                    send,
+                    expired_body,
+                    f'Bearer realm="lachesis" error="invalid_token"'
+                    f' resource_metadata="{_resource_uri}"',
                 )
-                await send({"type": "http.response.body", "body": body})
                 return
 
         # No token or completely invalid token → generic 401
-        body = b'{"error":"unauthorized"}'
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [
-                    [b"content-type", b"application/json"],
-                    [
-                        b"www-authenticate",
-                        f'Bearer resource_metadata="{_resource_uri}"'.encode(),
-                    ],
-                ],
-            }
+        await _send_401(
+            send,
+            b'{"error":"unauthorized"}',
+            f'Bearer resource_metadata="{_resource_uri}"',
         )
-        await send({"type": "http.response.body", "body": body})
 
     return wrapper
 
