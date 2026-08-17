@@ -162,12 +162,35 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     ``"pr_url": str`` with the URL of the created PR.
     """
     repo = await _resolve_repo(repo)
-    # 1. List existing files to determine next ID and detect slug collisions
+    # 1. Fetch main-branch requirements (used for ID assignment and slug collision detection)
     files = await github.list_files(repo, "requirements")
 
-    # 2. Assign next ID
+    # 2. Assign next ID — also scan open lachesis/* PR branches to avoid collisions
+    all_files = list(files)
+    try:
+        lachesis_prs = await github.list_lachesis_prs(repo)
+        for pr_info in lachesis_prs:
+            try:
+                pr_files = await github.list_files(repo, "requirements", branch=pr_info["branch"])
+                all_files.extend(pr_files)
+            except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
+                logger.warning(
+                    "create_requirement: failed to list files on PR branch=%s repo=%s"
+                    " error=%r; skipping",
+                    pr_info["branch"],
+                    repo,
+                    exc,
+                )
+    except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
+        logger.warning(
+            "create_requirement: PR-branch scan failed repo=%s error=%r; "
+            "proceeding with main-branch IDs only (ID may be re-assigned if a PR exists)",
+            repo,
+            exc,
+        )
+
     ids = []
-    for f in files:
+    for f in all_files:
         name = f["name"]
         prefix = name.split("-")[0]
         if prefix.isdigit():
@@ -180,7 +203,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     slug = slug.strip("-")
 
     # 4. Handle slug collisions
-    existing_names = {f["name"] for f in files}
+    existing_names = {f["name"] for f in all_files}
     candidate = f"{id_str}-{slug}.md"
     suffix = 2
     while candidate in existing_names:

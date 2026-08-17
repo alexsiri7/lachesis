@@ -223,6 +223,12 @@ async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
         logger.warning(
             "github.list_lachesis_prs unexpected response shape repo=%s error=%r", repo, exc
         )
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "github.list_lachesis_prs HTTP error repo=%s status=%s; returning []",
+            repo,
+            exc.response.status_code,
+        )
     return result
 
 
