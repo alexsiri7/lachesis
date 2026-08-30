@@ -1,8 +1,8 @@
 ---
 created: '2026-08-30'
-github_issue: null
+github_issue: 109
 id: '024'
-status: draft
+status: idea
 title: link_issues fails with 409 when the target requirement lives on an open PR
   branch
 updated: '2026-08-30'
@@ -20,4 +20,4 @@ This should be consistent with the read-side fix already shipped for `list_requi
 
 ## Issues
 
-_None yet._
+- #109 — link_issues should write back to the branch a requirement actually lives on, not assume main
