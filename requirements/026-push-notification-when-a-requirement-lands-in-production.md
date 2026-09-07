@@ -1,8 +1,8 @@
 ---
 created: '2026-09-07'
-github_issue: null
+github_issue: 113
 id: '026'
-status: draft
+status: idea
 title: Push notification when a requirement lands in production
 updated: '2026-09-07'
 ---
@@ -45,4 +45,5 @@ The ntfy topic and server are configured per account and can be changed or clear
 
 ## Issues
 
-_None yet._
+- #113 — ntfy configuration and best-effort delivery
+- #114 — Detect requirement landing and fire the notification
