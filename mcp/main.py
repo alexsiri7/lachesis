@@ -79,11 +79,14 @@ mcp.tool(
         "Cancelled and superseded requirements are excluded unless "
         "`include_inactive=True`. "
         "Each entry carries a `derived` block read from its linked issues and "
-        "their PRs: `status` (idea, in-progress, done, or null when there are no "
-        "linked issues or GitHub could not be read), `diverged` — true when that "
-        "disagrees with the recorded status — `last_activity` (when those issues "
-        "or PRs last moved, not when the file was edited), `linked_issues`, and "
-        "`signals` for work that stalled without looking stalled."
+        "their PRs: `status` (idea, in-progress, done, or null), `source` — "
+        "`issues` when the status above was derived, `unlinked` when the "
+        "requirement links no issues, `unavailable` when GitHub could not be "
+        "read, so read a null `status` as 'no work started' only under "
+        "`unlinked` — `diverged` (true when the derived status disagrees with "
+        "the recorded one), `last_activity` (when those issues or PRs last "
+        "moved, not when the file was edited), `linked_issues`, and `signals` "
+        "for work that stalled without looking stalled."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.list_requirements)
@@ -160,8 +163,10 @@ mcp.tool(
     " unless `include_inactive=True` or `status` names that state explicitly;"
     " the by_status summary always counts them."
     " Listed requirements carry the same `derived` block as list_requirements"
-    " (status read from the linked issues and their PRs, `diverged`,"
-    " `last_activity`, signals); `status` filters on the recorded value.",
+    " (status read from the linked issues and their PRs, `source` — which tells"
+    " a derived status from an unlinked requirement from an unreadable GitHub —"
+    " `diverged`, `last_activity`, signals); `status` filters on the recorded"
+    " value.",
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dashboard)
 

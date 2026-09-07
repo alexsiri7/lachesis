@@ -137,8 +137,11 @@ Returns all requirements for a given repo.
 **Output**: Array of requirement summaries (id, title, status, github_issue).
 For requirements on open PR branches, each item also includes: branch, pr_number, pr_url.
 Each item also carries a `derived` block read from its linked issues and their PRs:
-`status` (idea, in-progress, done, or null), `diverged` (the recorded status disagrees),
-`last_activity`, `linked_issues`, and `signals`. Cancelled and superseded are never derived.
+`status` (idea, in-progress, done, or null), `source` (`issues` when the status was derived,
+`unlinked` when the requirement links no issues, `unavailable` when GitHub could not be read —
+a null `status` means "no work started" only under `unlinked`), `diverged` (the recorded status
+disagrees), `last_activity`, `linked_issues`, and `signals`. Cancelled and superseded are never
+derived.
 
 ---
 
