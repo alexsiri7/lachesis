@@ -14,6 +14,7 @@ import httpx
 import db
 import github
 from auth import current_db_user_id
+from derive import IssueFacts, derive, linked_issue_numbers
 from status import INACTIVE_STATUSES, VALID_STATUSES, canonical_status
 
 from .repos import _require_user_id, normalize_repo
@@ -104,6 +105,32 @@ def _inactive_fields(post: frontmatter.Post) -> dict[str, Any]:
     return {key: post[key] for key in ("reason", "superseded_by") if post.get(key)}
 
 
+_Pending = list[tuple[dict[str, Any], list[int], bool]]
+
+
+async def _attach_derived(repo: str, pending: _Pending) -> None:
+    """Derive a status for each pending entry from one batch of issue activity.
+
+    A repo whose requirements link no issues costs no request.  GitHub failing
+    here must not cost the caller the listing it actually asked for, so the
+    entries report an unavailable derivation instead of raising.
+    """
+    numbers = sorted({number for _, entry_numbers, _ in pending for number in entry_numbers})
+    facts: dict[int, IssueFacts] | None = {}
+    if numbers:
+        try:
+            facts = await github.get_issue_activity(repo, numbers)
+        except Exception as exc:
+            logger.warning(
+                "failed to fetch issue activity for repo=%s error=%r; status not derived",
+                repo,
+                exc,
+            )
+            facts = None
+    for entry, entry_numbers, on_pr_branch in pending:
+        entry["derived"] = derive(entry["status"], entry_numbers, facts, on_pr_branch=on_pr_branch)
+
+
 def _normalize_stored_status(post: frontmatter.Post) -> None:
     """Rewrite a variant spelling to its canonical form when the file is rewritten anyway.
 
@@ -119,11 +146,16 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
 
     Cancelled and superseded requirements are excluded unless ``include_inactive``
     is true; when included they carry their ``reason`` / ``superseded_by`` field.
+
+    Each entry also carries a ``derived`` block: the status its linked issues and
+    their pull requests actually show, whether that diverges from the recorded
+    one, when those issues last moved, and the individual silent-failure signals.
     """
     repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
     results: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    pending: _Pending = []
 
     for f in files:
         if not f["name"].endswith(".md"):
@@ -135,17 +167,17 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
         req_status = canonical_status(post.get("status", ""))
         if not include_inactive and req_status in INACTIVE_STATUSES:
             continue
-        github_issue = post.get("github_issue")
-        results.append(
-            {
-                "id": req_id,
-                "title": post["title"],
-                "status": req_status,
-                "github_issue": github_issue,
-                "warning": "no linked issues" if github_issue is None else None,
-                **_inactive_fields(post),
-            }
-        )
+        numbers = linked_issue_numbers(post)
+        entry = {
+            "id": req_id,
+            "title": post["title"],
+            "status": req_status,
+            "github_issue": post.get("github_issue"),
+            "warning": None if numbers else "no linked issues",
+            **_inactive_fields(post),
+        }
+        results.append(entry)
+        pending.append((entry, numbers, False))
 
     lachesis_prs = await github.list_lachesis_prs(repo)
     for pr_info in lachesis_prs:
@@ -165,21 +197,22 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
             req_status = canonical_status(post.get("status", ""))
             if not include_inactive and req_status in INACTIVE_STATUSES:
                 continue
-            github_issue = post.get("github_issue")
-            results.append(
-                {
-                    "id": req_id,
-                    "title": post["title"],
-                    "status": req_status,
-                    "github_issue": github_issue,
-                    "branch": branch,
-                    "pr_number": pr_number,
-                    "pr_url": pr_url,
-                    "warning": "no linked issues" if github_issue is None else None,
-                    **_inactive_fields(post),
-                }
-            )
+            numbers = linked_issue_numbers(post)
+            entry = {
+                "id": req_id,
+                "title": post["title"],
+                "status": req_status,
+                "github_issue": post.get("github_issue"),
+                "branch": branch,
+                "pr_number": pr_number,
+                "pr_url": pr_url,
+                "warning": None if numbers else "no linked issues",
+                **_inactive_fields(post),
+            }
+            results.append(entry)
+            pending.append((entry, numbers, True))
 
+    await _attach_derived(repo, pending)
     return results
 
 
@@ -932,6 +965,10 @@ async def get_dashboard(
     unless ``include_inactive`` is true or ``status`` names that state explicitly.
     ``by_status`` counts every requirement either way, so the summary stays a
     total of the whole corpus.
+
+    Listed requirements carry the same ``derived`` block as
+    :func:`list_requirements`; the ``status`` filter still selects on the
+    recorded status.
     """
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(_invalid_status_message(status))
@@ -954,6 +991,7 @@ async def get_dashboard(
             files = await github.list_files(repo_name, "requirements")
             requirements: list[dict[str, Any]] = []
             seen_ids: set[str] = set()
+            pending: _Pending = []
             for f in files:
                 if not f["name"].endswith(".md"):
                     continue
@@ -967,17 +1005,17 @@ async def get_dashboard(
                     continue
                 if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
                     continue
-                github_issue = post.get("github_issue")
-                requirements.append(
-                    {
-                        "id": req_id,
-                        "title": post["title"],
-                        "status": req_status,
-                        "github_issue": github_issue,
-                        "warning": "no linked issues" if github_issue is None else None,
-                        **_inactive_fields(post),
-                    }
-                )
+                numbers = linked_issue_numbers(post)
+                entry = {
+                    "id": req_id,
+                    "title": post["title"],
+                    "status": req_status,
+                    "github_issue": post.get("github_issue"),
+                    "warning": None if numbers else "no linked issues",
+                    **_inactive_fields(post),
+                }
+                requirements.append(entry)
+                pending.append((entry, numbers, False))
 
             lachesis_prs = await github.list_lachesis_prs(repo_name)
             for pr_info in lachesis_prs:
@@ -999,19 +1037,20 @@ async def get_dashboard(
                         continue
                     if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
                         continue
-                    github_issue = post.get("github_issue")
-                    requirements.append(
-                        {
-                            "id": req_id,
-                            "title": post["title"],
-                            "status": req_status,
-                            "github_issue": github_issue,
-                            "pr_url": pr_url,
-                            "warning": "no linked issues" if github_issue is None else None,
-                            **_inactive_fields(post),
-                        }
-                    )
+                    numbers = linked_issue_numbers(post)
+                    entry = {
+                        "id": req_id,
+                        "title": post["title"],
+                        "status": req_status,
+                        "github_issue": post.get("github_issue"),
+                        "pr_url": pr_url,
+                        "warning": None if numbers else "no linked issues",
+                        **_inactive_fields(post),
+                    }
+                    requirements.append(entry)
+                    pending.append((entry, numbers, True))
 
+            await _attach_derived(repo_name, pending)
             aggregated.append({"repo": repo_name, "requirements": requirements})
         except Exception:
             logger.warning("get_dashboard: failed to fetch requirements from %s", repo_name)
@@ -1021,7 +1060,7 @@ async def get_dashboard(
         1
         for repo_entry in aggregated
         for req in repo_entry["requirements"]
-        if req["github_issue"] is None
+        if not req["derived"]["linked_issues"]
     )
     return {
         "repos": aggregated,

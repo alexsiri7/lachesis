@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from derive import CheckFacts, IssueFacts, PullFacts
 from settings import settings
 
 logger = logging.getLogger(__name__)
@@ -603,3 +604,139 @@ async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> Non
     if "errors" in data:
         logger.warning("github.enable_automerge graphql errors: %s", data["errors"])
         raise RuntimeError(f"GraphQL errors enabling automerge: {data['errors']}")
+
+
+_ISSUE_ACTIVITY_CHUNK = 25
+
+_ISSUE_ACTIVITY_FRAGMENT = """
+fragment activity on Issue {
+  number
+  state
+  updatedAt
+  labels(first: 20) { nodes { name } }
+  timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) {
+    nodes { ... on ClosedEvent { closer { __typename } } }
+  }
+  closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+    nodes {
+      number
+      state
+      merged
+      updatedAt
+      isDraft
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              contexts(first: 20) {
+                nodes {
+                  __typename
+                  ... on CheckRun { conclusion completedAt }
+                  ... on StatusContext { state createdAt }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _issue_activity_query(numbers: list[int]) -> str:
+    aliases = "\n".join(f"    i{n}: issue(number: {n}) {{ ...activity }}" for n in numbers)
+    return (
+        "query($owner: String!, $name: String!) {\n"
+        "  repository(owner: $owner, name: $name) {\n"
+        f"{aliases}\n"
+        "  }\n"
+        "}\n" + _ISSUE_ACTIVITY_FRAGMENT
+    )
+
+
+def _normalize_checks(pull: dict[str, Any]) -> list[CheckFacts]:
+    commits = (pull.get("commits") or {}).get("nodes") or []
+    if not commits:
+        return []
+    rollup = (commits[0].get("commit") or {}).get("statusCheckRollup")
+    if not rollup:
+        return []
+    checks: list[CheckFacts] = []
+    for node in (rollup.get("contexts") or {}).get("nodes") or []:
+        if node.get("__typename") == "CheckRun":
+            checks.append({"conclusion": node.get("conclusion"), "at": node.get("completedAt")})
+        elif node.get("__typename") == "StatusContext":
+            checks.append({"conclusion": node.get("state"), "at": node.get("createdAt")})
+    return checks
+
+
+def _normalize_pull(pull: dict[str, Any]) -> PullFacts:
+    return {
+        "number": pull["number"],
+        "state": pull["state"],
+        "merged": bool(pull.get("merged")),
+        "updated_at": pull.get("updatedAt"),
+        "is_draft": bool(pull.get("isDraft")),
+        "checks": _normalize_checks(pull),
+    }
+
+
+def _normalize_issue(issue: dict[str, Any]) -> IssueFacts:
+    closed_events = (issue.get("timelineItems") or {}).get("nodes") or []
+    closer = (closed_events[-1].get("closer") or {}) if closed_events else {}
+    pulls = (issue.get("closedByPullRequestsReferences") or {}).get("nodes") or []
+    return {
+        "number": issue["number"],
+        "state": issue["state"],
+        "updated_at": issue.get("updatedAt"),
+        "labels": [label["name"] for label in (issue.get("labels") or {}).get("nodes") or []],
+        "closed_by_commit": closer.get("__typename") == "Commit",
+        "pulls": [_normalize_pull(pull) for pull in pulls],
+    }
+
+
+async def get_issue_activity(repo: str, numbers: list[int]) -> dict[int, IssueFacts] | None:
+    """Return activity facts for *numbers*, keyed by issue number, or ``None``.
+
+    Issues are fetched in aliased batches, so a whole repo's requirements cost a
+    request or two instead of one per requirement, and an empty *numbers* costs
+    none.  Issues that no longer exist are absent from the returned map.
+
+    Unlike the rest of this module this returns ``None`` instead of raising when
+    GitHub cannot be read: a caller reporting derived status degrades to saying
+    so rather than failing the listing it was really asked for.
+    """
+    if not numbers:
+        return {}
+    owner, _, name = repo.partition("/")
+    facts: dict[int, IssueFacts] = {}
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        for start in range(0, len(numbers), _ISSUE_ACTIVITY_CHUNK):
+            chunk = numbers[start : start + _ISSUE_ACTIVITY_CHUNK]
+            resp = await http.post(
+                "https://api.github.com/graphql",
+                headers=_headers(),
+                json={
+                    "query": _issue_activity_query(chunk),
+                    "variables": {"owner": owner, "name": name},
+                },
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "github.get_issue_activity failed repo=%s status=%s", repo, resp.status_code
+                )
+                return None
+            data = resp.json()
+            if "errors" in data:
+                logger.warning("github.get_issue_activity graphql errors: %s", data["errors"])
+                return None
+            repository = (data.get("data") or {}).get("repository")
+            if repository is None:
+                logger.warning("github.get_issue_activity: no repository for repo=%s", repo)
+                return None
+            for node in repository.values():
+                if node:
+                    facts[node["number"]] = _normalize_issue(node)
+    return facts
