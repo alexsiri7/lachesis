@@ -1,8 +1,8 @@
 ---
 created: '2026-09-07'
-github_issue: null
+github_issue: 118
 id: 028
-status: draft
+status: idea
 title: Ordered backlog and a ready gate for autonomous pickup
 updated: '2026-09-07'
 ---
@@ -43,4 +43,5 @@ Newly created issues are unready and placed at the end. Both are reversible in t
 
 ## Issues
 
-_None yet._
+- #118 — Backlog ordering and ready flag on issues
+- #119 — next_issue — what should the worker pick up
