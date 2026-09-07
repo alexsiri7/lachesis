@@ -72,6 +72,17 @@ async def test_send_encodes_non_ascii_title(configured: object, httpx_mock: HTTP
     )
 
 
+async def test_send_does_not_fold_a_long_non_ascii_title(
+    configured: object, httpx_mock: HTTPXMock
+) -> None:
+    """RFC 2047 encoding folds past 78 chars by default, and a newline breaks the header."""
+    httpx_mock.add_response()
+    title = "Push notification when a requirement lands in production — landed"
+    await notify.send("uid", title=title, body="b")
+
+    assert "\n" not in httpx_mock.get_requests()[0].headers["Title"]
+
+
 async def test_send_tolerates_trailing_slash_on_server(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response()
     with patch(

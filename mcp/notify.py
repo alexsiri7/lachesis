@@ -26,11 +26,13 @@ def _header_value(value: str) -> str:
 
     ntfy carries the title and tags as headers, which are latin-1 at best — an
     em dash in a requirement title would otherwise fail inside httpx before the
-    request leaves the process.
+    request leaves the process. ``maxlinelen`` defeats the header folding that
+    would otherwise split a long title across lines: a newline mid-header is no
+    more deliverable than the em dash was.
     """
     if value.isascii():
         return value
-    return Header(value, "utf-8").encode()
+    return Header(value, "utf-8").encode(maxlinelen=998)
 
 
 async def send(
