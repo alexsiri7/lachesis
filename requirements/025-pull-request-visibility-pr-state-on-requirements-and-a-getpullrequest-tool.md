@@ -1,8 +1,8 @@
 ---
 created: '2026-09-07'
-github_issue: null
+github_issue: 110
 id: '025'
-status: draft
+status: idea
 title: 'Pull request visibility: PR state on requirements and a get_pull_request tool'
 updated: '2026-09-07'
 ---
@@ -39,4 +39,6 @@ The cross-repo dashboard surfaces requirements blocked behind an unmerged PR as 
 
 ## Issues
 
-_None yet._
+- #110 — get_pull_request tool — fetch the current state of a PR
+- #111 — Report PR state on requirements and distinguish merge-blocked from unlinked
+- #112 — Dashboard: group requirements blocked behind unmerged PRs
