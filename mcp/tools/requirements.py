@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, NamedTuple, cast
 
 import frontmatter
@@ -13,6 +13,7 @@ import httpx
 
 import db
 import github
+import groups
 from auth import current_db_user_id
 from derive import IssueFacts, derive, linked_issue_numbers
 from status import INACTIVE_STATUSES, VALID_STATUSES, canonical_status
@@ -967,7 +968,9 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
 
 
 async def get_dashboard(
-    status: str | None = None, include_inactive: bool = False
+    status: str | None = None,
+    include_inactive: bool = False,
+    stale_after_days: int = groups.DEFAULT_STALE_AFTER_DAYS,
 ) -> dict[str, Any]:
     """Return cross-repo requirements summary, optionally filtered by status.
 
@@ -979,9 +982,23 @@ async def get_dashboard(
     Listed requirements carry the same ``derived`` block as
     :func:`list_requirements`; the ``status`` filter still selects on the
     recorded status.
+
+    ``groups`` answers what shipped, what was dropped and what went quiet without
+    a second call.  Every requirement read lands in exactly one of ``landed``,
+    ``dropped``, ``stalled``, ``needs_attention``, ``diverged`` and ``in_flight``,
+    tested in that order, and every group is present even when empty.  Grouping
+    covers the whole corpus regardless of ``include_inactive`` — otherwise
+    ``dropped`` would be empty by default — and is narrowed only by ``status``.
+    A requirement counts as stalled after ``stale_after_days`` of silence unless
+    an open blocker is itself still moving, which explains it.
+
+    With a ``status`` filter the group counts sum to the matching requirements
+    while ``summary.total`` keeps counting the whole corpus, as it always has.
     """
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(_invalid_status_message(status))
+    if stale_after_days < 1:
+        raise ValueError(f"stale_after_days must be at least 1, got {stale_after_days}")
 
     user_id = current_db_user_id.get()
     if not user_id:
@@ -993,6 +1010,7 @@ async def get_dashboard(
 
     repos = db.list_repos(user_id)
     aggregated: list[dict[str, Any]] = []
+    all_candidates: list[groups.Candidate] = []
     status_counts: dict[str, int] = {}
 
     for repo_row in repos:
@@ -1000,6 +1018,7 @@ async def get_dashboard(
         try:
             files = await github.list_files(repo_name, "requirements")
             requirements: list[dict[str, Any]] = []
+            repo_candidates: list[groups.Candidate] = []
             seen_ids: set[str] = set()
             pending: _Pending = []
             for f in files:
@@ -1013,8 +1032,6 @@ async def get_dashboard(
                 status_counts[req_status] = status_counts.get(req_status, 0) + 1
                 if status is not None and req_status != status:
                     continue
-                if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
-                    continue
                 numbers = linked_issue_numbers(post)
                 entry = {
                     "id": req_id,
@@ -1024,6 +1041,9 @@ async def get_dashboard(
                     "warning": None if numbers else "no linked issues",
                     **_inactive_fields(post),
                 }
+                repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
+                if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
+                    continue
                 requirements.append(entry)
                 pending.append((entry, numbers, False))
 
@@ -1045,8 +1065,6 @@ async def get_dashboard(
                     status_counts[req_status] = status_counts.get(req_status, 0) + 1
                     if status is not None and req_status != status:
                         continue
-                    if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
-                        continue
                     numbers = linked_issue_numbers(post)
                     entry = {
                         "id": req_id,
@@ -1057,11 +1075,15 @@ async def get_dashboard(
                         "warning": None if numbers else "no linked issues",
                         **_inactive_fields(post),
                     }
+                    repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
+                    if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
+                        continue
                     requirements.append(entry)
                     pending.append((entry, numbers, True))
 
             await _attach_derived(repo_name, pending)
             aggregated.append({"repo": repo_name, "requirements": requirements})
+            all_candidates.extend(repo_candidates)
         except Exception:
             logger.warning("get_dashboard: failed to fetch requirements from %s", repo_name)
 
@@ -1072,9 +1094,19 @@ async def get_dashboard(
         for req in repo_entry["requirements"]
         if not req["derived"]["linked_issues"]
     )
+    grouped = groups.group_requirements(
+        all_candidates, now=datetime.now(UTC), stale_after_days=stale_after_days
+    )
     return {
         "repos": aggregated,
-        "summary": {"total": total, "by_status": status_counts, "unlinked_count": unlinked_count},
+        "groups": grouped,
+        "summary": {
+            "total": total,
+            "by_status": status_counts,
+            "unlinked_count": unlinked_count,
+            "groups": {name: len(grouped[name]) for name in groups.GROUP_NAMES},
+            "stale_after_days": stale_after_days,
+        },
     }
 
 
