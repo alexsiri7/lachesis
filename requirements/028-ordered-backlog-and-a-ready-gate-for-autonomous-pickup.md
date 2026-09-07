@@ -23,24 +23,21 @@ Issues in a repo hold a position in a single ordered backlog. The author can mov
 
 Order is relative rather than absolute. Placing an issue requires saying what it should come before or after, which keeps the ordering meaningful — a priority label can be applied without comparison and so drifts until everything shares the top band.
 
-**A ready gate**
-
-An issue is only eligible for autonomous pickup once marked ready, signifying the author considers it specified well enough to build without further clarification. Order decides between ready issues; it does not promote an issue that is not ready.
-
-An unready issue is not a lower priority — it is not yet work. The distinction matters because an under-specified issue picked up autonomously produces a confident wrong implementation, which costs more than the delay of leaving it alone.
-
 **Selection**
 
-Asking what to work on next returns the highest-ordered issue that is ready and not blocked by an open dependency. When nothing qualifies, the answer says why — everything blocked, or nothing ready — rather than returning empty, since those call for different responses from the author.
+Asking what to work on next returns the highest-ordered issue that is not blocked by an open dependency. When nothing qualifies, the answer says why — everything blocked, or the backlog empty — rather than returning empty, since those call for different responses from the author.
 
 **Interrupts**
 
 A single marker lets the author put an issue at the front regardless of order, for genuine interrupts. Exactly one such marker exists. Graded urgency levels are deliberately not offered: with a single author and an autonomous worker, grades collapse into everything being urgent, and the grooming needed to prevent that is effort spent maintaining a signal that has already stopped meaning anything.
 
-**Defaults**
+**Work is eligible by default**
 
-Newly created issues are unready and placed at the end. Both are reversible in the same call that creates them, so a session filing well-specified work does not need a second pass, but forgetting leaves work parked rather than picked up prematurely.
+An issue is available for autonomous pickup as soon as it is created. Filing an issue is already the author's decision that the work is wanted; requiring a second confirmation afterwards moves review back onto the author, which is the cost the autonomous workflow exists to remove.
 
+The author can park an issue — marking it as captured but not to be built yet — and unpark it later. Parking is the deliberate exception rather than the default state, because it describes something rare: an idea recorded mid-session that is knowingly unfinished.
+
+Parking is not how work is sequenced. An issue that should not be built yet because it depends on something unbuilt is blocked, and dependencies already express that. Parking means the author has not decided, which is a different thing from the author having decided it comes later.
 ## Issues
 
 - #118 — Backlog ordering and ready flag on issues
