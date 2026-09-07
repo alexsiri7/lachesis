@@ -163,10 +163,10 @@ mcp.tool(
     " unless `include_inactive=True` or `status` names that state explicitly;"
     " the by_status summary always counts them."
     " Listed requirements carry the same `derived` block as list_requirements"
-    " (status read from the linked issues and their PRs, `source` — which tells"
-    " a derived status from an unlinked requirement from an unreadable GitHub —"
-    " `diverged`, `last_activity`, signals); `status` filters on the recorded"
-    " value.",
+    " (status read from the linked issues and their PRs, `source` — `issues`,"
+    " `unlinked`, or `unavailable`, so read a null status as 'no work started'"
+    " only under `unlinked` — `diverged`, `last_activity`, signals);"
+    " `status` filters on the recorded value.",
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dashboard)
 
