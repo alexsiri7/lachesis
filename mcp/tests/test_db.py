@@ -91,3 +91,50 @@ def test_engine_raises_if_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("db.settings.database_url", "")
     with pytest.raises(RuntimeError, match="not configured"):
         db._engine()
+
+
+def test_list_backlog_returns_rows() -> None:
+    rows = [{"issue_number": 5, "position": 0, "ready": True, "interrupt": False}]
+    mock = _mock_engine(rows)
+    with patch("db._engine", return_value=mock):
+        result = db.list_backlog("uid", "owner/repo")
+    assert result == rows
+
+
+def test_upsert_backlog_flags_leaves_omitted_flag_null() -> None:
+    """An omitted flag binds NULL so COALESCE preserves the stored value."""
+    row = {"issue_number": 5, "position": None, "ready": True, "interrupt": False}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.upsert_backlog_flags("uid", "owner/repo", 5, ready=True)
+
+    assert result["interrupt"] is False
+    params = mock.begin.return_value.execute.call_args[0][1]
+    assert params["ready"] is True
+    assert params["interrupt"] is None
+    sql = str(mock.begin.return_value.execute.call_args[0][0])
+    assert "COALESCE(:ready, lachesis_backlog.ready)" in sql
+    assert "COALESCE(:interrupt, lachesis_backlog.interrupt)" in sql
+
+
+def test_upsert_backlog_flags_inserts_false_not_null() -> None:
+    """The fresh-insert path must not bind NULL into the NOT NULL flag columns."""
+    row = {"issue_number": 9, "position": None, "ready": True, "interrupt": False}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        db.upsert_backlog_flags("uid", "owner/repo", 9, ready=True)
+
+    sql = str(mock.begin.return_value.execute.call_args[0][0])
+    assert "COALESCE(:ready, false), COALESCE(:interrupt, false)" in sql
+
+
+def test_set_backlog_order_numbers_contiguously_and_clears_the_rest() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        db.set_backlog_order("uid", "owner/repo", [8, 3, 5])
+
+    calls = mock.begin.return_value.execute.call_args_list
+    assert "position = NULL" in str(calls[0][0][0])
+    assert calls[0][0][1]["numbers"] == [8, 3, 5]
+    placed = [(c[0][1]["issue_number"], c[0][1]["position"]) for c in calls[1:]]
+    assert placed == [(8, 0), (3, 1), (5, 2)]

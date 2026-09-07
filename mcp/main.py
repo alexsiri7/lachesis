@@ -182,6 +182,33 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Return a repo's open issues in backlog order — the single ordered backlog. "
+        "Interrupt-marked issues lead the list; each entry reports its `position` in "
+        "the backlog itself plus its `ready` and `interrupt` flags. Only ready issues "
+        "are eligible for autonomous pickup."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(req_tools.get_backlog)
+
+mcp.tool(
+    description=(
+        "Move an issue to sit immediately before or after another open issue. "
+        "Pass exactly one of before/after — placement is always relative to a named "
+        "issue, never an absolute rank. Returns the reordered backlog."
+    ),
+)(req_tools.move_issue)
+
+mcp.tool(
+    description=(
+        "Set an issue's backlog flags. `ready` marks it specified well enough to "
+        "build, which is what makes it eligible for autonomous pickup; `interrupt` "
+        "jumps it to the front of the backlog regardless of position. "
+        "An omitted flag is left as it is."
+    ),
+)(req_tools.set_backlog_flags)
+
+mcp.tool(
+    description=(
         "Return the standard Lachesis workflow. Call this at the start of a session "
         "to learn the correct order: create_requirement → create_github_issues → link_issues."
     ),

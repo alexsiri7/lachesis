@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frontmatter
 import httpx
@@ -18,6 +19,7 @@ from tools.requirements import (
     create_github_issues,
     create_requirement,
     delete_requirement,
+    get_backlog,
     get_dashboard,
     get_dependencies,
     get_github_issue,
@@ -25,6 +27,8 @@ from tools.requirements import (
     get_requirement,
     link_issues,
     list_requirements,
+    move_issue,
+    set_backlog_flags,
     update_github_issue,
     update_requirement,
 )
@@ -369,6 +373,8 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
             "url": "https://github.com/owner/repo/issues/42",
             "blocked_by": [],
             "added_to_project": False,
+            "ready": False,
+            "placed": False,
         }
     ]
 
@@ -599,6 +605,8 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
             "url": "https://github.com/owner/repo/issues/7",
             "blocked_by": [],
             "added_to_project": False,
+            "ready": False,
+            "placed": False,
         }
     ]
 
@@ -1921,3 +1929,382 @@ async def test_get_initial_instructions_mentions_required_tools() -> None:
     assert "create_requirement" in result
     assert "create_github_issues" in result
     assert "link_issues" in result
+
+
+async def test_get_initial_instructions_documents_the_ready_gate() -> None:
+    """Archon reads these at session start, so the pickup gate has to be discoverable."""
+    result = await get_initial_instructions()
+
+    assert "set_backlog_flags" in result
+    assert "move_issue" in result
+
+
+# ---------------------------------------------------------------------------
+# Backlog ordering — get_backlog, move_issue, set_backlog_flags
+# ---------------------------------------------------------------------------
+
+_OPEN_ISSUES_URL = "https://api.github.com/repos/owner/repo/issues?state=open&per_page=100"
+
+
+class _FakeBacklog:
+    """In-memory stand-in for the lachesis_backlog accessors in db.py."""
+
+    def __init__(self, rows: list[dict] | None = None) -> None:
+        self.rows: dict[int, dict] = {}
+        for row in rows or []:
+            self.rows[row["issue_number"]] = {
+                "position": None,
+                "ready": False,
+                "interrupt": False,
+                **row,
+            }
+        self.orders: list[list[int]] = []
+
+    def _row(self, issue_number: int) -> dict:
+        return self.rows.setdefault(
+            issue_number,
+            {
+                "issue_number": issue_number,
+                "position": None,
+                "ready": False,
+                "interrupt": False,
+            },
+        )
+
+    def list_backlog(self, user_id: str, repo_name: str) -> list[dict]:
+        return [dict(row) for row in self.rows.values()]
+
+    def upsert_backlog_flags(
+        self,
+        user_id: str,
+        repo_name: str,
+        issue_number: int,
+        ready: bool | None = None,
+        interrupt: bool | None = None,
+    ) -> dict:
+        row = self._row(issue_number)
+        if ready is not None:
+            row["ready"] = ready
+        if interrupt is not None:
+            row["interrupt"] = interrupt
+        return dict(row)
+
+    def set_backlog_order(
+        self, user_id: str, repo_name: str, ordered_issue_numbers: list[int]
+    ) -> None:
+        self.orders.append(list(ordered_issue_numbers))
+        for row in self.rows.values():
+            row["position"] = None
+        for index, issue_number in enumerate(ordered_issue_numbers):
+            self._row(issue_number)["position"] = index
+
+
+@contextlib.contextmanager
+def _patch_backlog(fake: _FakeBacklog):
+    """Route the db backlog accessors at a _FakeBacklog for the duration of the block."""
+    with (
+        patch("db.list_backlog", fake.list_backlog),
+        patch("db.upsert_backlog_flags", fake.upsert_backlog_flags),
+        patch("db.set_backlog_order", fake.set_backlog_order),
+    ):
+        yield fake
+
+
+def _mock_open_issues(httpx_mock: HTTPXMock, numbers: list[int]) -> None:
+    httpx_mock.add_response(
+        url=_OPEN_ISSUES_URL,
+        json=[{"number": n, "title": f"Issue {n}"} for n in numbers],
+        is_reusable=True,
+    )
+
+
+async def test_get_backlog_positioned_first_then_by_issue_number(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Positioned rows lead; everything else follows in creation order."""
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    fake = _FakeBacklog([{"issue_number": 3, "position": 0}])
+
+    with _patch_backlog(fake):
+        result = await get_backlog("owner/repo")
+
+    assert [(i["number"], i["position"]) for i in result] == [(3, 0), (1, 1), (2, 2)]
+
+
+async def test_get_backlog_defaults_new_issues_to_unready(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """An issue with no row is unready and not an interrupt."""
+    _mock_open_issues(httpx_mock, [1])
+
+    with _patch_backlog(_FakeBacklog()):
+        result = await get_backlog("owner/repo")
+
+    assert result == [
+        {"number": 1, "title": "Issue 1", "position": 0, "ready": False, "interrupt": False}
+    ]
+
+
+async def test_get_backlog_omits_closed_issues_that_still_have_rows(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """A row for an issue that is no longer open drops out of the backlog."""
+    _mock_open_issues(httpx_mock, [1])
+    fake = _FakeBacklog(
+        [{"issue_number": 2, "position": 0, "ready": True}, {"issue_number": 1, "position": 1}]
+    )
+
+    with _patch_backlog(fake):
+        result = await get_backlog("owner/repo")
+
+    assert [i["number"] for i in result] == [1]
+
+
+async def test_get_backlog_puts_interrupt_first(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """An interrupt-marked issue leads the backlog whatever its position."""
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    fake = _FakeBacklog(
+        [
+            {"issue_number": 1, "position": 0},
+            {"issue_number": 2, "position": 1},
+            {"issue_number": 3, "position": 2, "interrupt": True},
+        ]
+    )
+
+    with _patch_backlog(fake):
+        result = await get_backlog("owner/repo")
+
+    assert [i["number"] for i in result] == [3, 1, 2]
+    assert result[0]["position"] == 2
+
+
+async def test_move_issue_before_anchor(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        result = await move_issue("owner/repo", 3, before=2)
+
+    assert fake.orders == [[1, 3, 2]]
+    assert [i["number"] for i in result] == [1, 3, 2]
+
+
+async def test_move_issue_after_anchor(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        await move_issue("owner/repo", 1, after=3)
+
+    assert fake.orders == [[2, 3, 1]]
+
+
+async def test_move_issue_requires_exactly_one_anchor(set_user_id: str) -> None:
+    with pytest.raises(ValueError, match="exactly one of before/after"):
+        await move_issue("owner/repo", 1)
+    with pytest.raises(ValueError, match="exactly one of before/after"):
+        await move_issue("owner/repo", 1, before=2, after=3)
+
+
+async def test_move_issue_rejects_self_anchor(set_user_id: str) -> None:
+    with pytest.raises(ValueError, match="relative to itself"):
+        await move_issue("owner/repo", 1, before=1)
+
+
+async def test_move_issue_unknown_anchor_raises(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    _mock_open_issues(httpx_mock, [1, 2])
+
+    with _patch_backlog(_FakeBacklog()):
+        with pytest.raises(FileNotFoundError, match="#99"):
+            await move_issue("owner/repo", 1, before=99)
+
+
+async def test_move_issue_persists_base_order_not_interrupt_order(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Moving an unrelated issue must not bake an interrupt's lead into its position."""
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    fake = _FakeBacklog(
+        [
+            {"issue_number": 1, "position": 0},
+            {"issue_number": 2, "position": 1},
+            {"issue_number": 3, "position": 2, "interrupt": True},
+        ]
+    )
+
+    with _patch_backlog(fake):
+        await move_issue("owner/repo", 2, before=1)
+
+    # Had the move renumbered the effective order [3, 1, 2], issue 3 would land at 1.
+    assert fake.orders == [[2, 1, 3]]
+    assert fake.rows[3]["position"] == 2
+
+
+async def test_set_backlog_flags_sets_ready_without_touching_interrupt(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/issues/5",
+        json={
+            "number": 5,
+            "id": 500,
+            "title": "Five",
+            "state": "open",
+            "html_url": "https://github.com/owner/repo/issues/5",
+        },
+    )
+    fake = _FakeBacklog([{"issue_number": 5, "interrupt": True}])
+
+    with _patch_backlog(fake):
+        result = await set_backlog_flags("owner/repo", 5, ready=True)
+
+    assert result == {"number": 5, "ready": True, "interrupt": True}
+
+
+async def test_set_backlog_flags_requires_a_flag(set_user_id: str) -> None:
+    with pytest.raises(ValueError, match="at least one of ready/interrupt"):
+        await set_backlog_flags("owner/repo", 5)
+
+
+async def test_set_backlog_flags_unknown_issue_raises(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    httpx_mock.add_response(status_code=404)
+
+    with _patch_backlog(_FakeBacklog()):
+        with pytest.raises(FileNotFoundError, match="#5"):
+            await set_backlog_flags("owner/repo", 5, ready=True)
+
+
+async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Position and readiness live in Lachesis, so a GitHub-side edit cannot disturb them."""
+    _mock_open_issues(httpx_mock, [1, 2])
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/issues/2",
+        json={
+            "number": 2,
+            "id": 200,
+            "title": "Two",
+            "state": "open",
+            "html_url": "https://github.com/owner/repo/issues/2",
+        },
+    )
+    httpx_mock.add_response(
+        method="PATCH",
+        url="https://api.github.com/repos/owner/repo/issues/2",
+        json={
+            "number": 2,
+            "title": "Retitled elsewhere",
+            "html_url": "https://github.com/owner/repo/issues/2",
+        },
+    )
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        await move_issue("owner/repo", 2, before=1)
+        await set_backlog_flags("owner/repo", 2, ready=True)
+
+        await update_github_issue("owner/repo", 2, {"title": "Retitled elsewhere"})
+
+        result = await get_backlog("owner/repo")
+
+    assert result[0]["number"] == 2
+    assert result[0]["position"] == 0
+    assert result[0]["ready"] is True
+
+
+# ---------------------------------------------------------------------------
+# create_github_issues — backlog overrides
+# ---------------------------------------------------------------------------
+
+
+def _mock_created_issue(httpx_mock: HTTPXMock, number: int) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={
+            "id": number * 100,
+            "number": number,
+            "title": f"Issue {number}",
+            "html_url": f"https://github.com/owner/repo/issues/{number}",
+            "node_id": f"I_{number}",
+        },
+    )
+
+
+async def test_create_github_issues_without_overrides_never_touches_the_db(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The default path is unready and last, which needs no row and so no DB call."""
+    _mock_created_issue(httpx_mock, 1)
+    backlog_db = MagicMock()
+
+    with (
+        patch("db.list_backlog", backlog_db.list_backlog),
+        patch("db.upsert_backlog_flags", backlog_db.upsert_backlog_flags),
+        patch("db.set_backlog_order", backlog_db.set_backlog_order),
+    ):
+        result = await create_github_issues("owner/repo", [{"title": "One", "body": "b"}])
+
+    backlog_db.assert_not_called()
+    assert backlog_db.mock_calls == []
+    assert result[0]["ready"] is False
+    assert result[0]["placed"] is False
+
+
+async def test_create_github_issues_marks_ready_on_request(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_created_issue(httpx_mock, 1)
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        result = await create_github_issues(
+            "owner/repo", [{"title": "One", "body": "b", "ready": True}]
+        )
+
+    assert result[0]["ready"] is True
+    assert fake.rows[1]["ready"] is True
+
+
+async def test_create_github_issues_places_against_an_in_batch_anchor(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """An anchor naming an issue created earlier in the same batch resolves."""
+    _mock_created_issue(httpx_mock, 1)
+    _mock_created_issue(httpx_mock, 2)
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        result = await create_github_issues(
+            "owner/repo",
+            [
+                {"title": "One", "body": "b"},
+                {"title": "Two", "body": "b", "before": 1},
+            ],
+        )
+
+    assert result[1]["placed"] is True
+    assert fake.orders == [[2, 1, 3]]
+
+
+async def test_create_github_issues_reports_an_unresolvable_anchor_without_raising(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """The issue already exists on GitHub, so a failed placement must not raise."""
+    _mock_created_issue(httpx_mock, 1)
+    _mock_open_issues(httpx_mock, [1])
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        result = await create_github_issues(
+            "owner/repo", [{"title": "One", "body": "b", "after": 99}]
+        )
+
+    assert result[0]["number"] == 1
+    assert result[0]["placed"] is False
+    assert fake.orders == []

@@ -192,6 +192,27 @@ async def _list_open_prs(repo: str) -> list[dict[str, Any]]:
     return resp.json()  # type: ignore[no-any-return]
 
 
+async def list_open_issues(repo: str) -> list[dict[str, Any]]:
+    """Return ``[{"number": int, "title": str}, ...]`` for open issues, ascending by number.
+
+    The /issues endpoint also returns pull requests; those are filtered out.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/issues",
+            headers=_headers(),
+            params={"state": "open", "per_page": 100},
+        )
+    if not resp.is_success:
+        logger.warning("github.list_open_issues failed repo=%s status=%s", repo, resp.status_code)
+        resp.raise_for_status()
+    issues = [item for item in resp.json() if "pull_request" not in item]
+    return sorted(
+        ({"number": i["number"], "title": i["title"]} for i in issues),
+        key=lambda i: int(i["number"]),
+    )
+
+
 async def find_pr_branch(repo: str, head_prefix: str) -> str | None:
     """Return the head branch of the first open PR whose ref starts with *head_prefix*.
 

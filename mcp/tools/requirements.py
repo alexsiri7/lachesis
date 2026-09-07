@@ -15,7 +15,7 @@ import db
 import github
 from auth import current_db_user_id
 
-from .repos import normalize_repo
+from .repos import _require_user_id, normalize_repo
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,11 @@ Lachesis workflow — follow these steps in order:
 3. link_issues — attach the issue numbers to the requirement. Status advances to 'idea'.
 
 A requirement without linked issues is a draft. Archon will not act on drafts.
+
+New issues are unready and last in the backlog. Call set_backlog_flags with
+ready=True once an issue is specified well enough to build — only ready issues are
+eligible for autonomous pickup. Use move_issue to order the backlog by relative
+placement, and the interrupt flag for the one thing that must jump the queue.
 """
 
 
@@ -400,10 +405,55 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     return cast(str, updated_content)
 
 
+async def _apply_backlog_overrides(
+    repo: str, issues: list[dict[str, Any]], results: list[dict[str, Any]]
+) -> None:
+    """Apply per-issue ``ready`` / ``before`` / ``after`` overrides to created issues.
+
+    Best-effort throughout: the GitHub issues already exist and cannot be
+    un-created, so every failure is logged and reported through the result dict.
+    Anchors are resolved issue by issue, so one naming an issue created earlier in
+    the same batch works.
+    """
+    try:
+        user_id = _require_user_id()
+    except RuntimeError:
+        logger.warning("create_github_issues: no DB user context; backlog overrides skipped")
+        return
+
+    for issue_input, result in zip(issues, results, strict=True):
+        number = result["number"]
+        if issue_input.get("ready"):
+            try:
+                db.upsert_backlog_flags(user_id, repo, number, ready=True)
+                result["ready"] = True
+            except Exception:
+                logger.warning("create_github_issues: failed to mark issue %s ready", number)
+
+        before = issue_input.get("before")
+        after = issue_input.get("after")
+        if before is None and after is None:
+            continue
+        try:
+            await move_issue(repo, number, before=before, after=after)
+            result["placed"] = True
+        except Exception:
+            logger.warning(
+                "create_github_issues: failed to place issue %s (before=%r, after=%r)",
+                number,
+                before,
+                after,
+            )
+
+
 async def create_github_issues(
     repo: str, issues: list[dict[str, Any]], project_id: str | None = None
 ) -> list[dict[str, Any]]:
-    """Create one or more GitHub issues and return their numbers/titles/urls."""
+    """Create one or more GitHub issues and return their numbers/titles/urls.
+
+    Each issue may carry ``ready`` (bool) and one of ``before`` / ``after`` (issue
+    numbers) to override the defaults — unready, last in the backlog.
+    """
     repo = await _resolve_repo(repo)
     # Phase 1: Create all issues, build number→id map
     results: list[dict[str, Any]] = []
@@ -416,7 +466,15 @@ async def create_github_issues(
             issue.get("labels"),
         )
         node_id = result.pop("node_id")
-        results.append({**result, "blocked_by": [], "added_to_project": False})
+        results.append(
+            {
+                **result,
+                "blocked_by": [],
+                "added_to_project": False,
+                "ready": False,
+                "placed": False,
+            }
+        )
         number_to_id[result["number"]] = result["id"]
 
         if project_id:
@@ -445,7 +503,126 @@ async def create_github_issues(
             await github.add_issue_dependency(repo, result["number"], blocker_id)
             result["blocked_by"].append(blocker_number)
 
+    # Phase 3: Backlog overrides — the default path stays free of the DB and of auth
+    if any(key in issue for issue in issues for key in ("ready", "before", "after")):
+        await _apply_backlog_overrides(repo, issues, results)
+
     return results
+
+
+# ---------------------------------------------------------------------------
+# Backlog ordering
+# ---------------------------------------------------------------------------
+
+
+def _hoist_interrupts(base: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Effective order: interrupt-marked issues first, each group keeping base order."""
+    return [i for i in base if i["interrupt"]] + [i for i in base if not i["interrupt"]]
+
+
+async def _base_backlog_order(repo: str, user_id: str) -> list[dict[str, Any]]:
+    """Return the repo's open issues in base backlog order.
+
+    Positioned rows come first in position order, then every remaining open issue
+    by issue number ascending — which is creation order, so a new issue is last
+    without anything being written. Closed issues drop out here; their rows stay
+    in the table, so the ready and interrupt flags survive a close and reopen,
+    though an explicit position does not — the next move clears it. Each entry's
+    ``position`` is its index in this list, never in the interrupt-hoisted one.
+    """
+    open_issues = await github.list_open_issues(repo)
+    titles = {issue["number"]: issue["title"] for issue in open_issues}
+    rows = {
+        row["issue_number"]: row
+        for row in db.list_backlog(user_id, repo)
+        if row["issue_number"] in titles
+    }
+
+    positioned = sorted(
+        (number for number, row in rows.items() if row["position"] is not None),
+        key=lambda number: (rows[number]["position"], number),
+    )
+    remaining = sorted(number for number in titles if number not in set(positioned))
+
+    return [
+        {
+            "number": number,
+            "title": titles[number],
+            "position": index,
+            "ready": bool(rows[number]["ready"]) if number in rows else False,
+            "interrupt": bool(rows[number]["interrupt"]) if number in rows else False,
+        }
+        for index, number in enumerate(positioned + remaining)
+    ]
+
+
+async def get_backlog(repo: str) -> list[dict[str, Any]]:
+    """Return the repo's open issues in backlog order, interrupts first.
+
+    Each entry has ``number``, ``title``, ``position``, ``ready`` and ``interrupt``.
+    ``position`` is the issue's place in the backlog itself, so an interrupt-marked
+    issue leads the list while still reporting the position it will fall back to.
+    """
+    repo = await _resolve_repo(repo)
+    user_id = _require_user_id()
+    return _hoist_interrupts(await _base_backlog_order(repo, user_id))
+
+
+async def move_issue(
+    repo: str, issue_number: int, before: int | None = None, after: int | None = None
+) -> list[dict[str, Any]]:
+    """Move an issue immediately before or after another open issue.
+
+    Exactly one of *before* / *after* is required — placement is always relative to
+    a named issue, never an absolute rank. Returns the backlog as `get_backlog` does.
+    """
+    if (before is None) == (after is None):
+        raise ValueError("exactly one of before/after is required")
+    anchor = before if before is not None else after
+    if anchor == issue_number:
+        raise ValueError("cannot move an issue relative to itself")
+
+    repo = await _resolve_repo(repo)
+    user_id = _require_user_id()
+    base = await _base_backlog_order(repo, user_id)
+    numbers = [item["number"] for item in base]
+    for number in (issue_number, anchor):
+        if number not in numbers:
+            raise FileNotFoundError(f"Issue #{number} is not an open issue in {repo!r}")
+
+    numbers.remove(issue_number)
+    anchor_index = numbers.index(cast(int, anchor))
+    numbers.insert(anchor_index if before is not None else anchor_index + 1, issue_number)
+
+    # The base order is what gets persisted — renumbering the interrupt-hoisted
+    # order would bake an interrupt's temporary lead into its stored position.
+    db.set_backlog_order(user_id, repo, numbers)
+
+    by_number = {item["number"]: item for item in base}
+    return _hoist_interrupts(
+        [{**by_number[number], "position": index} for index, number in enumerate(numbers)]
+    )
+
+
+async def set_backlog_flags(
+    repo: str, issue_number: int, ready: bool | None = None, interrupt: bool | None = None
+) -> dict[str, Any]:
+    """Set the ready and/or interrupt flags on an issue. An omitted flag is left alone.
+
+    Returns ``{"number", "ready", "interrupt"}``.
+    """
+    if ready is None and interrupt is None:
+        raise ValueError("at least one of ready/interrupt is required")
+    repo = await _resolve_repo(repo)
+    user_id = _require_user_id()
+    if await github.get_issue(repo, issue_number) is None:
+        raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
+    row = db.upsert_backlog_flags(user_id, repo, issue_number, ready=ready, interrupt=interrupt)
+    return {
+        "number": issue_number,
+        "ready": bool(row["ready"]),
+        "interrupt": bool(row["interrupt"]),
+    }
 
 
 async def get_dashboard(status: str | None = None) -> dict[str, Any]:
