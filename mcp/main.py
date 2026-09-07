@@ -167,7 +167,14 @@ mcp.tool(
     " (status read from the linked issues and their PRs, `source` — `issues`,"
     " `unlinked`, or `unavailable`, so read a null status as 'no work started'"
     " only under `unlinked` — `diverged`, `last_activity`, signals);"
-    " `status` filters on the recorded value.",
+    " `status` filters on the recorded value."
+    " `groups` partitions every requirement read into exactly one of landed,"
+    " dropped, stalled, needs_attention, diverged and in_flight, tested in that"
+    " order, with every group present even when empty; grouping covers cancelled"
+    " and superseded requirements whatever `include_inactive` says."
+    " A requirement counts as stalled after `stale_after_days` of silence"
+    " (default 14, echoed back in the summary) unless an open blocker is itself"
+    " still moving. summary.groups gives the count per group.",
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dashboard)
 

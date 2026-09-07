@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from derive import CheckFacts, IssueFacts, PullFacts
+from derive import BlockerFacts, CheckFacts, IssueFacts, PullFacts
 from settings import settings
 
 logger = logging.getLogger(__name__)
@@ -613,7 +613,11 @@ fragment activity on Issue {
   number
   state
   updatedAt
+  closedAt
   labels(first: 20) { nodes { name } }
+  blockedBy(first: 10) {
+    nodes { number state updatedAt repository { nameWithOwner } }
+  }
   timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) {
     nodes { ... on ClosedEvent { closer { __typename } } }
   }
@@ -623,6 +627,7 @@ fragment activity on Issue {
       state
       merged
       updatedAt
+      mergedAt
       isDraft
       commits(last: 1) {
         nodes {
@@ -678,9 +683,28 @@ def _normalize_pull(pull: dict[str, Any]) -> PullFacts:
         "state": pull["state"],
         "merged": bool(pull.get("merged")),
         "updated_at": pull.get("updatedAt"),
+        "merged_at": pull.get("mergedAt"),
         "is_draft": bool(pull.get("isDraft")),
         "checks": _normalize_checks(pull),
     }
+
+
+def _normalize_blockers(issue: dict[str, Any]) -> list[BlockerFacts]:
+    """Return the still-open issues this one declares itself blocked by.
+
+    Issue dependencies cross repositories, so a blocker is identified by its
+    repo as well as its number.  A closed blocker constrains nothing and is
+    dropped here rather than at every call site.
+    """
+    return [
+        {
+            "repo": (node.get("repository") or {}).get("nameWithOwner", ""),
+            "number": node["number"],
+            "last_activity": node.get("updatedAt"),
+        }
+        for node in (issue.get("blockedBy") or {}).get("nodes") or []
+        if node.get("state") == "OPEN"
+    ]
 
 
 def _normalize_issue(issue: dict[str, Any]) -> IssueFacts:
@@ -693,6 +717,8 @@ def _normalize_issue(issue: dict[str, Any]) -> IssueFacts:
         "updated_at": issue.get("updatedAt"),
         "labels": [label["name"] for label in (issue.get("labels") or {}).get("nodes") or []],
         "closed_by_commit": closer.get("__typename") == "Commit",
+        "closed_at": issue.get("closedAt"),
+        "blocked_by": _normalize_blockers(issue),
         "pulls": [_normalize_pull(pull) for pull in pulls],
     }
 

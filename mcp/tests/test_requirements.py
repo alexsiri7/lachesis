@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import frontmatter
@@ -121,7 +121,9 @@ _UNLINKED_DERIVED = {
     "source": "unlinked",
     "diverged": False,
     "last_activity": None,
+    "landed_at": None,
     "linked_issues": [],
+    "blocked_by": [],
     "signals": {
         "closed_without_merge": False,
         "closed_but_recorded_in_progress": False,
@@ -3219,3 +3221,149 @@ async def test_get_dashboard_status_filter_overrides_the_exclusion(
     requirements = result["repos"][0]["requirements"]
     assert [r["id"] for r in requirements] == ["002"]
     assert requirements[0]["reason"] == "Auth moved to the platform team"
+
+
+# ---------------------------------------------------------------------------
+# get_dashboard groups
+# ---------------------------------------------------------------------------
+
+
+_IDEA_BULLETED_MD = _BULLETED_MD.replace('status: "draft"', 'status: "idea"')
+
+
+def _quiet_since(days: int) -> str:
+    """A GitHub timestamp exactly *days* old, so days_quiet is assertable."""
+    return (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _mock_quiet_dashboard(httpx_mock: HTTPXMock, days: int) -> None:
+    """One requirement whose two linked issues last moved *days* ago."""
+    stamp = _quiet_since(days)
+    nodes = []
+    for number in (42, 43):
+        node = _open_issue_node(number)
+        node["updatedAt"] = stamp
+        nodes.append(node)
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_IDEA_BULLETED_MD, "sha1"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+    _mock_issue_activity(httpx_mock, *nodes)
+
+
+async def test_get_dashboard_reports_every_group_even_when_empty(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A repo with no requirements still answers all six questions."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=[])  # list_files → no requirements
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        result = await get_dashboard()
+
+    assert result["groups"] == {
+        "landed": [],
+        "dropped": [],
+        "stalled": [],
+        "needs_attention": [],
+        "diverged": [],
+        "in_flight": [],
+    }
+    assert result["summary"]["groups"] == dict.fromkeys(result["groups"], 0)
+
+
+async def test_get_dashboard_groups_a_cancelled_requirement_it_does_not_list(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """'What was dropped' is answerable without asking for inactive requirements."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        _mock_cancelled_dashboard(httpx_mock)
+        result = await get_dashboard()
+
+    assert [r["id"] for r in result["repos"][0]["requirements"]] == ["001"]
+    assert [entry["id"] for entry in result["groups"]["dropped"]] == ["002"]
+    assert result["groups"]["dropped"][0]["reason"] == "Auth moved to the platform team"
+
+
+async def test_get_dashboard_reports_long_silence_as_stalled(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """Work nobody has touched since well before the threshold is stalled."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        _mock_quiet_dashboard(httpx_mock, days=100)
+        result = await get_dashboard()
+
+    assert [entry["id"] for entry in result["groups"]["stalled"]] == ["001"]
+    assert result["groups"]["stalled"][0]["days_quiet"] == 100
+    assert result["summary"]["stale_after_days"] == 14
+
+
+async def test_get_dashboard_stale_after_days_moves_the_threshold(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """The same silence is unremarkable when the caller allows for it."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        _mock_quiet_dashboard(httpx_mock, days=100)
+        result = await get_dashboard(stale_after_days=365)
+
+    assert result["groups"]["stalled"] == []
+    assert [entry["id"] for entry in result["groups"]["in_flight"]] == ["001"]
+    assert result["summary"]["stale_after_days"] == 365
+
+
+async def test_get_dashboard_rejects_a_threshold_below_one_day(set_db_user_id: None) -> None:
+    """A threshold of zero would report every requirement as stalled."""
+    with pytest.raises(ValueError, match="stale_after_days"):
+        await get_dashboard(stale_after_days=0)
+
+
+async def test_get_dashboard_groups_span_every_registered_repo(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """One call answers across repos, and each entry says where it came from."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        _mock_quiet_dashboard(httpx_mock, days=100)
+        result = await get_dashboard()
+
+    assert [repo_entry["repo"] for repo_entry in result["repos"]] == ["owner/repo", "owner/other"]
+    assert sum(result["summary"]["groups"].values()) == result["summary"]["total"] == 2
+    placed = {
+        (entry["repo"], entry["id"]): name
+        for name, group in result["groups"].items()
+        for entry in group
+    }
+    assert placed == {
+        ("owner/repo", "001"): "needs_attention",
+        ("owner/other", "001"): "stalled",
+    }
+
+
+async def test_get_dashboard_status_filter_narrows_the_groups(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """Filtering to one state groups only that state's requirements."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        _mock_cancelled_dashboard(httpx_mock)
+        result = await get_dashboard(status="cancelled")
+
+    assert [entry["id"] for entry in result["groups"]["dropped"]] == ["002"]
+    assert sum(result["summary"]["groups"].values()) == 1
