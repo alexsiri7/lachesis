@@ -965,3 +965,56 @@ async def test_get_issue_activity_returns_none_on_graphql_errors(httpx_mock: HTT
     )
 
     assert await get_issue_activity("owner/repo", [42]) is None
+
+
+async def test_get_issue_activity_normalizes_landing_and_blocker_facts(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Merge times, close times and open blockers come back flattened with their repo."""
+    node = _activity_node()
+    node["closedAt"] = "2026-08-31T18:35:09Z"
+    node["blockedBy"] = {
+        "nodes": [
+            {
+                "number": 99,
+                "state": "OPEN",
+                "updatedAt": "2026-09-01T00:00:00Z",
+                "repository": {"nameWithOwner": "owner/other"},
+            },
+            {
+                "number": 98,
+                "state": "CLOSED",
+                "updatedAt": "2026-07-01T00:00:00Z",
+                "repository": {"nameWithOwner": "owner/repo"},
+            },
+        ]
+    }
+    node["closedByPullRequestsReferences"]["nodes"][0]["mergedAt"] = "2026-08-30T09:59:00Z"
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": node}}}
+    )
+
+    facts = await get_issue_activity("owner/repo", [42])
+
+    assert facts is not None
+    assert facts[42]["closed_at"] == "2026-08-31T18:35:09Z"
+    assert facts[42]["pulls"][0]["merged_at"] == "2026-08-30T09:59:00Z"
+    assert facts[42]["blocked_by"] == [
+        {"repo": "owner/other", "number": 99, "last_activity": "2026-09-01T00:00:00Z"}
+    ]
+
+
+async def test_get_issue_activity_normalizes_a_response_without_the_newer_fields(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A response missing the landing and blocker fields still yields usable facts."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _activity_node()}}}
+    )
+
+    facts = await get_issue_activity("owner/repo", [42])
+
+    assert facts is not None
+    assert facts[42]["closed_at"] is None
+    assert facts[42]["blocked_by"] == []
+    assert all(pull["merged_at"] is None for pull in facts[42]["pulls"])

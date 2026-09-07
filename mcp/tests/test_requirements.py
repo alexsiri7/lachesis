@@ -121,7 +121,9 @@ _UNLINKED_DERIVED = {
     "source": "unlinked",
     "diverged": False,
     "last_activity": None,
+    "landed_at": None,
     "linked_issues": [],
+    "blocked_by": [],
     "signals": {
         "closed_without_merge": False,
         "closed_but_recorded_in_progress": False,

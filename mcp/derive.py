@@ -51,8 +51,17 @@ class PullFacts(TypedDict):
     state: str
     merged: bool
     updated_at: str | None
+    merged_at: str | None
     is_draft: bool
     checks: list[CheckFacts]
+
+
+class BlockerFacts(TypedDict):
+    """An open issue a linked issue declares itself blocked by, possibly elsewhere."""
+
+    repo: str
+    number: int
+    last_activity: str | None
 
 
 class IssueFacts(TypedDict):
@@ -61,8 +70,10 @@ class IssueFacts(TypedDict):
     number: int
     state: str
     updated_at: str | None
+    closed_at: str | None
     labels: list[str]
     closed_by_commit: bool
+    blocked_by: list[BlockerFacts]
     pulls: list[PullFacts]
 
 
@@ -82,7 +93,9 @@ class Derived(TypedDict):
     source: DerivationSource
     diverged: bool
     last_activity: str | None
+    landed_at: str | None
     linked_issues: list[int]
+    blocked_by: list[BlockerFacts]
     signals: Signals
 
 
@@ -125,6 +138,42 @@ def _last_activity(issues: list[IssueFacts]) -> str | None:
         if stamp
     ]
     return max(stamps) if stamps else None
+
+
+def _issue_landed_at(issue: IssueFacts) -> str | None:
+    """When this issue's work landed, preferring the merge over the close.
+
+    A squash merge closes its issue through the squash commit, so an issue can
+    carry both a merged pull request and a commit closer.  The merge is the
+    moment the work landed; the close time only stands in when no merged pull
+    request offers a timestamp.
+    """
+    merges = [pull["merged_at"] for pull in issue["pulls"] if pull["merged"] and pull["merged_at"]]
+    if merges:
+        return max(merges)
+    return issue["closed_at"] if issue["closed_by_commit"] else None
+
+
+def _landed_at(issues: list[IssueFacts]) -> str | None:
+    """When the last of the requirement's issues landed."""
+    stamps = [stamp for issue in issues if (stamp := _issue_landed_at(issue))]
+    return max(stamps) if stamps else None
+
+
+def _blocking_issues(issues: list[IssueFacts]) -> list[BlockerFacts]:
+    """Return the open blockers of the requirement's still-open issues.
+
+    A closed issue explains nothing about why the requirement is quiet, so its
+    blockers are left out.  The same blocker reached through two linked issues
+    is reported once.
+    """
+    unique: dict[tuple[str, int], BlockerFacts] = {}
+    for issue in issues:
+        if issue["state"] == "CLOSED":
+            continue
+        for blocker in issue["blocked_by"]:
+            unique.setdefault((blocker["repo"], blocker["number"]), blocker)
+    return [unique[key] for key in sorted(unique)]
 
 
 def _checks_failing_since(issues: list[IssueFacts]) -> str | None:
@@ -180,7 +229,9 @@ def derive(
             "source": "unlinked",
             "diverged": False,
             "last_activity": None,
+            "landed_at": None,
             "linked_issues": [],
+            "blocked_by": [],
             "signals": signals,
         }
 
@@ -191,7 +242,9 @@ def derive(
             "source": "unavailable",
             "diverged": False,
             "last_activity": None,
+            "landed_at": None,
             "linked_issues": numbers,
+            "blocked_by": [],
             "signals": signals,
         }
 
@@ -224,6 +277,8 @@ def derive(
             and PROGRESS_RANK[recorded] != PROGRESS_RANK[status]
         ),
         "last_activity": _last_activity(issues),
+        "landed_at": _landed_at(issues) if status == "done" else None,
         "linked_issues": numbers,
+        "blocked_by": _blocking_issues(issues),
         "signals": signals,
     }

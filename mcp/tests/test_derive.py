@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import frontmatter
 
-from derive import CheckFacts, IssueFacts, PullFacts, derive, linked_issue_numbers
+from derive import (
+    BlockerFacts,
+    CheckFacts,
+    IssueFacts,
+    PullFacts,
+    derive,
+    linked_issue_numbers,
+)
 
 _BULLETS_MD = """\
 ---
@@ -52,6 +59,7 @@ def _pull(
     state: str = "OPEN",
     merged: bool = False,
     updated_at: str = "2026-08-01T00:00:00Z",
+    merged_at: str | None = None,
     is_draft: bool = False,
     checks: list[CheckFacts] | None = None,
 ) -> PullFacts:
@@ -60,6 +68,7 @@ def _pull(
         "state": state,
         "merged": merged,
         "updated_at": updated_at,
+        "merged_at": merged_at,
         "is_draft": is_draft,
         "checks": checks or [],
     }
@@ -70,16 +79,20 @@ def _issue(
     *,
     state: str = "OPEN",
     updated_at: str = "2026-08-01T00:00:00Z",
+    closed_at: str | None = None,
     labels: list[str] | None = None,
     closed_by_commit: bool = False,
+    blocked_by: list[BlockerFacts] | None = None,
     pulls: list[PullFacts] | None = None,
 ) -> IssueFacts:
     return {
         "number": number,
         "state": state,
         "updated_at": updated_at,
+        "closed_at": closed_at,
         "labels": labels or [],
         "closed_by_commit": closed_by_commit,
+        "blocked_by": blocked_by or [],
         "pulls": pulls or [],
     }
 
@@ -334,3 +347,81 @@ def test_derive_uses_the_issues_that_do_exist() -> None:
 
     assert result["status"] == "done"
     assert result["linked_issues"] == [1, 2]
+
+
+def test_derive_reports_when_the_work_landed() -> None:
+    """The landing time is the latest merge across the requirement's pull requests."""
+    facts = _facts(
+        _issue(
+            1,
+            state="CLOSED",
+            pulls=[_pull(500, state="MERGED", merged=True, merged_at="2026-08-20T10:00:00Z")],
+        ),
+        _issue(
+            2,
+            state="CLOSED",
+            pulls=[_pull(501, state="MERGED", merged=True, merged_at="2026-09-01T09:00:00Z")],
+        ),
+    )
+
+    result = derive("done", [1, 2], facts, on_pr_branch=False)
+
+    assert result["status"] == "done"
+    assert result["landed_at"] == "2026-09-01T09:00:00Z"
+
+
+def test_derive_falls_back_to_the_close_time_for_a_squash_commit() -> None:
+    """An issue closed by a commit reports no pull request to read a merge time from."""
+    facts = _facts(
+        _issue(1, state="CLOSED", closed_at="2026-08-15T08:00:00Z", closed_by_commit=True)
+    )
+
+    result = derive("done", [1], facts, on_pr_branch=False)
+
+    assert result["landed_at"] == "2026-08-15T08:00:00Z"
+
+
+def test_derive_reports_no_landing_time_for_unfinished_work() -> None:
+    """Nothing landed while an issue is still open."""
+    facts = _facts(_issue(1), _issue(2, state="CLOSED", closed_by_commit=True))
+
+    result = derive("in-progress", [1, 2], facts, on_pr_branch=False)
+
+    assert result["status"] == "in-progress"
+    assert result["landed_at"] is None
+
+
+def test_derive_reports_the_open_blockers_of_open_issues() -> None:
+    """What is holding the work up travels with the derivation, repo included."""
+    blocker: BlockerFacts = {
+        "repo": "owner/other",
+        "number": 99,
+        "last_activity": "2026-09-01T00:00:00Z",
+    }
+    facts = _facts(_issue(1, blocked_by=[blocker]))
+
+    result = derive("in-progress", [1], facts, on_pr_branch=False)
+
+    assert result["blocked_by"] == [blocker]
+
+
+def test_derive_ignores_the_blockers_of_a_closed_issue() -> None:
+    """A closed issue explains nothing about why the requirement is quiet."""
+    blocker: BlockerFacts = {"repo": "owner/repo", "number": 99, "last_activity": None}
+    facts = _facts(
+        _issue(1, state="CLOSED", closed_by_commit=True, blocked_by=[blocker]), _issue(2)
+    )
+
+    result = derive("in-progress", [1, 2], facts, on_pr_branch=False)
+
+    assert result["blocked_by"] == []
+
+
+def test_derive_reports_a_shared_blocker_once() -> None:
+    """Two linked issues held up by the same thing is still one blocker."""
+    blocker: BlockerFacts = {"repo": "owner/repo", "number": 99, "last_activity": None}
+    facts = _facts(_issue(1, blocked_by=[blocker]), _issue(2, blocked_by=[blocker]))
+
+    result = derive("in-progress", [1, 2], facts, on_pr_branch=False)
+
+    assert result["blocked_by"] == [blocker]
