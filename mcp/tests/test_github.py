@@ -24,6 +24,7 @@ from github import (
     get_issue,
     get_issue_dependencies,
     get_repo_settings,
+    list_blocked_by_numbers,
     list_files,
     list_lachesis_prs,
     list_open_issues,
@@ -628,6 +629,31 @@ async def test_get_issue_dependencies_returns_empty_lists_when_no_deps(
 
 
 # ---------------------------------------------------------------------------
+# list_blocked_by_numbers
+# ---------------------------------------------------------------------------
+
+
+async def test_list_blocked_by_numbers_returns_parsed_numbers(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url=_BLOCKED_BY_URL,
+        json=[{"number": 38, "id": 1001}, {"number": 41, "id": 1002}],
+    )
+    assert await list_blocked_by_numbers("owner/repo", 42) == [38, 41]
+
+
+async def test_list_blocked_by_numbers_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", url=_BLOCKED_BY_URL, status_code=404, json={})
+    assert await list_blocked_by_numbers("owner/repo", 42) is None
+
+
+async def test_list_blocked_by_numbers_raises_on_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", url=_BLOCKED_BY_URL, status_code=500, json={})
+    with pytest.raises(httpx.HTTPStatusError):
+        await list_blocked_by_numbers("owner/repo", 42)
+
+
+# ---------------------------------------------------------------------------
 # get_repo_settings
 # ---------------------------------------------------------------------------
 
@@ -781,8 +807,8 @@ async def test_list_open_issues_sorted_ascending(httpx_mock: HTTPXMock) -> None:
     result = await list_open_issues("owner/repo")
 
     assert result == [
-        {"number": 3, "title": "Earlier"},
-        {"number": 7, "title": "Later"},
+        {"number": 3, "title": "Earlier", "labels": []},
+        {"number": 7, "title": "Later", "labels": []},
     ]
 
 
@@ -798,7 +824,7 @@ async def test_list_open_issues_excludes_pull_requests(httpx_mock: HTTPXMock) ->
 
     result = await list_open_issues("owner/repo")
 
-    assert result == [{"number": 1, "title": "An issue"}]
+    assert result == [{"number": 1, "title": "An issue", "labels": []}]
 
 
 async def test_list_open_issues_raises_on_error(httpx_mock: HTTPXMock) -> None:

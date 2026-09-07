@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 from datetime import date
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import frontmatter
 import httpx
@@ -34,6 +34,8 @@ New issues are unready and last in the backlog. Call set_backlog_flags with
 ready=True once an issue is specified well enough to build — only ready issues are
 eligible for autonomous pickup. Use move_issue to order the backlog by relative
 placement, and the interrupt flag for the one thing that must jump the queue.
+Call next_issue to ask what to pick up — it returns the top ready, unblocked issue,
+or explains why there is none.
 """
 
 
@@ -515,9 +517,22 @@ async def create_github_issues(
 # ---------------------------------------------------------------------------
 
 
+_PUBLIC_BACKLOG_KEYS = ("number", "title", "position", "ready", "interrupt")
+
+
 def _hoist_interrupts(base: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Effective order: interrupt-marked issues first, each group keeping base order."""
     return [i for i in base if i["interrupt"]] + [i for i in base if not i["interrupt"]]
+
+
+def _public_backlog(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project internal backlog entries onto the documented backlog response shape.
+
+    `_base_backlog_order` also carries each issue's GitHub labels, which `next_issue`
+    reads to skip work already in progress; they are not part of what the backlog
+    tools promise their callers.
+    """
+    return [{key: item[key] for key in _PUBLIC_BACKLOG_KEYS} for item in items]
 
 
 async def _base_backlog_order(repo: str, user_id: str) -> list[dict[str, Any]]:
@@ -532,6 +547,7 @@ async def _base_backlog_order(repo: str, user_id: str) -> list[dict[str, Any]]:
     """
     open_issues = await github.list_open_issues(repo)
     titles = {issue["number"]: issue["title"] for issue in open_issues}
+    labels = {issue["number"]: issue["labels"] for issue in open_issues}
     rows = {
         row["issue_number"]: row
         for row in db.list_backlog(user_id, repo)
@@ -548,6 +564,7 @@ async def _base_backlog_order(repo: str, user_id: str) -> list[dict[str, Any]]:
         {
             "number": number,
             "title": titles[number],
+            "labels": labels[number],
             "position": index,
             "ready": bool(rows[number]["ready"]) if number in rows else False,
             "interrupt": bool(rows[number]["interrupt"]) if number in rows else False,
@@ -565,7 +582,7 @@ async def get_backlog(repo: str) -> list[dict[str, Any]]:
     """
     repo = await _resolve_repo(repo)
     user_id = _require_user_id()
-    return _hoist_interrupts(await _base_backlog_order(repo, user_id))
+    return _public_backlog(_hoist_interrupts(await _base_backlog_order(repo, user_id)))
 
 
 async def move_issue(
@@ -599,8 +616,10 @@ async def move_issue(
     db.set_backlog_order(user_id, repo, numbers)
 
     by_number = {item["number"]: item for item in base}
-    return _hoist_interrupts(
-        [{**by_number[number], "position": index} for index, number in enumerate(numbers)]
+    return _public_backlog(
+        _hoist_interrupts(
+            [{**by_number[number], "position": index} for index, number in enumerate(numbers)]
+        )
     )
 
 
@@ -622,6 +641,198 @@ async def set_backlog_flags(
         "number": issue_number,
         "ready": bool(row["ready"]),
         "interrupt": bool(row["interrupt"]),
+    }
+
+
+_IN_PROGRESS_LABEL = "archon:in-progress"
+
+
+class _RepoScan(NamedTuple):
+    """What one repo's backlog walk found for `next_issue`."""
+
+    candidate: dict[str, Any] | None
+    blocked: list[dict[str, Any]]
+    saw_open: bool
+    saw_claimed: bool
+
+
+async def _open_blockers(
+    repo: str,
+    issue_number: int,
+    open_titles: dict[int, str],
+    cache: dict[tuple[str, int], dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    """Return ``{"number", "title"}`` for each of *issue_number*'s blockers still open.
+
+    A blocker in *open_titles* is known open for free. Anything else is confirmed by
+    a direct fetch rather than assumed closed — `list_open_issues` returns only the
+    first hundred issues, so absence from it is not evidence that a blocker is done,
+    and returning a blocked issue is the one failure this must not make.
+    """
+    numbers = await github.list_blocked_by_numbers(repo, issue_number)
+    blockers: list[dict[str, Any]] = []
+    for number in numbers or []:
+        if number in open_titles:
+            blockers.append({"number": number, "title": open_titles[number]})
+            continue
+        if (repo, number) not in cache:
+            cache[(repo, number)] = await github.get_issue(repo, number)
+        blocker = cache[(repo, number)]
+        if blocker is not None and blocker["state"] == "open":
+            blockers.append({"number": number, "title": blocker["title"]})
+    return blockers
+
+
+async def _scan_repo(
+    repo: str, user_id: str, cache: dict[tuple[str, int], dict[str, Any] | None]
+) -> _RepoScan:
+    """Walk one repo's backlog for the first pickable issue, reporting what it passed."""
+    order = _hoist_interrupts(await _base_backlog_order(repo, user_id))
+    open_titles = {item["number"]: item["title"] for item in order}
+    candidate: dict[str, Any] | None = None
+    blocked: list[dict[str, Any]] = []
+    saw_claimed = False
+
+    for item in order:
+        # Interrupts lead the order, so keep walking that group even once a candidate
+        # is held: a blocked interrupt has to be reported, never silently passed over.
+        if candidate is not None and not item["interrupt"]:
+            break
+        if not item["ready"]:
+            continue
+        if _IN_PROGRESS_LABEL in item["labels"]:
+            saw_claimed = True
+            continue
+        blockers = await _open_blockers(repo, item["number"], open_titles, cache)
+        if blockers:
+            blocked.append(
+                {
+                    "repo": repo,
+                    "number": item["number"],
+                    "title": item["title"],
+                    "interrupt": item["interrupt"],
+                    "blocked_by": blockers,
+                }
+            )
+        elif candidate is None:
+            candidate = {
+                "repo": repo,
+                "number": item["number"],
+                "title": item["title"],
+                "position": item["position"],
+                "interrupt": item["interrupt"],
+            }
+
+    return _RepoScan(candidate, blocked, bool(order), saw_claimed)
+
+
+def _describe_blocked(entries: list[dict[str, Any]]) -> str:
+    """Render blocked entries as ``owner/repo#12 by #8, #9; owner/repo#14 by #3``."""
+    return "; ".join(
+        "{}#{} by {}".format(
+            entry["repo"],
+            entry["number"],
+            ", ".join(f"#{blocker['number']}" for blocker in entry["blocked_by"]),
+        )
+        for entry in entries
+    )
+
+
+async def next_issue(repo: str | None = None) -> dict[str, Any]:
+    """Return the issue the worker should pick up next, or explain why there is none.
+
+    Considers only issues that are ready, free of open blockers, and not already
+    carrying the ``archon:in-progress`` label; an interrupt-marked issue wins over
+    position, including across repos. Omitting *repo* considers every registered
+    repo, in which case runners-up are listed under ``also_eligible`` because
+    backlog position only orders issues within one repo.
+
+    Returns ``issue`` (``None`` when nothing qualifies), a ``reason`` of
+    ``selected`` / ``all_blocked`` / ``all_in_progress`` / ``none_ready`` / ``empty``,
+    a one-sentence ``explanation``, and ``blocked`` — the ready issues passed over
+    because a dependency of theirs is still open, each naming its blockers. An unscoped
+    call skips a repo it cannot read and says so in the explanation, rather than letting
+    one unreachable repo cost the caller every other repo's backlog.
+    """
+    user_id = _require_user_id()
+    if repo is not None:
+        repos = [await _resolve_repo(repo)]
+    else:
+        repos = [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]
+
+    cache: dict[tuple[str, int], dict[str, Any] | None] = {}
+    scans: list[_RepoScan] = []
+    unreadable: list[str] = []
+    for repo_name in repos:
+        try:
+            scans.append(await _scan_repo(repo_name, user_id, cache))
+        except Exception:
+            # A scoped call named this repo, so its failure is the answer. Unscoped, one
+            # repo gone from the PAT's reach must not cost the worker every other backlog.
+            if repo is not None:
+                raise
+            logger.warning("next_issue: could not read the backlog of %s", repo_name)
+            unreadable.append(repo_name)
+
+    blocked = [entry for scan in scans for entry in scan.blocked]
+
+    candidates = [
+        (index, scan.candidate) for index, scan in enumerate(scans) if scan.candidate is not None
+    ]
+    # Interrupt is the author's explicit override, so it outranks everything. Below it
+    # there is no cross-repo order to appeal to, so registration order decides and
+    # `also_eligible` shows what that arbitrary tie-break passed over.
+    candidates.sort(key=lambda pair: (not pair[1]["interrupt"], pair[0], pair[1]["position"]))
+    caveat = f" Could not read the backlog of {', '.join(unreadable)}." if unreadable else ""
+
+    if candidates:
+        chosen = candidates[0][1]
+        explanation = (
+            f"{chosen['repo']}#{chosen['number']} is marked interrupt, so it leads the backlog."
+            if chosen["interrupt"]
+            else f"{chosen['repo']}#{chosen['number']} is the highest-ordered ready issue "
+            "with no open blockers."
+        )
+        result = {
+            "issue": chosen,
+            "reason": "selected",
+            "explanation": explanation + caveat,
+            "blocked": blocked,
+        }
+        if repo is None and len(candidates) > 1:
+            result["also_eligible"] = [
+                {"repo": other["repo"], "number": other["number"], "title": other["title"]}
+                for _, other in candidates[1:]
+            ]
+        return result
+
+    if blocked:
+        reason = "all_blocked"
+        explanation = (
+            f"Every ready issue is blocked — {_describe_blocked(blocked)}. "
+            "Unblocking one is the move here."
+        )
+    elif any(scan.saw_claimed for scan in scans):
+        reason = "all_in_progress"
+        explanation = f"Every ready, unblocked issue already carries {_IN_PROGRESS_LABEL}."
+    elif any(scan.saw_open for scan in scans):
+        reason = "none_ready"
+        explanation = (
+            "There are open issues but none is marked ready — call set_backlog_flags "
+            "once one is specified well enough to build."
+        )
+    elif not repos:
+        reason = "empty"
+        explanation = "No repos are registered with Lachesis, so there is no backlog to read."
+    else:
+        reason = "empty"
+        explanation = "The backlog is empty — there are no open issues."
+
+    return {
+        "issue": None,
+        "reason": reason,
+        "explanation": explanation + caveat,
+        "blocked": blocked,
     }
 
 

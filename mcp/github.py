@@ -193,7 +193,7 @@ async def _list_open_prs(repo: str) -> list[dict[str, Any]]:
 
 
 async def list_open_issues(repo: str) -> list[dict[str, Any]]:
-    """Return ``[{"number": int, "title": str}, ...]`` for open issues, ascending by number.
+    """Return ``[{"number": int, "title": str, "labels": [str]}, ...]``, ascending by number.
 
     The /issues endpoint also returns pull requests; those are filtered out.
     """
@@ -208,7 +208,14 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
         resp.raise_for_status()
     issues = [item for item in resp.json() if "pull_request" not in item]
     return sorted(
-        ({"number": i["number"], "title": i["title"]} for i in issues),
+        (
+            {
+                "number": i["number"],
+                "title": i["title"],
+                "labels": [lb["name"] for lb in i.get("labels", [])],
+            }
+            for i in issues
+        ),
         key=lambda i: int(i["number"]),
     )
 
@@ -495,6 +502,30 @@ async def get_issue_dependencies(repo: str, issue_number: int) -> dict[str, Any]
             exc,
         )
         raise
+
+
+async def list_blocked_by_numbers(repo: str, issue_number: int) -> list[int] | None:
+    """Return the issue numbers blocking *issue_number*, or ``None`` on 404.
+
+    Half the requests of :func:`get_issue_dependencies` for callers that only need
+    the blocking direction.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/dependencies/blocked_by",
+            headers=_headers(),
+        )
+    if resp.status_code == 404:
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.list_blocked_by_numbers failed repo=%s issue=%s status=%s",
+            repo,
+            issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    return [item["number"] for item in resp.json()]
 
 
 async def get_repo_settings(repo: str) -> dict[str, Any]:
