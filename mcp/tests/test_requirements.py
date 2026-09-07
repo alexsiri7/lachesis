@@ -6,7 +6,7 @@ import base64
 import contextlib
 import json
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frontmatter
 import httpx
@@ -373,6 +373,8 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
             "url": "https://github.com/owner/repo/issues/42",
             "blocked_by": [],
             "added_to_project": False,
+            "ready": False,
+            "placed": False,
         }
     ]
 
@@ -603,6 +605,8 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
             "url": "https://github.com/owner/repo/issues/7",
             "blocked_by": [],
             "added_to_project": False,
+            "ready": False,
+            "placed": False,
         }
     ]
 
@@ -2202,3 +2206,97 @@ async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
     assert result[0]["number"] == 2
     assert result[0]["position"] == 0
     assert result[0]["ready"] is True
+
+
+# ---------------------------------------------------------------------------
+# create_github_issues — backlog overrides
+# ---------------------------------------------------------------------------
+
+
+def _mock_created_issue(httpx_mock: HTTPXMock, number: int) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=_ISSUES_URL,
+        json={
+            "id": number * 100,
+            "number": number,
+            "title": f"Issue {number}",
+            "html_url": f"https://github.com/owner/repo/issues/{number}",
+            "node_id": f"I_{number}",
+        },
+    )
+
+
+async def test_create_github_issues_without_overrides_never_touches_the_db(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The default path is unready and last, which needs no row and so no DB call."""
+    _mock_created_issue(httpx_mock, 1)
+    backlog_db = MagicMock()
+
+    with (
+        patch("db.list_backlog", backlog_db.list_backlog),
+        patch("db.upsert_backlog_flags", backlog_db.upsert_backlog_flags),
+        patch("db.set_backlog_order", backlog_db.set_backlog_order),
+    ):
+        result = await create_github_issues("owner/repo", [{"title": "One", "body": "b"}])
+
+    backlog_db.assert_not_called()
+    assert backlog_db.mock_calls == []
+    assert result[0]["ready"] is False
+    assert result[0]["placed"] is False
+
+
+async def test_create_github_issues_marks_ready_on_request(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_created_issue(httpx_mock, 1)
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        result = await create_github_issues(
+            "owner/repo", [{"title": "One", "body": "b", "ready": True}]
+        )
+
+    assert result[0]["ready"] is True
+    assert fake.rows[1]["ready"] is True
+
+
+async def test_create_github_issues_places_against_an_in_batch_anchor(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """An anchor naming an issue created earlier in the same batch resolves."""
+    _mock_created_issue(httpx_mock, 1)
+    _mock_created_issue(httpx_mock, 2)
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        result = await create_github_issues(
+            "owner/repo",
+            [
+                {"title": "One", "body": "b"},
+                {"title": "Two", "body": "b", "before": 1},
+            ],
+        )
+
+    assert result[1]["placed"] is True
+    assert fake.orders == [[2, 1, 3]]
+
+
+async def test_create_github_issues_reports_an_unresolvable_anchor_without_raising(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """The issue already exists on GitHub, so a failed placement must not raise."""
+    _mock_created_issue(httpx_mock, 1)
+    _mock_open_issues(httpx_mock, [1])
+    fake = _FakeBacklog()
+
+    with _patch_backlog(fake):
+        result = await create_github_issues(
+            "owner/repo", [{"title": "One", "body": "b", "after": 99}]
+        )
+
+    assert result[0]["number"] == 1
+    assert result[0]["placed"] is False
+    assert fake.orders == []

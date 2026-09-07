@@ -400,10 +400,55 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     return cast(str, updated_content)
 
 
+async def _apply_backlog_overrides(
+    repo: str, issues: list[dict[str, Any]], results: list[dict[str, Any]]
+) -> None:
+    """Apply per-issue ``ready`` / ``before`` / ``after`` overrides to created issues.
+
+    Best-effort throughout: the GitHub issues already exist and cannot be
+    un-created, so every failure is logged and reported through the result dict.
+    Anchors are resolved issue by issue, so one naming an issue created earlier in
+    the same batch works.
+    """
+    try:
+        user_id = _require_user_id()
+    except RuntimeError:
+        logger.warning("create_github_issues: no DB user context; backlog overrides skipped")
+        return
+
+    for issue_input, result in zip(issues, results, strict=True):
+        number = result["number"]
+        if issue_input.get("ready"):
+            try:
+                db.upsert_backlog_flags(user_id, repo, number, ready=True)
+                result["ready"] = True
+            except Exception:
+                logger.warning("create_github_issues: failed to mark issue %s ready", number)
+
+        before = issue_input.get("before")
+        after = issue_input.get("after")
+        if before is None and after is None:
+            continue
+        try:
+            await move_issue(repo, number, before=before, after=after)
+            result["placed"] = True
+        except Exception:
+            logger.warning(
+                "create_github_issues: failed to place issue %s (before=%r, after=%r)",
+                number,
+                before,
+                after,
+            )
+
+
 async def create_github_issues(
     repo: str, issues: list[dict[str, Any]], project_id: str | None = None
 ) -> list[dict[str, Any]]:
-    """Create one or more GitHub issues and return their numbers/titles/urls."""
+    """Create one or more GitHub issues and return their numbers/titles/urls.
+
+    Each issue may carry ``ready`` (bool) and one of ``before`` / ``after`` (issue
+    numbers) to override the defaults — unready, last in the backlog.
+    """
     repo = await _resolve_repo(repo)
     # Phase 1: Create all issues, build number→id map
     results: list[dict[str, Any]] = []
@@ -416,7 +461,15 @@ async def create_github_issues(
             issue.get("labels"),
         )
         node_id = result.pop("node_id")
-        results.append({**result, "blocked_by": [], "added_to_project": False})
+        results.append(
+            {
+                **result,
+                "blocked_by": [],
+                "added_to_project": False,
+                "ready": False,
+                "placed": False,
+            }
+        )
         number_to_id[result["number"]] = result["id"]
 
         if project_id:
@@ -444,6 +497,10 @@ async def create_github_issues(
                 blocker_id = blocker["id"]
             await github.add_issue_dependency(repo, result["number"], blocker_id)
             result["blocked_by"].append(blocker_number)
+
+    # Phase 3: Backlog overrides — the default path stays free of the DB and of auth
+    if any(key in issue for issue in issues for key in ("ready", "before", "after")):
+        await _apply_backlog_overrides(repo, issues, results)
 
     return results
 
