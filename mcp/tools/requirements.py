@@ -526,8 +526,9 @@ async def _base_backlog_order(repo: str, user_id: str) -> list[dict[str, Any]]:
     Positioned rows come first in position order, then every remaining open issue
     by issue number ascending — which is creation order, so a new issue is last
     without anything being written. Closed issues drop out here; their rows stay
-    in the table so reopening restores their place. Each entry's ``position`` is
-    its index in this list, never in the interrupt-hoisted one.
+    in the table, so the ready and interrupt flags survive a close and reopen,
+    though an explicit position does not — the next move clears it. Each entry's
+    ``position`` is its index in this list, never in the interrupt-hoisted one.
     """
     open_issues = await github.list_open_issues(repo)
     titles = {issue["number"]: issue["title"] for issue in open_issues}
