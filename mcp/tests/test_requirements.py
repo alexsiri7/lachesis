@@ -28,6 +28,7 @@ from tools.requirements import (
     link_issues,
     list_requirements,
     move_issue,
+    next_issue,
     set_backlog_flags,
     update_github_issue,
     update_requirement,
@@ -1937,6 +1938,7 @@ async def test_get_initial_instructions_documents_the_ready_gate() -> None:
 
     assert "set_backlog_flags" in result
     assert "move_issue" in result
+    assert "next_issue" in result
 
 
 # ---------------------------------------------------------------------------
@@ -2010,10 +2012,23 @@ def _patch_backlog(fake: _FakeBacklog):
         yield fake
 
 
-def _mock_open_issues(httpx_mock: HTTPXMock, numbers: list[int]) -> None:
+def _mock_open_issues(
+    httpx_mock: HTTPXMock,
+    numbers: list[int],
+    labels: dict[int, list[str]] | None = None,
+    *,
+    repo: str = "owner/repo",
+) -> None:
     httpx_mock.add_response(
-        url=_OPEN_ISSUES_URL,
-        json=[{"number": n, "title": f"Issue {n}"} for n in numbers],
+        url=f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100",
+        json=[
+            {
+                "number": n,
+                "title": f"Issue {n}",
+                "labels": [{"name": name} for name in (labels or {}).get(n, [])],
+            }
+            for n in numbers
+        ],
         is_reusable=True,
     )
 
@@ -2087,6 +2102,7 @@ async def test_move_issue_before_anchor(httpx_mock: HTTPXMock, set_user_id: str)
 
     assert fake.orders == [[1, 3, 2]]
     assert [i["number"] for i in result] == [1, 3, 2]
+    assert "labels" not in result[0]
 
 
 async def test_move_issue_after_anchor(httpx_mock: HTTPXMock, set_user_id: str) -> None:
@@ -2308,3 +2324,271 @@ async def test_create_github_issues_reports_an_unresolvable_anchor_without_raisi
     assert result[0]["number"] == 1
     assert result[0]["placed"] is False
     assert fake.orders == []
+
+
+# ---------------------------------------------------------------------------
+# next_issue
+# ---------------------------------------------------------------------------
+
+
+def _mock_blocked_by(
+    httpx_mock: HTTPXMock, issue_number: int, blockers: list[int], *, repo: str = "owner/repo"
+) -> None:
+    httpx_mock.add_response(
+        url=f"https://api.github.com/repos/{repo}/issues/{issue_number}/dependencies/blocked_by",
+        json=[{"number": n, "id": 1000 + n} for n in blockers],
+    )
+
+
+async def test_next_issue_returns_the_top_ready_unblocked_issue(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """The first ready issue in backlog order wins; unready ones are passed over."""
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    _mock_blocked_by(httpx_mock, 2, [])
+    fake = _FakeBacklog([{"issue_number": 2, "ready": True}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["reason"] == "selected"
+    assert result["issue"]["number"] == 2
+    assert result["issue"]["repo"] == "owner/repo"
+    assert result["blocked"] == []
+
+
+async def test_next_issue_interrupt_beats_position(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """An interrupt-marked issue outranks a ready issue sitting at position 0."""
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    _mock_blocked_by(httpx_mock, 3, [])
+    fake = _FakeBacklog(
+        [
+            {"issue_number": 1, "position": 0, "ready": True},
+            {"issue_number": 3, "position": 2, "ready": True, "interrupt": True},
+        ]
+    )
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 3
+    assert result["issue"]["interrupt"] is True
+
+
+async def test_next_issue_never_returns_a_blocked_issue(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """A ready issue with an open blocker is passed over and reported, not returned."""
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    _mock_blocked_by(httpx_mock, 1, [2])
+    _mock_blocked_by(httpx_mock, 3, [])
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 3, "ready": True}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 3
+    assert [(e["number"], [b["number"] for b in e["blocked_by"]]) for e in result["blocked"]] == [
+        (1, [2])
+    ]
+
+
+async def test_next_issue_closed_blocker_does_not_block(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """A blocker outside the open set is looked up rather than assumed still open."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_blocked_by(httpx_mock, 1, [99])
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/issues/99",
+        json={
+            "number": 99,
+            "id": 1099,
+            "title": "Done already",
+            "state": "closed",
+            "html_url": "https://github.com/owner/repo/issues/99",
+        },
+    )
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 1
+    assert result["blocked"] == []
+
+
+async def test_next_issue_open_blocker_outside_the_open_set_still_blocks(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """One page of open issues, so a blocker missing from it is looked up, not waived."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_blocked_by(httpx_mock, 1, [99])
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/issues/99",
+        json={
+            "number": 99,
+            "id": 1099,
+            "title": "Still going",
+            "state": "open",
+            "html_url": "https://github.com/owner/repo/issues/99",
+        },
+    )
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "all_blocked"
+    assert [b["number"] for b in result["blocked"][0]["blocked_by"]] == [99]
+
+
+async def test_next_issue_reports_a_blocked_interrupt_rather_than_skipping_it(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Two interrupts, the second blocked: the first is returned and the second still named."""
+    _mock_open_issues(httpx_mock, [1, 2, 3])
+    _mock_blocked_by(httpx_mock, 1, [])
+    _mock_blocked_by(httpx_mock, 2, [3])
+    fake = _FakeBacklog(
+        [
+            {"issue_number": 1, "position": 0, "ready": True, "interrupt": True},
+            {"issue_number": 2, "position": 1, "ready": True, "interrupt": True},
+        ]
+    )
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 1
+    assert [(e["number"], e["interrupt"]) for e in result["blocked"]] == [(2, True)]
+
+
+async def test_next_issue_all_blocked(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Nothing to return, and the explanation names what is doing the blocking."""
+    _mock_open_issues(httpx_mock, [1, 2])
+    _mock_blocked_by(httpx_mock, 1, [2])
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "all_blocked"
+    assert "#2" in result["explanation"]
+
+
+async def test_next_issue_none_ready(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Open issues exist but none is marked ready — specification, not unblocking."""
+    _mock_open_issues(httpx_mock, [1, 2])
+
+    with _patch_backlog(_FakeBacklog()):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "none_ready"
+
+
+async def test_next_issue_empty_backlog(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """No open issues at all is its own answer."""
+    _mock_open_issues(httpx_mock, [])
+
+    with _patch_backlog(_FakeBacklog()):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "empty"
+    assert "backlog is empty" in result["explanation"]
+
+
+async def test_next_issue_all_in_progress(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """A ready, unblocked issue someone is already building is not work to hand out."""
+    _mock_open_issues(httpx_mock, [1], {1: ["archon:in-progress"]})
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "all_in_progress"
+
+
+async def test_next_issue_passes_over_an_in_progress_issue(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """An in-progress issue at the front does not stop the walk."""
+    _mock_open_issues(httpx_mock, [1, 2], {1: ["archon:in-progress"]})
+    _mock_blocked_by(httpx_mock, 2, [])
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 2, "ready": True}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 2
+
+
+async def test_next_issue_interrupt_wins_across_repos(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Interrupt is an authored override, so it outranks the repo tie-break."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_open_issues(httpx_mock, [5], repo="owner/other")
+    _mock_blocked_by(httpx_mock, 1, [])
+    _mock_blocked_by(httpx_mock, 5, [], repo="owner/other")
+    fake = _FakeBacklog(
+        [
+            {"issue_number": 1, "ready": True},
+            {"issue_number": 5, "ready": True, "interrupt": True},
+        ]
+    )
+    registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
+
+    with _patch_backlog(fake), patch("tools.requirements.db.list_repos", return_value=registered):
+        result = await next_issue()
+
+    assert (result["issue"]["repo"], result["issue"]["number"]) == ("owner/other", 5)
+
+
+async def test_next_issue_names_the_runners_up_it_passed_over(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """The cross-repo tie-break is arbitrary, so what it lost has to be visible."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_open_issues(httpx_mock, [5], repo="owner/other")
+    _mock_blocked_by(httpx_mock, 1, [])
+    _mock_blocked_by(httpx_mock, 5, [], repo="owner/other")
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 5, "ready": True}])
+    registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
+
+    with _patch_backlog(fake), patch("tools.requirements.db.list_repos", return_value=registered):
+        result = await next_issue()
+
+    assert result["issue"]["repo"] == "owner/repo"
+    assert result["also_eligible"] == [{"repo": "owner/other", "number": 5, "title": "Issue 5"}]
+
+
+async def test_next_issue_scoped_call_omits_also_eligible(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Asking about one repo answers about one repo — no runners-up from elsewhere."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_blocked_by(httpx_mock, 1, [])
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+    registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
+
+    with _patch_backlog(fake), patch("tools.requirements.db.list_repos", return_value=registered):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 1
+    assert "also_eligible" not in result
+
+
+async def test_next_issue_with_no_registered_repos(set_user_id: str) -> None:
+    """Nothing registered is not an empty backlog — the author's move is register_repo."""
+    with _patch_backlog(_FakeBacklog()), patch("tools.requirements.db.list_repos", return_value=[]):
+        result = await next_issue()
+
+    assert result["issue"] is None
+    assert result["reason"] == "empty"
+    assert "registered" in result["explanation"]

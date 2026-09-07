@@ -209,6 +209,17 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Return the issue to pick up next — the highest-ordered issue that is ready, "
+        "has no open blocker, and is not already in progress. An interrupt-marked "
+        "issue wins over position. `repo` is optional: omit it to consider every "
+        "registered repo. When nothing qualifies the result explains which case it "
+        "is — everything ready is blocked, nothing is ready, or the backlog is empty."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(req_tools.next_issue)
+
+mcp.tool(
+    description=(
         "Return the standard Lachesis workflow. Call this at the start of a session "
         "to learn the correct order: create_requirement → create_github_issues → link_issues."
     ),
