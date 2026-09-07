@@ -2627,3 +2627,300 @@ async def test_next_issue_scoped_call_surfaces_the_failure(
 
     with _patch_backlog(_FakeBacklog()), pytest.raises(httpx.HTTPStatusError):
         await next_issue("owner/gone")
+
+
+# ---------------------------------------------------------------------------
+# Canonical status values
+# ---------------------------------------------------------------------------
+
+_VARIANT_MD = """\
+---
+id: "002"
+title: "Data export"
+status: "in_progress"
+github_issue: 99
+created: "2026-05-12"
+updated: "2026-05-12"
+---
+
+## Why
+
+Need exports.
+
+## What
+
+CSV export.
+"""
+
+_CANONICAL_MD = _SAMPLE_MD.replace('status: "planned"', 'status: "in-progress"')
+
+_TWO_FILES_RESP = [
+    {"name": _NAME, "path": _PATH},
+    {"name": "002-data-export.md", "path": "requirements/002-data-export.md"},
+]
+
+
+def _make_second_file_response(content: str, sha: str) -> dict:
+    """Build a Contents API file object for the second sample requirement."""
+    return {
+        "name": "002-data-export.md",
+        "path": "requirements/002-data-export.md",
+        "content": base64.b64encode(content.encode()).decode("ascii"),
+        "sha": sha,
+        "type": "file",
+    }
+
+
+async def test_get_dashboard_counts_variant_spelling_under_one_key(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A stored 'in_progress' is counted under 'in-progress', not as a second state."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_TWO_FILES_RESP)
+        httpx_mock.add_response(json=_make_file_response(_CANONICAL_MD, "sha1"))
+        httpx_mock.add_response(json=_make_second_file_response(_VARIANT_MD, "sha2"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        result = await get_dashboard()
+
+    assert result["summary"]["by_status"] == {"in-progress": 2}
+
+
+def _mock_read_flow(httpx_mock: HTTPXMock, content: str = _SAMPLE_MD) -> None:
+    """Register list_files → get_file only, for updates expected to be rejected."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(content, "sha1"))
+
+
+async def test_get_dashboard_rejects_a_variant_spelling_filter(set_db_user_id: None) -> None:
+    """A caller filtering on 'in_progress' is told the canonical spelling, not given nothing."""
+    with pytest.raises(ValueError, match="in-progress"):
+        await get_dashboard(status="in_progress")
+
+
+async def test_update_requirement_rejects_variant_spelling_with_a_hint(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The variant spelling is rejected, and the message names the canonical form."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError) as exc:
+        await update_requirement("owner/repo", "001", {"status": "in_progress"})
+
+    assert "in_progress" in str(exc.value)
+    assert "in-progress" in str(exc.value)
+
+
+async def test_link_issues_rewrites_a_stored_variant_spelling(httpx_mock: HTTPXMock) -> None:
+    """A file rewritten for its issues comes back with the canonical status."""
+    variant_md = _SAMPLE_MD.replace('status: "planned"', 'status: "in_progress"')
+    _mock_full_flow(httpx_mock, content=variant_md)
+
+    result = await link_issues("owner/repo", "001", _ISSUES)
+
+    assert frontmatter.loads(result)["status"] == "in-progress"
+
+
+async def test_delete_requirement_refuses_a_differently_cased_done(httpx_mock: HTTPXMock) -> None:
+    """Casing must not smuggle a done requirement past the deletion refusal."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD.replace("planned", "Done"), "sha1"))
+
+    with pytest.raises(ValueError, match="done requirement"):
+        await delete_requirement("owner/repo", "001")
+
+
+# ---------------------------------------------------------------------------
+# cancelled / superseded lifecycle states
+# ---------------------------------------------------------------------------
+
+_CANCELLED_MD = """\
+---
+id: "001"
+title: "User authentication"
+status: "cancelled"
+reason: "Auth moved to the platform team"
+github_issue: null
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Why
+
+Users need to save their rankings.
+"""
+
+
+async def test_update_requirement_cancelled_requires_a_reason(httpx_mock: HTTPXMock) -> None:
+    """Cancelling without saying why is rejected."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError, match="reason"):
+        await update_requirement("owner/repo", "001", {"status": "cancelled"})
+
+
+async def test_update_requirement_cancelled_stores_the_reason(httpx_mock: HTTPXMock) -> None:
+    """A cancelled requirement records why it was dropped."""
+    _mock_full_flow(httpx_mock)
+
+    result = await update_requirement(
+        "owner/repo", "001", {"status": "cancelled", "reason": "Superseded by platform auth"}
+    )
+
+    post = frontmatter.loads(result)
+    assert post["status"] == "cancelled"
+    assert post["reason"] == "Superseded by platform auth"
+
+
+async def test_update_requirement_keeps_an_existing_reason(httpx_mock: HTTPXMock) -> None:
+    """Editing an already-cancelled requirement does not demand the reason again."""
+    _mock_full_flow(httpx_mock, content=_CANCELLED_MD)
+
+    result = await update_requirement("owner/repo", "001", {"title": "Renamed"})
+
+    post = frontmatter.loads(result)
+    assert post["title"] == "Renamed"
+    assert post["reason"] == "Auth moved to the platform team"
+
+
+async def test_update_requirement_rejects_a_reason_on_a_live_status(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A reason only means something on a cancelled requirement."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError, match="'reason' is only valid"):
+        await update_requirement("owner/repo", "001", {"status": "idea", "reason": "changed mind"})
+
+
+async def test_update_requirement_drops_reason_when_revived(httpx_mock: HTTPXMock) -> None:
+    """Reviving a cancelled requirement does not leave a stale reason behind."""
+    _mock_full_flow(httpx_mock, content=_CANCELLED_MD)
+
+    result = await update_requirement("owner/repo", "001", {"status": "idea"})
+
+    post = frontmatter.loads(result)
+    assert post["status"] == "idea"
+    assert "reason" not in post.metadata
+
+
+async def test_update_requirement_superseded_requires_a_target(httpx_mock: HTTPXMock) -> None:
+    """Superseding without saying by what is rejected."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError, match="superseded_by"):
+        await update_requirement("owner/repo", "001", {"status": "superseded"})
+
+
+async def test_update_requirement_superseded_defaults_the_repo(httpx_mock: HTTPXMock) -> None:
+    """A target without a repo means a requirement in this same repo."""
+    _mock_full_flow(httpx_mock)
+
+    result = await update_requirement(
+        "owner/repo", "001", {"status": "superseded", "superseded_by": {"id": "030"}}
+    )
+
+    assert frontmatter.loads(result)["superseded_by"] == {"repo": "owner/repo", "id": "030"}
+
+
+async def test_update_requirement_superseded_pads_a_numeric_id(httpx_mock: HTTPXMock) -> None:
+    """Requirement ids are zero-padded, so 11 means '011'."""
+    _mock_full_flow(httpx_mock)
+
+    result = await update_requirement(
+        "owner/repo",
+        "001",
+        {"status": "superseded", "superseded_by": {"id": 11, "repo": "other/repo"}},
+    )
+
+    assert frontmatter.loads(result)["superseded_by"] == {"repo": "other/repo", "id": "011"}
+
+
+async def test_update_requirement_rejects_a_malformed_target(httpx_mock: HTTPXMock) -> None:
+    """A replacement reference must be a mapping with an id."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError, match="superseded_by"):
+        await update_requirement(
+            "owner/repo", "001", {"status": "superseded", "superseded_by": "030"}
+        )
+
+
+async def test_list_requirements_omits_cancelled_by_default(httpx_mock: HTTPXMock) -> None:
+    """A cancelled requirement is not part of the active listing."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_CANCELLED_MD, "sha1"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+    assert await list_requirements("owner/repo") == []
+
+
+async def test_list_requirements_includes_cancelled_on_request(httpx_mock: HTTPXMock) -> None:
+    """include_inactive returns the cancelled requirement, carrying its reason."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_CANCELLED_MD, "sha1"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+    result = await list_requirements("owner/repo", include_inactive=True)
+
+    assert len(result) == 1
+    assert result[0]["status"] == "cancelled"
+    assert result[0]["reason"] == "Auth moved to the platform team"
+
+
+def _mock_cancelled_dashboard(httpx_mock: HTTPXMock) -> None:
+    """One active and one cancelled requirement in a single registered repo."""
+    httpx_mock.add_response(json=_TWO_FILES_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(
+        json=_make_second_file_response(_CANCELLED_MD.replace('id: "001"', 'id: "002"'), "sha2")
+    )
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+
+async def test_get_dashboard_omits_cancelled_but_still_counts_it(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """The listing drops a cancelled requirement; the summary still totals it."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        _mock_cancelled_dashboard(httpx_mock)
+        result = await get_dashboard()
+
+    assert [r["id"] for r in result["repos"][0]["requirements"]] == ["001"]
+    assert result["summary"]["by_status"] == {"planned": 1, "cancelled": 1}
+    assert result["summary"]["total"] == 2
+
+
+async def test_get_dashboard_includes_cancelled_on_request(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """include_inactive brings the cancelled requirement into the listing."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        _mock_cancelled_dashboard(httpx_mock)
+        result = await get_dashboard(include_inactive=True)
+
+    assert [r["id"] for r in result["repos"][0]["requirements"]] == ["001", "002"]
+
+
+async def test_get_dashboard_status_filter_overrides_the_exclusion(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """Asking for cancelled requirements returns them without needing the flag."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        _mock_cancelled_dashboard(httpx_mock)
+        result = await get_dashboard(status="cancelled")
+
+    requirements = result["repos"][0]["requirements"]
+    assert [r["id"] for r in requirements] == ["002"]
+    assert requirements[0]["reason"] == "Auth moved to the platform team"

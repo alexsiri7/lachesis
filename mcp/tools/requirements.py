@@ -14,12 +14,11 @@ import httpx
 import db
 import github
 from auth import current_db_user_id
+from status import INACTIVE_STATUSES, VALID_STATUSES, canonical_status
 
 from .repos import _require_user_id, normalize_repo
 
 logger = logging.getLogger(__name__)
-
-_VALID_STATUSES = {"draft", "idea", "planned", "in-progress", "done"}
 
 _INSTRUCTIONS = """\
 Lachesis workflow — follow these steps in order:
@@ -96,8 +95,31 @@ async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, str | 
     return path, content, sha, branch
 
 
-async def list_requirements(repo: str) -> list[dict[str, Any]]:
-    """Return all requirements for a given repo (id, title, status, github_issue)."""
+def _inactive_fields(post: frontmatter.Post) -> dict[str, Any]:
+    """Return the cancelled/superseded companion fields the requirement actually carries.
+
+    An included inactive requirement has to explain itself; an active one keeps
+    exactly the key set it has always returned.
+    """
+    return {key: post[key] for key in ("reason", "superseded_by") if post.get(key)}
+
+
+def _normalize_stored_status(post: frontmatter.Post) -> None:
+    """Rewrite a variant spelling to its canonical form when the file is rewritten anyway.
+
+    An unrecognised value is left byte-identical — only a known state is folded.
+    """
+    canonical = canonical_status(post.get("status"))
+    if canonical in VALID_STATUSES and canonical != post.get("status"):
+        post["status"] = canonical
+
+
+async def list_requirements(repo: str, include_inactive: bool = False) -> list[dict[str, Any]]:
+    """Return all requirements for a given repo (id, title, status, github_issue).
+
+    Cancelled and superseded requirements are excluded unless ``include_inactive``
+    is true; when included they carry their ``reason`` / ``superseded_by`` field.
+    """
     repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
     results: list[dict[str, Any]] = []
@@ -110,14 +132,18 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
         post = frontmatter.loads(content)
         req_id = post["id"]
         seen_ids.add(req_id)
+        req_status = canonical_status(post.get("status", ""))
+        if not include_inactive and req_status in INACTIVE_STATUSES:
+            continue
         github_issue = post.get("github_issue")
         results.append(
             {
                 "id": req_id,
                 "title": post["title"],
-                "status": post["status"],
+                "status": req_status,
                 "github_issue": github_issue,
                 "warning": "no linked issues" if github_issue is None else None,
+                **_inactive_fields(post),
             }
         )
 
@@ -136,17 +162,21 @@ async def list_requirements(repo: str) -> list[dict[str, Any]]:
             if req_id in seen_ids:
                 continue
             seen_ids.add(req_id)
+            req_status = canonical_status(post.get("status", ""))
+            if not include_inactive and req_status in INACTIVE_STATUSES:
+                continue
             github_issue = post.get("github_issue")
             results.append(
                 {
                     "id": req_id,
                     "title": post["title"],
-                    "status": post["status"],
+                    "status": req_status,
                     "github_issue": github_issue,
                     "branch": branch,
                     "pr_number": pr_number,
                     "pr_url": pr_url,
                     "warning": "no linked issues" if github_issue is None else None,
+                    **_inactive_fields(post),
                 }
             )
 
@@ -309,23 +339,79 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     return result
 
 
+def _invalid_status_message(value: object) -> str:
+    """Explain a rejected status, naming the canonical spelling when there is one."""
+    hint = canonical_status(value)
+    correction = f" — use {hint!r}" if hint in VALID_STATUSES else ""
+    return f"Invalid status {value!r}{correction}. Must be one of {sorted(VALID_STATUSES)}"
+
+
+def _validate_lifecycle_fields(
+    fields: dict[str, Any], post: frontmatter.Post, resulting_status: str
+) -> None:
+    """Enforce that cancelled carries a reason, superseded a target, and neither leaks."""
+    for field, owning_status in (("reason", "cancelled"), ("superseded_by", "superseded")):
+        if field in fields and resulting_status != owning_status:
+            raise ValueError(
+                f"{field!r} is only valid with status {owning_status!r}, not {resulting_status!r}"
+            )
+        if resulting_status == owning_status and not (fields.get(field) or post.get(field)):
+            raise ValueError(f"status {owning_status!r} requires {field!r}")
+
+
+async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str]:
+    """Validate the replacement reference and fill in the repo it defaults to."""
+    if not isinstance(value, dict) or set(value) - {"id", "repo"}:
+        raise ValueError(
+            f"'superseded_by' must be a mapping with keys 'id' and optional 'repo', got {value!r}"
+        )
+    raw_id = value.get("id")
+    if isinstance(raw_id, int) and not isinstance(raw_id, bool):
+        req_id = f"{raw_id:03d}"
+    elif isinstance(raw_id, str) and raw_id.strip():
+        req_id = raw_id.strip()
+    else:
+        raise ValueError(f"'superseded_by' needs a non-empty 'id', got {raw_id!r}")
+    target_repo = value.get("repo")
+    resolved = await _resolve_repo(target_repo) if target_repo else repo
+    return {"repo": resolved, "id": req_id}
+
+
 async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
-    """Update fields (title, why, what, status) in an existing requirement."""
+    """Update fields (title, why, what, status, reason, superseded_by) in a requirement.
+
+    Setting ``status`` to ``cancelled`` requires a ``reason``; setting it to
+    ``superseded`` requires ``superseded_by`` as ``{"id": ..., "repo": ...}``,
+    where ``repo`` defaults to the requirement's own repo.
+    """
     repo = await _resolve_repo(repo)
     path, content, sha, branch = await _locate_requirement(repo, id)
     post = frontmatter.loads(content)
+    _normalize_stored_status(post)
 
-    allowed = {"title", "why", "what", "status"}
+    allowed = {"title", "why", "what", "status", "reason", "superseded_by"}
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"Unknown fields: {unknown!r}. Allowed: {allowed!r}")
 
-    if "status" in fields and fields["status"] not in _VALID_STATUSES:
-        raise ValueError(f"Invalid status {fields['status']!r}. Must be one of {_VALID_STATUSES}")
+    if "status" in fields and fields["status"] not in VALID_STATUSES:
+        raise ValueError(_invalid_status_message(fields["status"]))
 
-    for key in ("title", "status"):
+    resulting_status = fields.get("status", canonical_status(post.get("status", "")))
+    _validate_lifecycle_fields(fields, post, resulting_status)
+    if "superseded_by" in fields:
+        fields = {
+            **fields,
+            "superseded_by": await _normalize_superseded_by(fields["superseded_by"], repo),
+        }
+
+    for key in ("title", "status", "reason", "superseded_by"):
         if key in fields:
             post[key] = fields[key]
+    if resulting_status != "cancelled":
+        post.metadata.pop("reason", None)
+    if resulting_status != "superseded":
+        post.metadata.pop("superseded_by", None)
 
     body = post.content
     for section, key in (("Why", "why"), ("What", "what")):
@@ -355,7 +441,7 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     repo = await _resolve_repo(repo)
     path, content, sha, branch = await _locate_requirement(repo, id)
     post = frontmatter.loads(content)
-    if post.get("status") == "done":
+    if canonical_status(post.get("status")) == "done":
         raise ValueError(
             "Cannot delete a done requirement — it represents implemented code. "
             "Create a new requirement to remove the feature."
@@ -370,6 +456,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     repo = await _resolve_repo(repo)
     path, content, sha, branch = await _locate_requirement(repo, id)
     post = frontmatter.loads(content)
+    _normalize_stored_status(post)
 
     # Update metadata
     if issues:
@@ -836,10 +923,18 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     }
 
 
-async def get_dashboard(status: str | None = None) -> dict[str, Any]:
-    """Return cross-repo requirements summary, optionally filtered by status."""
-    if status is not None and status not in _VALID_STATUSES:
-        raise ValueError(f"Invalid status {status!r}. Must be one of {_VALID_STATUSES}")
+async def get_dashboard(
+    status: str | None = None, include_inactive: bool = False
+) -> dict[str, Any]:
+    """Return cross-repo requirements summary, optionally filtered by status.
+
+    Cancelled and superseded requirements are left out of the per-repo listings
+    unless ``include_inactive`` is true or ``status`` names that state explicitly.
+    ``by_status`` counts every requirement either way, so the summary stays a
+    total of the whole corpus.
+    """
+    if status is not None and status not in VALID_STATUSES:
+        raise ValueError(_invalid_status_message(status))
 
     user_id = current_db_user_id.get()
     if not user_id:
@@ -866,9 +961,11 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                 post = frontmatter.loads(content)
                 req_id = post["id"]
                 seen_ids.add(req_id)
-                req_status = post.get("status", "")
+                req_status = canonical_status(post.get("status", ""))
                 status_counts[req_status] = status_counts.get(req_status, 0) + 1
                 if status is not None and req_status != status:
+                    continue
+                if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
                     continue
                 github_issue = post.get("github_issue")
                 requirements.append(
@@ -878,6 +975,7 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                         "status": req_status,
                         "github_issue": github_issue,
                         "warning": "no linked issues" if github_issue is None else None,
+                        **_inactive_fields(post),
                     }
                 )
 
@@ -895,9 +993,11 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                     if req_id in seen_ids:
                         continue
                     seen_ids.add(req_id)
-                    req_status = post.get("status", "")
+                    req_status = canonical_status(post.get("status", ""))
                     status_counts[req_status] = status_counts.get(req_status, 0) + 1
                     if status is not None and req_status != status:
+                        continue
+                    if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
                         continue
                     github_issue = post.get("github_issue")
                     requirements.append(
@@ -908,6 +1008,7 @@ async def get_dashboard(status: str | None = None) -> dict[str, Any]:
                             "github_issue": github_issue,
                             "pr_url": pr_url,
                             "warning": "no linked issues" if github_issue is None else None,
+                            **_inactive_fields(post),
                         }
                     )
 

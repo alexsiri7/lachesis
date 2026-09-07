@@ -74,7 +74,11 @@ _register_oauth_routes(mcp)
 # Tool registration
 # ---------------------------------------------------------------------------
 mcp.tool(
-    description="List all requirements for a given repo.",
+    description=(
+        "List all requirements for a given repo. "
+        "Cancelled and superseded requirements are excluded unless "
+        "`include_inactive=True`."
+    ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.list_requirements)
 
@@ -97,7 +101,12 @@ mcp.tool(
     description=(
         "Update fields of an existing requirement. "
         "`what` must describe desired behaviour, not implementation steps — "
-        "those belong in GitHub issues."
+        "those belong in GitHub issues. "
+        "`status` is one of draft, idea, planned, in-progress, done, cancelled, "
+        "superseded. Setting it to 'cancelled' requires `reason` — why the work "
+        "was dropped. Setting it to 'superseded' requires `superseded_by` as "
+        '{"id": "030", "repo": "owner/repo"}, where `repo` defaults to the '
+        "requirement's own repo."
     ),
 )(req_tools.update_requirement)
 
@@ -140,7 +149,10 @@ mcp.tool(
 
 mcp.tool(
     description="Return cross-repo requirements summary with optional status filter"
-    " (draft, idea, planned, in-progress, done).",
+    " (draft, idea, planned, in-progress, done, cancelled, superseded)."
+    " Cancelled and superseded requirements are left out of the per-repo listings"
+    " unless `include_inactive=True` or `status` names that state explicitly;"
+    " the by_status summary always counts them.",
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dashboard)
 

@@ -22,6 +22,7 @@ import db
 import github
 from oauth import create_jwt, exchange_google_code
 from settings import settings
+from status import canonical_status
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ async def web_index(request: Request) -> Response:
                     {
                         "id": post.get("id", ""),
                         "title": post.get("title", ""),
-                        "status": post.get("status", ""),
+                        "status": canonical_status(post.get("status", "")),
                         "github_issue": post.get("github_issue"),
                         "why": _extract_section(post.content, "Why"),
                         "what": _extract_section(post.content, "What"),
