@@ -1931,6 +1931,14 @@ async def test_get_initial_instructions_mentions_required_tools() -> None:
     assert "link_issues" in result
 
 
+async def test_get_initial_instructions_documents_the_ready_gate() -> None:
+    """Archon reads these at session start, so the pickup gate has to be discoverable."""
+    result = await get_initial_instructions()
+
+    assert "set_backlog_flags" in result
+    assert "move_issue" in result
+
+
 # ---------------------------------------------------------------------------
 # Backlog ordering — get_backlog, move_issue, set_backlog_flags
 # ---------------------------------------------------------------------------

@@ -29,6 +29,11 @@ Lachesis workflow — follow these steps in order:
 3. link_issues — attach the issue numbers to the requirement. Status advances to 'idea'.
 
 A requirement without linked issues is a draft. Archon will not act on drafts.
+
+New issues are unready and last in the backlog. Call set_backlog_flags with
+ready=True once an issue is specified well enough to build — only ready issues are
+eligible for autonomous pickup. Use move_issue to order the backlog by relative
+placement, and the interrupt flag for the one thing that must jump the queue.
 """
 
 
