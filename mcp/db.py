@@ -5,6 +5,7 @@ Tables (all namespaced lachesis_):
   lachesis_repos          — per-user repo registry (populated by repo-registry tools in #12)
   lachesis_oauth_clients  — persisted OAuth client registrations
   lachesis_refresh_tokens — persisted refresh tokens (with expiry)
+  lachesis_backlog        — per-repo backlog overrides (position, ready, interrupt)
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -241,3 +242,108 @@ def list_active_refresh_tokens() -> list[dict[str, Any]]:
         {"token": str(r["token"]), "data": dict(r["data"]), "expires_at": r["expires_at"]}
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# lachesis_backlog
+# ---------------------------------------------------------------------------
+
+
+def list_backlog(user_id: str, repo_name: str) -> list[dict[str, Any]]:
+    """Return the backlog override rows for a repo, positioned rows first."""
+    sql = text(
+        """
+        SELECT issue_number, position, ready, interrupt
+        FROM lachesis_backlog
+        WHERE user_id = :user_id AND repo_name = :repo_name
+        ORDER BY position ASC NULLS LAST, issue_number ASC
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql, {"user_id": user_id, "repo_name": repo_name})
+        return [dict(row) for row in result.mappings().all()]
+
+
+def upsert_backlog_flags(
+    user_id: str,
+    repo_name: str,
+    issue_number: int,
+    ready: bool | None = None,
+    interrupt: bool | None = None,
+) -> dict[str, Any]:
+    """Set the ready and/or interrupt flags for an issue. Leaves position untouched.
+
+    A flag passed as ``None`` keeps its current value, defaulting to false when the
+    row is created here — the columns are NOT NULL and a bound NULL would violate
+    that, since server defaults apply only to omitted columns.
+    """
+    sql = text(
+        """
+        INSERT INTO lachesis_backlog (user_id, repo_name, issue_number, ready, interrupt)
+        VALUES (
+            :user_id, :repo_name, :issue_number,
+            COALESCE(:ready, false), COALESCE(:interrupt, false)
+        )
+        ON CONFLICT (user_id, repo_name, issue_number) DO UPDATE
+            SET ready = COALESCE(:ready, lachesis_backlog.ready),
+                interrupt = COALESCE(:interrupt, lachesis_backlog.interrupt),
+                updated_at = now()
+        RETURNING *
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "issue_number": issue_number,
+        "ready": ready,
+        "interrupt": interrupt,
+    }
+    with _engine().begin() as conn:
+        result = conn.execute(sql, params)
+        row = result.mappings().first()
+    if row is None:
+        raise RuntimeError(
+            f"upsert_backlog_flags returned no row for {repo_name!r} issue {issue_number}"
+        )
+    return dict(row)
+
+
+def set_backlog_order(user_id: str, repo_name: str, ordered_issue_numbers: list[int]) -> None:
+    """Persist *ordered_issue_numbers* as contiguous positions, clearing every other row.
+
+    Runs as one transaction so the backlog is never observed half-renumbered.
+    """
+    clear_sql = text(
+        """
+        UPDATE lachesis_backlog
+        SET position = NULL, updated_at = now()
+        WHERE user_id = :user_id
+          AND repo_name = :repo_name
+          AND position IS NOT NULL
+          AND NOT (issue_number = ANY(CAST(:numbers AS integer[])))
+        """
+    )
+    place_sql = text(
+        """
+        INSERT INTO lachesis_backlog (user_id, repo_name, issue_number, position)
+        VALUES (:user_id, :repo_name, :issue_number, :position)
+        ON CONFLICT (user_id, repo_name, issue_number) DO UPDATE
+            SET position = EXCLUDED.position,
+                updated_at = now()
+        """
+    )
+    with _engine().begin() as conn:
+        conn.execute(
+            clear_sql,
+            {"user_id": user_id, "repo_name": repo_name, "numbers": ordered_issue_numbers},
+        )
+        for index, issue_number in enumerate(ordered_issue_numbers):
+            conn.execute(
+                place_sql,
+                {
+                    "user_id": user_id,
+                    "repo_name": repo_name,
+                    "issue_number": issue_number,
+                    "position": index,
+                },
+            )

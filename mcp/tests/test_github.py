@@ -26,6 +26,7 @@ from github import (
     get_repo_settings,
     list_files,
     list_lachesis_prs,
+    list_open_issues,
     update_file,
     update_issue,
 )
@@ -760,3 +761,49 @@ async def test_list_lachesis_prs_returns_empty_on_http_error(httpx_mock: HTTPXMo
     httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
     result = await list_lachesis_prs("owner/repo")
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# list_open_issues
+# ---------------------------------------------------------------------------
+
+
+async def test_list_open_issues_sorted_ascending(httpx_mock: HTTPXMock) -> None:
+    """Open issues come back ascending by number regardless of API order."""
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/issues?state=open&per_page=100",
+        json=[
+            {"number": 7, "title": "Later"},
+            {"number": 3, "title": "Earlier"},
+        ],
+    )
+
+    result = await list_open_issues("owner/repo")
+
+    assert result == [
+        {"number": 3, "title": "Earlier"},
+        {"number": 7, "title": "Later"},
+    ]
+
+
+async def test_list_open_issues_excludes_pull_requests(httpx_mock: HTTPXMock) -> None:
+    """Entries carrying a pull_request key are not issues."""
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/issues?state=open&per_page=100",
+        json=[
+            {"number": 1, "title": "An issue"},
+            {"number": 2, "title": "A PR", "pull_request": {"url": "..."}},
+        ],
+    )
+
+    result = await list_open_issues("owner/repo")
+
+    assert result == [{"number": 1, "title": "An issue"}]
+
+
+async def test_list_open_issues_raises_on_error(httpx_mock: HTTPXMock) -> None:
+    """A failing response propagates as an HTTPStatusError."""
+    httpx_mock.add_response(status_code=500)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await list_open_issues("owner/repo")
