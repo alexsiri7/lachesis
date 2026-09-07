@@ -34,8 +34,10 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   github.py        GitHub API client (PAT-authenticated)
   db.py            SQLAlchemy persistence layer (user identity, repo registry)
   web.py           Web dashboard route handlers and Jinja2 setup
+  notify.py        Best-effort ntfy delivery (never raises into a caller)
   tools/
     __init__.py
+    notifications.py ntfy configuration and test-notification tools
     requirements.py  All 12 MCP tool implementations (includes read-only get_initial_instructions, get_github_issue, get_dependencies; write tools add_dependency, update_github_issue)
   templates/
     dashboard.html   Read-only requirements dashboard (Jinja2)

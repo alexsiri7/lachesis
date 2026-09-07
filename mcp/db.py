@@ -6,6 +6,8 @@ Tables (all namespaced lachesis_):
   lachesis_oauth_clients  — persisted OAuth client registrations
   lachesis_refresh_tokens — persisted refresh tokens (with expiry)
   lachesis_backlog        — per-repo backlog overrides (position, ready, interrupt)
+  lachesis_ntfy_config    — per-account ntfy server, topic and token
+  lachesis_notifications  — one row per requirement already notified (dedupe)
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -349,3 +351,75 @@ def set_backlog_order(user_id: str, repo_name: str, ordered_issue_numbers: list[
                     "position": index,
                 },
             )
+
+
+# ---------------------------------------------------------------------------
+# lachesis_ntfy_config
+# ---------------------------------------------------------------------------
+
+
+def get_ntfy_config(user_id: str) -> dict[str, Any] | None:
+    """Return the ntfy config row for user_id, or None if never configured."""
+    sql = text(
+        """
+        SELECT server, topic, token
+        FROM lachesis_ntfy_config
+        WHERE user_id = :user_id
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql, {"user_id": user_id})
+        row = result.mappings().first()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def set_ntfy_config(user_id: str, server: str, topic: str, token: str) -> dict[str, Any]:
+    """Replace the ntfy config for user_id. An empty topic leaves the feature inert."""
+    sql = text(
+        """
+        INSERT INTO lachesis_ntfy_config (user_id, server, topic, token)
+        VALUES (:user_id, :server, :topic, :token)
+        ON CONFLICT (user_id) DO UPDATE
+            SET server = EXCLUDED.server,
+                topic = EXCLUDED.topic,
+                token = EXCLUDED.token,
+                updated_at = now()
+        RETURNING server, topic, token
+        """
+    )
+    params = {"user_id": user_id, "server": server, "topic": topic, "token": token}
+    with _engine().begin() as conn:
+        result = conn.execute(sql, params)
+        row = result.mappings().first()
+    if row is None:
+        raise RuntimeError(f"set_ntfy_config returned no row for user_id={user_id!r}")
+    return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# lachesis_notifications
+# ---------------------------------------------------------------------------
+
+
+def claim_notification(user_id: str, repo_name: str, requirement_id: str) -> bool:
+    """Claim the single notification owed for a requirement, returning whether it is ours.
+
+    True means this call won the claim and should deliver; False means the
+    requirement was already claimed and must not be notified again. The absent
+    row is the success signal for "already notified", not an error, so unlike the
+    other writers here an empty RETURNING never raises.
+    """
+    sql = text(
+        """
+        INSERT INTO lachesis_notifications (user_id, repo_name, requirement_id)
+        VALUES (:user_id, :repo_name, :requirement_id)
+        ON CONFLICT (user_id, repo_name, requirement_id) DO NOTHING
+        RETURNING id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "requirement_id": requirement_id}
+    with _engine().begin() as conn:
+        result = conn.execute(sql, params)
+        return result.mappings().first() is not None

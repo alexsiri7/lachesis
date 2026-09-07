@@ -138,3 +138,44 @@ def test_set_backlog_order_numbers_contiguously_and_clears_the_rest() -> None:
     assert calls[0][0][1]["numbers"] == [8, 3, 5]
     placed = [(c[0][1]["issue_number"], c[0][1]["position"]) for c in calls[1:]]
     assert placed == [(8, 0), (3, 1), (5, 2)]
+
+
+def test_get_ntfy_config_returns_none_when_never_configured() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        assert db.get_ntfy_config("uid") is None
+
+
+def test_get_ntfy_config_returns_row() -> None:
+    row = {"server": "https://ntfy.sh", "topic": "lachesis", "token": ""}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.get_ntfy_config("uid")
+    assert result == row
+
+
+def test_set_ntfy_config_upserts_on_user_id() -> None:
+    row = {"server": "https://n.example", "topic": "lachesis", "token": "tk"}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.set_ntfy_config("uid", "https://n.example", "lachesis", "tk")
+
+    assert result == row
+    sql = str(mock.begin.return_value.execute.call_args[0][0])
+    assert "ON CONFLICT (user_id) DO UPDATE" in sql
+
+
+def test_claim_notification_true_when_row_inserted() -> None:
+    mock = _mock_engine([{"id": "n1"}])
+    with patch("db._engine", return_value=mock):
+        assert db.claim_notification("uid", "owner/repo", "026") is True
+
+
+def test_claim_notification_false_when_already_claimed() -> None:
+    """An absent RETURNING row means already notified — the success path, not an error."""
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        assert db.claim_notification("uid", "owner/repo", "026") is False
+
+    sql = str(mock.begin.return_value.execute.call_args[0][0])
+    assert "DO NOTHING" in sql
