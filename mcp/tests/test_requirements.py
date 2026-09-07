@@ -94,6 +94,83 @@ Users need to save their rankings.
 """
 
 
+_BULLETED_MD = """\
+---
+id: "001"
+title: "User authentication"
+status: "draft"
+github_issue: null
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Why
+
+Users need to save their rankings.
+
+## Issues
+
+- #42 — Set up JWT middleware
+- #43 — Build login endpoints
+"""
+
+_GRAPHQL_URL = "https://api.github.com/graphql"
+
+_UNLINKED_DERIVED = {
+    "status": None,
+    "source": "unlinked",
+    "diverged": False,
+    "last_activity": None,
+    "linked_issues": [],
+    "signals": {
+        "closed_without_merge": False,
+        "closed_but_recorded_in_progress": False,
+        "checks_failing_since": None,
+        "unlinked": "never_linked",
+    },
+}
+
+
+def _open_issue_node(number: int) -> dict:
+    """A GraphQL issue node for an issue nobody has started."""
+    return {
+        "number": number,
+        "state": "OPEN",
+        "updatedAt": "2026-08-01T00:00:00Z",
+        "labels": {"nodes": []},
+        "timelineItems": {"nodes": []},
+        "closedByPullRequestsReferences": {"nodes": []},
+    }
+
+
+def _merged_issue_node(number: int, pr_number: int) -> dict:
+    """A GraphQL issue node for an issue closed by a merged pull request."""
+    node = _open_issue_node(number)
+    node["state"] = "CLOSED"
+    node["closedByPullRequestsReferences"] = {
+        "nodes": [
+            {
+                "number": pr_number,
+                "state": "MERGED",
+                "merged": True,
+                "updatedAt": "2026-08-31T18:35:09Z",
+                "isDraft": False,
+                "commits": {"nodes": []},
+            }
+        ]
+    }
+    return node
+
+
+def _mock_issue_activity(httpx_mock: HTTPXMock, *nodes: dict) -> None:
+    """Register the batched issue-activity GraphQL response."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {f"i{node['number']}": node for node in nodes}}},
+    )
+
+
 def _mock_full_flow(httpx_mock: HTTPXMock, content: str = _SAMPLE_MD, sha: str = "sha1") -> None:
     """Register list_files → get_file → update_file responses."""
     httpx_mock.add_response(json=_LIST_RESP)
@@ -1002,6 +1079,7 @@ async def test_list_requirements_returns_metadata(httpx_mock: HTTPXMock) -> None
             "status": "planned",
             "github_issue": None,
             "warning": "no linked issues",
+            "derived": _UNLINKED_DERIVED,
         },
     ]
 
@@ -1054,10 +1132,12 @@ CSV export.
         }
     )
     httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+    _mock_issue_activity(httpx_mock, _open_issue_node(99))
 
     result = await list_requirements("owner/repo")
 
     assert len(result) == 2
+    assert result[1]["derived"]["source"] == "issues"
     assert result[0]["id"] == "001"
     assert result[0]["warning"] == "no linked issues"
     assert result[1]["id"] == "002"
@@ -1219,11 +1299,146 @@ async def test_list_requirements_no_warning_when_issue_linked(httpx_mock: HTTPXM
     httpx_mock.add_response(json=_LIST_RESP)
     httpx_mock.add_response(json=_make_file_response(_LINKED_MD, "sha1"))
     httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+    _mock_issue_activity(httpx_mock, _open_issue_node(42))
 
     result = await list_requirements("owner/repo")
 
     assert result[0]["github_issue"] == 42
     assert result[0]["warning"] is None
+    assert result[0]["derived"]["source"] == "issues"
+    assert result[0]["derived"]["linked_issues"] == [42]
+
+
+# ---------------------------------------------------------------------------
+# derived status tests
+# ---------------------------------------------------------------------------
+
+
+async def test_list_requirements_asks_github_nothing_when_no_issues_are_linked(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Deriving nothing costs nothing — an unlinked repo makes no extra request."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+    result = await list_requirements("owner/repo")
+
+    assert result[0]["derived"]["source"] == "unlinked"
+    assert not [r for r in httpx_mock.get_requests() if str(r.url) == _GRAPHQL_URL]
+
+
+async def test_list_requirements_fetches_every_linked_issue_in_one_request(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Issue activity is batched per repo, not fetched per requirement."""
+    second_md = _BULLETED_MD.replace('id: "001"', 'id: "002"').replace("#43", "#44")
+    httpx_mock.add_response(
+        json=[
+            {"name": _NAME, "path": _PATH},
+            {"name": "002-data-export.md", "path": "requirements/002-data-export.md"},
+        ]
+    )
+    httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+    httpx_mock.add_response(json=_make_second_file_response(second_md, "sha2"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+    _mock_issue_activity(
+        httpx_mock, _open_issue_node(42), _open_issue_node(43), _open_issue_node(44)
+    )
+
+    result = await list_requirements("owner/repo")
+
+    graphql_requests = [r for r in httpx_mock.get_requests() if str(r.url) == _GRAPHQL_URL]
+    assert len(graphql_requests) == 1
+    query = json.loads(graphql_requests[0].content)["query"]
+    assert "i42: issue(number: 42)" in query
+    assert "i44: issue(number: 44)" in query
+    assert [r["derived"]["status"] for r in result] == ["idea", "idea"]
+
+
+async def test_list_requirements_flags_a_draft_whose_issues_already_shipped(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A requirement recorded as draft whose issues merged is reported as diverged."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+    _mock_issue_activity(httpx_mock, _merged_issue_node(42, 60), _merged_issue_node(43, 61))
+
+    derived = (await list_requirements("owner/repo"))[0]["derived"]
+
+    assert derived["status"] == "done"
+    assert derived["diverged"] is True
+    assert derived["linked_issues"] == [42, 43]
+    assert derived["last_activity"] == "2026-08-31T18:35:09Z"
+
+
+async def test_list_requirements_does_not_warn_about_bulleted_issues(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Issues recorded only in the Issues section are still linked issues."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+    _mock_issue_activity(httpx_mock, _open_issue_node(42), _open_issue_node(43))
+
+    result = await list_requirements("owner/repo")
+
+    assert result[0]["github_issue"] is None
+    assert result[0]["warning"] is None
+
+
+async def test_list_requirements_degrades_when_issue_activity_fails(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A listing is still a listing when the derivation cannot be made."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+
+    result = await list_requirements("owner/repo")
+
+    assert result[0]["id"] == "001"
+    assert result[0]["derived"]["source"] == "unavailable"
+    assert result[0]["derived"]["status"] is None
+
+
+async def test_get_dashboard_keeps_the_repo_when_issue_activity_fails(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A failed derivation must not drop the whole repo out of the dashboard."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+        result = await get_dashboard()
+
+    requirements = result["repos"][0]["requirements"]
+    assert [r["id"] for r in requirements] == ["001"]
+    assert requirements[0]["derived"]["source"] == "unavailable"
+
+
+async def test_get_dashboard_unlinked_count_excludes_bulleted_issues(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A requirement whose issues live only in its Issues section is not unlinked."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        _mock_issue_activity(httpx_mock, _open_issue_node(42), _open_issue_node(43))
+        result = await get_dashboard()
+
+    assert result["summary"]["unlinked_count"] == 0
+    assert result["repos"][0]["requirements"][0]["derived"]["source"] == "issues"
 
 
 # ---------------------------------------------------------------------------
@@ -1283,9 +1498,11 @@ async def test_get_dashboard_unlinked_count_zero_when_all_linked(
         httpx_mock.add_response(json=_LIST_RESP)
         httpx_mock.add_response(json=_make_file_response(_LINKED_MD, "sha1"))
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        _mock_issue_activity(httpx_mock, _open_issue_node(42))
         result = await get_dashboard()
 
     assert result["summary"]["unlinked_count"] == 0
+    assert result["repos"][0]["requirements"][0]["derived"]["source"] == "issues"
 
 
 # ---------------------------------------------------------------------------
@@ -2683,6 +2900,7 @@ async def test_get_dashboard_counts_variant_spelling_under_one_key(
         httpx_mock.add_response(json=_make_file_response(_CANONICAL_MD, "sha1"))
         httpx_mock.add_response(json=_make_second_file_response(_VARIANT_MD, "sha2"))
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        _mock_issue_activity(httpx_mock, _open_issue_node(99))
         result = await get_dashboard()
 
     assert result["summary"]["by_status"] == {"in-progress": 2}

@@ -1,0 +1,229 @@
+"""Requirement status read off the GitHub issues a requirement links to.
+
+The ``status`` field in a requirement file is hand-maintained, so it drifts from
+what actually happened to the work.  These helpers compute a second status from
+the issues and their pull requests, so a listing can report both and say when
+they disagree.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Literal, TypedDict
+
+import frontmatter
+
+from status import INACTIVE_STATUSES, canonical_status
+
+DerivedStatus = Literal["idea", "in-progress", "done"]
+DerivationSource = Literal["issues", "unlinked", "unavailable"]
+UnlinkedKind = Literal["awaiting_pr", "never_linked"]
+
+PROGRESS_RANK: dict[str, int] = {
+    "draft": 0,
+    "idea": 1,
+    "planned": 1,
+    "in-progress": 2,
+    "done": 3,
+}
+
+FAILING_CONCLUSIONS: frozenset[str] = frozenset(
+    {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR"}
+)
+
+_IN_PROGRESS_LABEL = "archon:in-progress"
+
+_ISSUES_SECTION = re.compile(r"^## Issues\b[^\n]*\n(?:(?!^## )[^\n]*\n?)*", re.MULTILINE)
+_ISSUE_BULLET = re.compile(r"^\s*[-*]\s*#(\d+)\b")
+
+
+class CheckFacts(TypedDict):
+    """One check context on a pull request's head commit."""
+
+    conclusion: str | None
+    at: str | None
+
+
+class PullFacts(TypedDict):
+    """A pull request that declares it closes one of the requirement's issues."""
+
+    number: int
+    state: str
+    merged: bool
+    updated_at: str | None
+    is_draft: bool
+    checks: list[CheckFacts]
+
+
+class IssueFacts(TypedDict):
+    """The observable state of one linked issue."""
+
+    number: int
+    state: str
+    updated_at: str | None
+    labels: list[str]
+    closed_by_commit: bool
+    pulls: list[PullFacts]
+
+
+class Signals(TypedDict):
+    """States that look like progress but are not, each reported on its own."""
+
+    closed_without_merge: bool
+    closed_but_recorded_in_progress: bool
+    checks_failing_since: str | None
+    unlinked: UnlinkedKind | None
+
+
+class Derived(TypedDict):
+    """The derived view reported alongside a requirement's recorded status."""
+
+    status: DerivedStatus | None
+    source: DerivationSource
+    diverged: bool
+    last_activity: str | None
+    linked_issues: list[int]
+    signals: Signals
+
+
+def linked_issue_numbers(post: frontmatter.Post) -> list[int]:
+    """Return the issue numbers a requirement links to, in document order.
+
+    The ``## Issues`` bullets are the source: ``link_issues`` writes every issue
+    there while frontmatter keeps only the first, so ``github_issue`` is unioned
+    in rather than trusted alone.  Only a number opening a bullet counts, which
+    leaves cross-repo references and prose mentions out.
+    """
+    numbers: list[int] = []
+    section = _ISSUES_SECTION.search(post.content)
+    if section:
+        for line in section.group(0).splitlines():
+            match = _ISSUE_BULLET.match(line)
+            if match and int(match.group(1)) not in numbers:
+                numbers.append(int(match.group(1)))
+    recorded = post.get("github_issue")
+    if isinstance(recorded, int) and recorded not in numbers:
+        numbers.append(recorded)
+    return numbers
+
+
+def _landed(issue: IssueFacts) -> bool:
+    """True when the issue was closed by code that merged.
+
+    A squash merge closes its issue through the squash commit, which leaves
+    ``closedByPullRequestsReferences`` empty — the closing commit is then the
+    only evidence the work landed.
+    """
+    return issue["closed_by_commit"] or any(pull["merged"] for pull in issue["pulls"])
+
+
+def _last_activity(issues: list[IssueFacts]) -> str | None:
+    stamps = [
+        stamp
+        for issue in issues
+        for stamp in (issue["updated_at"], *(pull["updated_at"] for pull in issue["pulls"]))
+        if stamp
+    ]
+    return max(stamps) if stamps else None
+
+
+def _checks_failing_since(issues: list[IssueFacts]) -> str | None:
+    """Return the earliest failing check across the open, non-draft pull requests.
+
+    Keyed off the check rather than the pull request: a pull request's own
+    timestamp moves on every comment or push, which would report a fresh time
+    for checks that have been broken for a week.
+    """
+    stamps = [
+        check["at"]
+        for issue in issues
+        for pull in issue["pulls"]
+        if pull["state"] == "OPEN" and not pull["is_draft"]
+        for check in pull["checks"]
+        if check["at"] and check["conclusion"] in FAILING_CONCLUSIONS
+    ]
+    return min(stamps) if stamps else None
+
+
+def _empty_signals() -> Signals:
+    return {
+        "closed_without_merge": False,
+        "closed_but_recorded_in_progress": False,
+        "checks_failing_since": None,
+        "unlinked": None,
+    }
+
+
+def derive(
+    recorded_status: str,
+    numbers: list[int],
+    facts: dict[int, IssueFacts] | None,
+    *,
+    on_pr_branch: bool,
+) -> Derived:
+    """Derive a requirement's status from *facts* about the issues in *numbers*.
+
+    *facts* is ``None`` when GitHub could not be read.  Issues missing from it
+    have been deleted or transferred and are ignored; a requirement whose issues
+    are all missing reports as unreadable rather than as untouched work.
+
+    Only ``idea``, ``in-progress`` and ``done`` are ever derived.  ``draft`` and
+    ``planned`` are author bookkeeping with no work-side signature, and
+    ``cancelled`` / ``superseded`` are author intent that an observation must
+    never contradict — those are reported as diverging from nothing.
+    """
+    signals = _empty_signals()
+    if not numbers:
+        signals["unlinked"] = "awaiting_pr" if on_pr_branch else "never_linked"
+        return {
+            "status": None,
+            "source": "unlinked",
+            "diverged": False,
+            "last_activity": None,
+            "linked_issues": [],
+            "signals": signals,
+        }
+
+    issues = [facts[number] for number in numbers if number in facts] if facts else []
+    if not issues:
+        return {
+            "status": None,
+            "source": "unavailable",
+            "diverged": False,
+            "last_activity": None,
+            "linked_issues": numbers,
+            "signals": signals,
+        }
+
+    recorded = canonical_status(recorded_status)
+    closed = [issue for issue in issues if issue["state"] == "CLOSED"]
+    status: DerivedStatus
+    if len(closed) == len(issues):
+        if all(_landed(issue) for issue in issues):
+            status = "done"
+        else:
+            status = "in-progress"
+            signals["closed_without_merge"] = True
+        signals["closed_but_recorded_in_progress"] = recorded == "in-progress"
+    elif (
+        closed
+        or any(issue["pulls"] for issue in issues)
+        or any(_IN_PROGRESS_LABEL in issue["labels"] for issue in issues)
+    ):
+        status = "in-progress"
+    else:
+        status = "idea"
+    signals["checks_failing_since"] = _checks_failing_since(issues)
+
+    return {
+        "status": status,
+        "source": "issues",
+        "diverged": (
+            recorded not in INACTIVE_STATUSES
+            and recorded in PROGRESS_RANK
+            and PROGRESS_RANK[recorded] != PROGRESS_RANK[status]
+        ),
+        "last_activity": _last_activity(issues),
+        "linked_issues": numbers,
+        "signals": signals,
+    }

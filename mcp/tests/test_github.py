@@ -22,6 +22,7 @@ from github import (
     get_branch_sha,
     get_file,
     get_issue,
+    get_issue_activity,
     get_issue_dependencies,
     get_repo_settings,
     list_blocked_by_numbers,
@@ -833,3 +834,134 @@ async def test_list_open_issues_raises_on_error(httpx_mock: HTTPXMock) -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         await list_open_issues("owner/repo")
+
+
+# ---------------------------------------------------------------------------
+# get_issue_activity
+# ---------------------------------------------------------------------------
+
+
+def _activity_node() -> dict:
+    """A closed issue with one merged PR and one open PR carrying a failed check."""
+    return {
+        "number": 42,
+        "state": "CLOSED",
+        "updatedAt": "2026-08-31T18:35:09Z",
+        "labels": {"nodes": [{"name": "archon:in-progress"}]},
+        "timelineItems": {"nodes": [{"closer": {"__typename": "Commit"}}]},
+        "closedByPullRequestsReferences": {
+            "nodes": [
+                {
+                    "number": 60,
+                    "state": "MERGED",
+                    "merged": True,
+                    "updatedAt": "2026-08-30T10:00:00Z",
+                    "isDraft": False,
+                    "commits": {"nodes": []},
+                },
+                {
+                    "number": 61,
+                    "state": "OPEN",
+                    "merged": False,
+                    "updatedAt": "2026-09-01T10:00:00Z",
+                    "isDraft": True,
+                    "commits": {
+                        "nodes": [
+                            {
+                                "commit": {
+                                    "statusCheckRollup": {
+                                        "contexts": {
+                                            "nodes": [
+                                                {
+                                                    "__typename": "CheckRun",
+                                                    "conclusion": "FAILURE",
+                                                    "completedAt": "2026-08-30T22:30:46Z",
+                                                },
+                                                {
+                                                    "__typename": "StatusContext",
+                                                    "state": "SUCCESS",
+                                                    "createdAt": "2026-08-30T22:00:00Z",
+                                                },
+                                            ]
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                },
+            ]
+        },
+    }
+
+
+async def test_get_issue_activity_makes_no_request_without_issues(httpx_mock: HTTPXMock) -> None:
+    """A repo whose requirements link nothing costs no GraphQL call."""
+    assert await get_issue_activity("owner/repo", []) == {}
+    assert httpx_mock.get_requests() == []
+
+
+async def test_get_issue_activity_normalizes_issues_and_their_pull_requests(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The GraphQL shape is flattened into the facts derivation consumes."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _activity_node()}}}
+    )
+
+    facts = await get_issue_activity("owner/repo", [42])
+
+    assert facts is not None
+    assert facts[42]["state"] == "CLOSED"
+    assert facts[42]["updated_at"] == "2026-08-31T18:35:09Z"
+    assert facts[42]["labels"] == ["archon:in-progress"]
+    assert facts[42]["closed_by_commit"] is True
+    assert [p["number"] for p in facts[42]["pulls"]] == [60, 61]
+    assert facts[42]["pulls"][0]["merged"] is True
+    assert facts[42]["pulls"][1]["is_draft"] is True
+    assert facts[42]["pulls"][1]["checks"] == [
+        {"conclusion": "FAILURE", "at": "2026-08-30T22:30:46Z"},
+        {"conclusion": "SUCCESS", "at": "2026-08-30T22:00:00Z"},
+    ]
+
+
+async def test_get_issue_activity_drops_an_issue_that_no_longer_exists(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A deleted or transferred issue comes back null and is left out of the map."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"i42": _activity_node(), "i99": None}}},
+    )
+
+    facts = await get_issue_activity("owner/repo", [42, 99])
+
+    assert facts is not None
+    assert list(facts) == [42]
+
+
+async def test_get_issue_activity_batches_large_issue_sets(httpx_mock: HTTPXMock) -> None:
+    """More issues than fit one query are fetched in chunks, not one call each."""
+    for _ in range(2):
+        httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {}}})
+
+    await get_issue_activity("owner/repo", list(range(1, 27)))
+
+    assert len(httpx_mock.get_requests()) == 2
+
+
+async def test_get_issue_activity_returns_none_on_http_error(httpx_mock: HTTPXMock) -> None:
+    """An unreadable GitHub degrades the caller rather than failing it."""
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+
+    assert await get_issue_activity("owner/repo", [42]) is None
+
+
+async def test_get_issue_activity_returns_none_on_graphql_errors(httpx_mock: HTTPXMock) -> None:
+    """A 200 carrying errors is not data."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"errors": [{"message": "FORBIDDEN"}]}
+    )
+
+    assert await get_issue_activity("owner/repo", [42]) is None
