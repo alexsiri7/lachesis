@@ -2592,3 +2592,38 @@ async def test_next_issue_with_no_registered_repos(set_user_id: str) -> None:
     assert result["issue"] is None
     assert result["reason"] == "empty"
     assert "registered" in result["explanation"]
+
+
+async def test_next_issue_skips_a_repo_it_cannot_read(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """One unreachable repo must not cost the worker every other repo's backlog."""
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/gone/issues?state=open&per_page=100",
+        status_code=404,
+        json={},
+    )
+    _mock_open_issues(httpx_mock, [1])
+    _mock_blocked_by(httpx_mock, 1, [])
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+    registered = [{"repo_name": "owner/gone"}, {"repo_name": "owner/repo"}]
+
+    with _patch_backlog(fake), patch("tools.requirements.db.list_repos", return_value=registered):
+        result = await next_issue()
+
+    assert result["issue"]["number"] == 1
+    assert "owner/gone" in result["explanation"]
+
+
+async def test_next_issue_scoped_call_surfaces_the_failure(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Naming one repo makes its failure the answer, not something to degrade around."""
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/gone/issues?state=open&per_page=100",
+        status_code=404,
+        json={},
+    )
+
+    with _patch_backlog(_FakeBacklog()), pytest.raises(httpx.HTTPStatusError):
+        await next_issue("owner/gone")

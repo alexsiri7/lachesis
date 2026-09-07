@@ -727,6 +727,7 @@ async def _scan_repo(
 
 
 def _describe_blocked(entries: list[dict[str, Any]]) -> str:
+    """Render blocked entries as ``owner/repo#12 by #8, #9; owner/repo#14 by #3``."""
     return "; ".join(
         "{}#{} by {}".format(
             entry["repo"],
@@ -749,7 +750,9 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     Returns ``issue`` (``None`` when nothing qualifies), a ``reason`` of
     ``selected`` / ``all_blocked`` / ``all_in_progress`` / ``none_ready`` / ``empty``,
     a one-sentence ``explanation``, and ``blocked`` — the ready issues passed over
-    because a dependency of theirs is still open, each naming its blockers.
+    because a dependency of theirs is still open, each naming its blockers. An unscoped
+    call skips a repo it cannot read and says so in the explanation, rather than letting
+    one unreachable repo cost the caller every other repo's backlog.
     """
     user_id = _require_user_id()
     if repo is not None:
@@ -758,7 +761,19 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         repos = [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]
 
     cache: dict[tuple[str, int], dict[str, Any] | None] = {}
-    scans = [await _scan_repo(repo_name, user_id, cache) for repo_name in repos]
+    scans: list[_RepoScan] = []
+    unreadable: list[str] = []
+    for repo_name in repos:
+        try:
+            scans.append(await _scan_repo(repo_name, user_id, cache))
+        except Exception:
+            # A scoped call named this repo, so its failure is the answer. Unscoped, one
+            # repo gone from the PAT's reach must not cost the worker every other backlog.
+            if repo is not None:
+                raise
+            logger.warning("next_issue: could not read the backlog of %s", repo_name)
+            unreadable.append(repo_name)
+
     blocked = [entry for scan in scans for entry in scan.blocked]
 
     candidates = [
@@ -768,6 +783,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     # there is no cross-repo order to appeal to, so registration order decides and
     # `also_eligible` shows what that arbitrary tie-break passed over.
     candidates.sort(key=lambda pair: (not pair[1]["interrupt"], pair[0], pair[1]["position"]))
+    caveat = f" Could not read the backlog of {', '.join(unreadable)}." if unreadable else ""
 
     if candidates:
         chosen = candidates[0][1]
@@ -780,7 +796,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         result = {
             "issue": chosen,
             "reason": "selected",
-            "explanation": explanation,
+            "explanation": explanation + caveat,
             "blocked": blocked,
         }
         if repo is None and len(candidates) > 1:
@@ -812,7 +828,12 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         reason = "empty"
         explanation = "The backlog is empty — there are no open issues."
 
-    return {"issue": None, "reason": reason, "explanation": explanation, "blocked": blocked}
+    return {
+        "issue": None,
+        "reason": reason,
+        "explanation": explanation + caveat,
+        "blocked": blocked,
+    }
 
 
 async def get_dashboard(status: str | None = None) -> dict[str, Any]:
