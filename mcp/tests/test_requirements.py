@@ -1923,6 +1923,8 @@ Do it.
     assert result[1]["branch"] == pr_branch
     assert result[1]["pr_number"] == 7
     assert result[1]["warning"] == "no linked issues"
+    assert result[0]["derived"]["signals"]["unlinked"] == "never_linked"
+    assert result[1]["derived"]["signals"]["unlinked"] == "awaiting_pr"
 
 
 async def test_list_requirements_deduplicates_pr_and_main(httpx_mock: HTTPXMock) -> None:
@@ -2126,6 +2128,8 @@ async def test_get_dashboard_includes_pr_branch_requirements(
     pr_req = next(r for r in reqs if r["id"] == "002")
     assert "pr_url" not in main_req
     assert pr_req["pr_url"] == pr_url
+    assert main_req["derived"]["signals"]["unlinked"] == "never_linked"
+    assert pr_req["derived"]["signals"]["unlinked"] == "awaiting_pr"
     assert result["summary"]["total"] == 2
 
 
