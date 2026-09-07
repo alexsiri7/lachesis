@@ -138,8 +138,9 @@ mcp.tool(
     description=(
         "Create one or more GitHub issues capturing implementation work. "
         "Issues are the task layer — they break down *how* a requirement's "
-        "desired behaviour will be built. Call `link_issues` after to attach "
-        "them to the requirement."
+        "desired behaviour will be built. Issues are created ready and last in the "
+        "backlog; pass `ready: false` on one to park it instead. Call `link_issues` "
+        "after to attach them to the requirement."
     ),
 )(req_tools.create_github_issues)
 
@@ -210,8 +211,8 @@ mcp.tool(
     description=(
         "Return a repo's open issues in backlog order — the single ordered backlog. "
         "Interrupt-marked issues lead the list; each entry reports its `position` in "
-        "the backlog itself plus its `ready` and `interrupt` flags. Only ready issues "
-        "are eligible for autonomous pickup."
+        "the backlog itself plus its `ready` and `interrupt` flags. An issue is ready "
+        "unless it has been parked; parked issues are skipped for autonomous pickup."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_backlog)
@@ -226,9 +227,9 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Set an issue's backlog flags. `ready` marks it specified well enough to "
-        "build, which is what makes it eligible for autonomous pickup; `interrupt` "
-        "jumps it to the front of the backlog regardless of position. "
+        "Set an issue's backlog flags. `ready=false` parks the issue, holding it back "
+        "from autonomous pickup, and `ready=true` unparks it; `interrupt` jumps it to "
+        "the front of the backlog regardless of position. "
         "An omitted flag is left as it is."
     ),
 )(req_tools.set_backlog_flags)
@@ -239,7 +240,7 @@ mcp.tool(
         "has no open blocker, and is not already in progress. An interrupt-marked "
         "issue wins over position. `repo` is optional: omit it to consider every "
         "registered repo. When nothing qualifies the result explains which case it "
-        "is — everything ready is blocked, nothing is ready, or the backlog is empty."
+        "is — everything ready is blocked, everything is parked, or the backlog is empty."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.next_issue)
