@@ -1,8 +1,8 @@
 ---
 created: '2026-09-07'
-github_issue: null
+github_issue: 115
 id: '027'
-status: draft
+status: idea
 title: Requirement status derived from issue state, with cancelled and stalled made
   visible
 updated: '2026-09-07'
@@ -57,4 +57,6 @@ A given status has exactly one representation. Summaries that count by status co
 
 ## Issues
 
-_None yet._
+- #115 — Lifecycle states for cancelled and superseded, and canonical status values
+- #116 — Derive requirement status from issues and PRs, with activity timestamps
+- #117 — Dashboard: landed, dropped, stalled and needs-attention in one call
