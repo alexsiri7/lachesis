@@ -273,16 +273,18 @@ def upsert_backlog_flags(
 ) -> dict[str, Any]:
     """Set the ready and/or interrupt flags for an issue. Leaves position untouched.
 
-    A flag passed as ``None`` keeps its current value, defaulting to false when the
-    row is created here — the columns are NOT NULL and a bound NULL would violate
-    that, since server defaults apply only to omitted columns.
+    A flag passed as ``None`` keeps its current value; when the row is created here
+    it falls to the column default — ready true, interrupt false — so a row written
+    to set ``interrupt`` alone does not park the issue as a side effect. The
+    COALESCE is what supplies it: the columns are NOT NULL and a bound NULL would
+    violate that, since server defaults apply only to omitted columns.
     """
     sql = text(
         """
         INSERT INTO lachesis_backlog (user_id, repo_name, issue_number, ready, interrupt)
         VALUES (
             :user_id, :repo_name, :issue_number,
-            COALESCE(:ready, false), COALESCE(:interrupt, false)
+            COALESCE(:ready, true), COALESCE(:interrupt, false)
         )
         ON CONFLICT (user_id, repo_name, issue_number) DO UPDATE
             SET ready = COALESCE(:ready, lachesis_backlog.ready),

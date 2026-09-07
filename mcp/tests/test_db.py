@@ -117,15 +117,15 @@ def test_upsert_backlog_flags_leaves_omitted_flag_null() -> None:
     assert "COALESCE(:interrupt, lachesis_backlog.interrupt)" in sql
 
 
-def test_upsert_backlog_flags_inserts_false_not_null() -> None:
-    """The fresh-insert path must not bind NULL into the NOT NULL flag columns."""
+def test_upsert_backlog_flags_inserts_ready_true_not_null() -> None:
+    """A row created to set one flag must not bind NULL, nor park the issue."""
     row = {"issue_number": 9, "position": None, "ready": True, "interrupt": False}
     mock = _mock_engine([row])
     with patch("db._engine", return_value=mock):
         db.upsert_backlog_flags("uid", "owner/repo", 9, ready=True)
 
     sql = str(mock.begin.return_value.execute.call_args[0][0])
-    assert "COALESCE(:ready, false), COALESCE(:interrupt, false)" in sql
+    assert "COALESCE(:ready, true), COALESCE(:interrupt, false)" in sql
 
 
 def test_set_backlog_order_numbers_contiguously_and_clears_the_rest() -> None:

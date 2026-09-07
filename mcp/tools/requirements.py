@@ -30,12 +30,12 @@ Lachesis workflow — follow these steps in order:
 
 A requirement without linked issues is a draft. Archon will not act on drafts.
 
-New issues are unready and last in the backlog. Call set_backlog_flags with
-ready=True once an issue is specified well enough to build — only ready issues are
-eligible for autonomous pickup. Use move_issue to order the backlog by relative
-placement, and the interrupt flag for the one thing that must jump the queue.
-Call next_issue to ask what to pick up — it returns the top ready, unblocked issue,
-or explains why there is none.
+New issues are ready and last in the backlog, eligible for autonomous pickup as
+soon as they are created. Call set_backlog_flags with ready=False to park an issue
+that is knowingly unfinished, and ready=True to unpark it. Use move_issue to order
+the backlog by relative placement, and the interrupt flag for the one thing that
+must jump the queue. Call next_issue to ask what to pick up — it returns the top
+ready, unblocked issue, or explains why there is none.
 """
 
 
@@ -532,6 +532,9 @@ async def _apply_backlog_overrides(
 ) -> None:
     """Apply per-issue ``ready`` / ``before`` / ``after`` overrides to created issues.
 
+    The defaults they override are ready, last in the backlog, so the only flag
+    worth writing here is an explicit ``ready: false`` — the park.
+
     Best-effort throughout: the GitHub issues already exist and cannot be
     un-created, so every failure is logged and reported through the result dict.
     Anchors are resolved issue by issue, so one naming an issue created earlier in
@@ -545,12 +548,17 @@ async def _apply_backlog_overrides(
 
     for issue_input, result in zip(issues, results, strict=True):
         number = result["number"]
-        if issue_input.get("ready"):
+        requested = issue_input.get("ready")
+        if requested is not None:
             try:
-                db.upsert_backlog_flags(user_id, repo, number, ready=True)
-                result["ready"] = True
+                db.upsert_backlog_flags(user_id, repo, number, ready=bool(requested))
+                result["ready"] = bool(requested)
             except Exception:
-                logger.warning("create_github_issues: failed to mark issue %s ready", number)
+                # Leaving the creation default in place makes a dropped park visible:
+                # the reported flag disagrees with what the caller asked for.
+                logger.warning(
+                    "create_github_issues: failed to set ready=%s on issue %s", requested, number
+                )
 
         before = issue_input.get("before")
         after = issue_input.get("after")
@@ -574,7 +582,8 @@ async def create_github_issues(
     """Create one or more GitHub issues and return their numbers/titles/urls.
 
     Each issue may carry ``ready`` (bool) and one of ``before`` / ``after`` (issue
-    numbers) to override the defaults — unready, last in the backlog.
+    numbers) to override the defaults — ready, last in the backlog. Passing
+    ``ready: false`` parks the issue, holding it back from autonomous pickup.
     """
     repo = await _resolve_repo(repo)
     # Phase 1: Create all issues, build number→id map
@@ -593,7 +602,7 @@ async def create_github_issues(
                 **result,
                 "blocked_by": [],
                 "added_to_project": False,
-                "ready": False,
+                "ready": True,
                 "placed": False,
             }
         )
@@ -660,9 +669,10 @@ async def _base_backlog_order(repo: str, user_id: str) -> list[dict[str, Any]]:
 
     Positioned rows come first in position order, then every remaining open issue
     by issue number ascending — which is creation order, so a new issue is last
-    without anything being written. Closed issues drop out here; their rows stay
-    in the table, so the ready and interrupt flags survive a close and reopen,
-    though an explicit position does not — the next move clears it. Each entry's
+    without anything being written. An issue with no row is ready: a row exists
+    only to park, position or interrupt one. Closed issues drop out here; their
+    rows stay in the table, so the ready and interrupt flags survive a close and
+    reopen, though an explicit position does not — the next move clears it. Each entry's
     ``position`` is its index in this list, never in the interrupt-hoisted one.
     """
     open_issues = await github.list_open_issues(repo)
@@ -686,7 +696,7 @@ async def _base_backlog_order(repo: str, user_id: str) -> list[dict[str, Any]]:
             "title": titles[number],
             "labels": labels[number],
             "position": index,
-            "ready": bool(rows[number]["ready"]) if number in rows else False,
+            "ready": bool(rows[number]["ready"]) if number in rows else True,
             "interrupt": bool(rows[number]["interrupt"]) if number in rows else False,
         }
         for index, number in enumerate(positioned + remaining)
@@ -938,8 +948,8 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     elif any(scan.saw_open for scan in scans):
         reason = "none_ready"
         explanation = (
-            "There are open issues but none is marked ready — call set_backlog_flags "
-            "once one is specified well enough to build."
+            "There are open issues but every one is parked — call set_backlog_flags "
+            "with ready=True to unpark one."
         )
     elif not repos:
         reason = "empty"
