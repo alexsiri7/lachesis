@@ -325,10 +325,11 @@ def test_derive_reports_a_requirement_with_no_issues_as_unlinked() -> None:
 
 def test_derive_reports_unavailable_when_github_could_not_be_read() -> None:
     """No answer beats a confident wrong one; the issue numbers are still reported."""
-    result = derive("draft", [1, 2], None, on_pr_branch=False)
+    result = derive("draft", [1, 2], {}, on_pr_branch=False, failure="rate_limited")
 
     assert result["status"] is None
     assert result["source"] == "unavailable"
+    assert result["unavailable_cause"] == "rate_limited"
     assert result["diverged"] is False
     assert result["linked_issues"] == [1, 2]
 
@@ -339,6 +340,15 @@ def test_derive_reports_unavailable_when_no_linked_issue_still_exists() -> None:
 
     assert result["status"] is None
     assert result["source"] == "unavailable"
+    assert result["unavailable_cause"] == "issue_missing"
+
+
+def test_derive_ignores_a_repo_failure_for_an_issue_that_came_back() -> None:
+    """A batch that failed elsewhere must not unread the issues this one links."""
+    result = derive("planned", [1], _facts(_issue(1)), on_pr_branch=False, failure="transient")
+
+    assert result["source"] == "issues"
+    assert result["unavailable_cause"] is None
 
 
 def test_derive_uses_the_issues_that_do_exist() -> None:

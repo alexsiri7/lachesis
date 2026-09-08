@@ -16,7 +16,7 @@ import github
 import groups
 import landing
 from auth import current_db_user_id
-from derive import IssueFacts, derive, linked_issue_numbers
+from derive import ActivityFailure, IssueFacts, derive, linked_issue_numbers
 from status import INACTIVE_STATUSES, VALID_STATUSES, canonical_status
 
 from .repos import _require_user_id, normalize_repo
@@ -146,23 +146,29 @@ async def _attach_derived(repo: str, pending: _Pending) -> None:
     """Derive a status for each pending entry from one batch of issue activity.
 
     A repo whose requirements link no issues costs no request.  GitHub failing
-    here must not cost the caller the listing it actually asked for, so the
-    entries report an unavailable derivation instead of raising.
+    here must not cost the caller the listing it actually asked for, so an entry
+    whose issues went unread reports an unavailable derivation naming the cause
+    instead of raising, and the entries whose issues did come back derive
+    normally alongside it.
     """
     numbers = sorted({number for _, entry_numbers, _ in pending for number in entry_numbers})
-    facts: dict[int, IssueFacts] | None = {}
+    facts: dict[int, IssueFacts] = {}
+    failure: ActivityFailure | None = None
     if numbers:
         try:
-            facts = await github.get_issue_activity(repo, numbers)
+            activity = await github.get_issue_activity(repo, numbers)
+            facts, failure = activity["facts"], activity["failure"]
         except Exception as exc:
             logger.warning(
                 "failed to fetch issue activity for repo=%s error=%r; status not derived",
                 repo,
                 exc,
             )
-            facts = None
+            failure = "transient"
     for entry, entry_numbers, on_pr_branch in pending:
-        entry["derived"] = derive(entry["status"], entry_numbers, facts, on_pr_branch=on_pr_branch)
+        entry["derived"] = derive(
+            entry["status"], entry_numbers, facts, on_pr_branch=on_pr_branch, failure=failure
+        )
 
 
 def _normalize_stored_status(post: frontmatter.Post) -> None:
@@ -1059,6 +1065,16 @@ async def get_dashboard(
     ``by_status`` included, since both are tallied as the pull request branches
     are walked — so a zero there means "none found" only for the repos absent
     from that list.
+
+    ``summary.unavailable_count`` counts the returned requirements whose linked
+    issues could not be read, and ``unavailable_repos`` names where they are,
+    ``{"repo", "count", "causes"}`` per repo with the distinct causes seen.  It
+    is a different failure from ``incomplete_repos``: those requirements were
+    found and counted, so only their ``derived`` block is unknown, not the totals.
+    Both are counted over the returned listings like ``unlinked_count``, not over
+    the whole corpus the groups cover, so a cancelled requirement whose issues
+    could not be read reaches ``needs_attention`` without reaching this count.
+    Both are present and empty when nothing failed.
     """
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(_invalid_status_message(status))
@@ -1181,6 +1197,13 @@ async def get_dashboard(
         for req in repo_entry["requirements"]
         if not req["derived"]["linked_issues"]
     )
+    unavailable: dict[str, list[str]] = {}
+    for repo_entry in aggregated:
+        for req in repo_entry["requirements"]:
+            if req["derived"]["source"] == "unavailable":
+                unavailable.setdefault(repo_entry["repo"], []).append(
+                    req["derived"]["unavailable_cause"]
+                )
     grouped = groups.group_requirements(
         all_candidates, now=datetime.now(UTC), stale_after_days=stale_after_days
     )
@@ -1191,6 +1214,11 @@ async def get_dashboard(
             "total": total,
             "by_status": status_counts,
             "unlinked_count": unlinked_count,
+            "unavailable_count": sum(len(causes) for causes in unavailable.values()),
+            "unavailable_repos": [
+                {"repo": repo_name, "count": len(causes), "causes": sorted(set(causes))}
+                for repo_name, causes in sorted(unavailable.items())
+            ],
             "awaiting_merge_count": len(grouped["awaiting_merge"]),
             "groups": {name: len(grouped[name]) for name in groups.GROUP_NAMES},
             "incomplete_repos": sorted(incomplete_repos),

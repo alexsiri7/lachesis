@@ -989,7 +989,7 @@ def _activity_node() -> dict:
 
 async def test_get_issue_activity_makes_no_request_without_issues(httpx_mock: HTTPXMock) -> None:
     """A repo whose requirements link nothing costs no GraphQL call."""
-    assert await get_issue_activity("owner/repo", []) == {}
+    assert await get_issue_activity("owner/repo", []) == {"facts": {}, "failure": None}
     assert httpx_mock.get_requests() == []
 
 
@@ -1001,9 +1001,8 @@ async def test_get_issue_activity_normalizes_issues_and_their_pull_requests(
         method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _activity_node()}}}
     )
 
-    facts = await get_issue_activity("owner/repo", [42])
+    facts = (await get_issue_activity("owner/repo", [42]))["facts"]
 
-    assert facts is not None
     assert facts[42]["state"] == "CLOSED"
     assert facts[42]["updated_at"] == "2026-08-31T18:35:09Z"
     assert facts[42]["labels"] == ["archon:in-progress"]
@@ -1020,17 +1019,24 @@ async def test_get_issue_activity_normalizes_issues_and_their_pull_requests(
 async def test_get_issue_activity_drops_an_issue_that_no_longer_exists(
     httpx_mock: HTTPXMock,
 ) -> None:
-    """A deleted or transferred issue comes back null and is left out of the map."""
+    """A number that is a PR or a deleted issue must not darken its whole repo.
+
+    GitHub answers 200 with a null node *and* a NOT_FOUND naming that alias, so
+    reading the errors without stripping those marks every sibling unavailable.
+    """
     httpx_mock.add_response(
         method="POST",
         url=_GRAPHQL_URL,
-        json={"data": {"repository": {"i42": _activity_node(), "i99": None}}},
+        json={
+            "data": {"repository": {"i42": _activity_node(), "i99": None}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "i99"]}],
+        },
     )
 
-    facts = await get_issue_activity("owner/repo", [42, 99])
+    activity = await get_issue_activity("owner/repo", [42, 99])
 
-    assert facts is not None
-    assert list(facts) == [42]
+    assert list(activity["facts"]) == [42]
+    assert activity["failure"] is None
 
 
 async def test_get_issue_activity_batches_large_issue_sets(httpx_mock: HTTPXMock) -> None:
@@ -1043,20 +1049,82 @@ async def test_get_issue_activity_batches_large_issue_sets(httpx_mock: HTTPXMock
     assert len(httpx_mock.get_requests()) == 2
 
 
-async def test_get_issue_activity_returns_none_on_http_error(httpx_mock: HTTPXMock) -> None:
-    """An unreadable GitHub degrades the caller rather than failing it."""
+async def test_get_issue_activity_names_a_transient_cause_on_http_error(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """An unreadable GitHub degrades the caller rather than failing it, and says why."""
     httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
 
-    assert await get_issue_activity("owner/repo", [42]) is None
+    assert await get_issue_activity("owner/repo", [42]) == {
+        "facts": {},
+        "failure": "transient",
+    }
 
 
-async def test_get_issue_activity_returns_none_on_graphql_errors(httpx_mock: HTTPXMock) -> None:
-    """A 200 carrying errors is not data."""
+async def test_get_issue_activity_names_an_inaccessible_repo(httpx_mock: HTTPXMock) -> None:
+    """A repo the token cannot see errors at the repository path, not at an alias."""
     httpx_mock.add_response(
-        method="POST", url=_GRAPHQL_URL, json={"errors": [{"message": "FORBIDDEN"}]}
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": None},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository"]}],
+        },
     )
 
-    assert await get_issue_activity("owner/repo", [42]) is None
+    assert await get_issue_activity("owner/repo", [42]) == {
+        "facts": {},
+        "failure": "inaccessible",
+    }
+
+
+async def test_get_issue_activity_names_a_graphql_rate_limit(httpx_mock: HTTPXMock) -> None:
+    """Spent quota is reported apart from a refusal, since only one improves by waiting."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"errors": [{"type": "RATE_LIMITED"}]}
+    )
+
+    assert (await get_issue_activity("owner/repo", [42]))["failure"] == "rate_limited"
+
+
+async def test_get_issue_activity_reads_the_rate_limit_off_a_403(httpx_mock: HTTPXMock) -> None:
+    """A 403 with no quota left is a rate limit; a plain 404 is not."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        status_code=403,
+        headers={"x-ratelimit-remaining": "0"},
+        json={},
+    )
+    assert (await get_issue_activity("owner/repo", [42]))["failure"] == "rate_limited"
+
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=404, json={})
+    assert (await get_issue_activity("owner/repo", [42]))["failure"] == "inaccessible"
+
+
+async def test_get_issue_activity_keeps_the_chunks_that_worked(httpx_mock: HTTPXMock) -> None:
+    """One failed batch costs its own issues, not the repo's."""
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _activity_node()}}}
+    )
+
+    activity = await get_issue_activity("owner/repo", [*range(1, 26), 42])
+
+    assert list(activity["facts"]) == [42]
+    assert activity["failure"] == "transient"
+
+
+async def test_get_issue_activity_stops_asking_once_rate_limited(httpx_mock: HTTPXMock) -> None:
+    """A cause that cannot improve on a retry must not spend the remaining quota."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, status_code=429, json={}, is_reusable=True
+    )
+
+    activity = await get_issue_activity("owner/repo", [*range(1, 26), 42])
+
+    assert activity["failure"] == "rate_limited"
+    assert len(httpx_mock.get_requests()) == 1
 
 
 async def test_get_issue_activity_normalizes_landing_and_blocker_facts(
@@ -1086,9 +1154,8 @@ async def test_get_issue_activity_normalizes_landing_and_blocker_facts(
         method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": node}}}
     )
 
-    facts = await get_issue_activity("owner/repo", [42])
+    facts = (await get_issue_activity("owner/repo", [42]))["facts"]
 
-    assert facts is not None
     assert facts[42]["closed_at"] == "2026-08-31T18:35:09Z"
     assert facts[42]["pulls"][0]["merged_at"] == "2026-08-30T09:59:00Z"
     assert facts[42]["blocked_by"] == [
@@ -1104,9 +1171,8 @@ async def test_get_issue_activity_normalizes_a_response_without_the_newer_fields
         method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _activity_node()}}}
     )
 
-    facts = await get_issue_activity("owner/repo", [42])
+    facts = (await get_issue_activity("owner/repo", [42]))["facts"]
 
-    assert facts is not None
     assert facts[42]["closed_at"] is None
     assert facts[42]["blocked_by"] == []
     assert all(pull["merged_at"] is None for pull in facts[42]["pulls"])
@@ -1124,9 +1190,8 @@ async def test_get_issue_activity_surfaces_the_merge_commit(httpx_mock: HTTPXMoc
         method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": node}}}
     )
 
-    facts = await get_issue_activity("owner/repo", [42])
+    facts = (await get_issue_activity("owner/repo", [42]))["facts"]
 
-    assert facts is not None
     assert facts[42]["pulls"][0]["merge_commit"] == "deadbeef"
     assert facts[42]["pulls"][1]["merge_commit"] is None
 

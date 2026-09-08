@@ -166,6 +166,8 @@ def group_requirements(
         blockers = derived.get("blocked_by") or []
         if blockers:
             entry["blocked_by"] = blockers
+        if derived.get("unavailable_cause"):
+            entry["unavailable_cause"] = derived["unavailable_cause"]
 
         kinds = _needs_attention_kinds(derived)
         if candidate.entry["status"] in INACTIVE_STATUSES:

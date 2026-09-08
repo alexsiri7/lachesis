@@ -18,6 +18,8 @@ from status import INACTIVE_STATUSES, canonical_status
 DerivedStatus = Literal["idea", "in-progress", "done"]
 DerivationSource = Literal["issues", "unlinked", "unavailable"]
 UnlinkedKind = Literal["awaiting_pr", "never_linked"]
+ActivityFailure = Literal["rate_limited", "inaccessible", "transient"]
+UnavailableCause = Literal["rate_limited", "inaccessible", "transient", "issue_missing"]
 
 PROGRESS_RANK: dict[str, int] = {
     "draft": 0,
@@ -92,6 +94,7 @@ class Derived(TypedDict):
 
     status: DerivedStatus | None
     source: DerivationSource
+    unavailable_cause: UnavailableCause | None
     diverged: bool
     last_activity: str | None
     landed_at: str | None
@@ -225,15 +228,19 @@ def _empty_signals() -> Signals:
 def derive(
     recorded_status: str,
     numbers: list[int],
-    facts: dict[int, IssueFacts] | None,
+    facts: dict[int, IssueFacts],
     *,
     on_pr_branch: bool,
+    failure: ActivityFailure | None = None,
 ) -> Derived:
     """Derive a requirement's status from *facts* about the issues in *numbers*.
 
-    *facts* is ``None`` when GitHub could not be read.  Issues missing from it
-    have been deleted or transferred and are ignored; a requirement whose issues
-    are all missing reports as unreadable rather than as untouched work.
+    *facts* holds every issue that was read and is routinely partial: *failure*
+    names what went wrong reading the rest, and a requirement whose own issues
+    came back derives normally regardless of it.  Issues absent from *facts*
+    without a *failure* have been deleted or transferred, so a requirement whose
+    issues are all missing reports as unreadable rather than as untouched work,
+    and ``unavailable_cause`` says which of the two happened.
 
     Only ``idea``, ``in-progress`` and ``done`` are ever derived.  ``draft`` and
     ``planned`` are author bookkeeping with no work-side signature, and
@@ -246,6 +253,7 @@ def derive(
         return {
             "status": None,
             "source": "unlinked",
+            "unavailable_cause": None,
             "diverged": False,
             "last_activity": None,
             "landed_at": None,
@@ -255,11 +263,12 @@ def derive(
             "signals": signals,
         }
 
-    issues = [facts[number] for number in numbers if number in facts] if facts else []
+    issues = [facts[number] for number in numbers if number in facts]
     if not issues:
         return {
             "status": None,
             "source": "unavailable",
+            "unavailable_cause": failure or "issue_missing",
             "diverged": False,
             "last_activity": None,
             "landed_at": None,
@@ -293,6 +302,7 @@ def derive(
     return {
         "status": status,
         "source": "issues",
+        "unavailable_cause": None,
         "diverged": (
             recorded not in INACTIVE_STATUSES
             and recorded in PROGRESS_RANK
