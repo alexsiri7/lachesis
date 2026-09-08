@@ -770,6 +770,7 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> dict[int, IssueFa
     return facts
 
 
+_DEPLOYMENT_PAGE_SIZE = 100
 _DEPLOYMENT_SCAN_LIMIT = 5
 _STATUS_SCAN_LIMIT = 10
 _TERMINAL_STATES = frozenset({"success", "failure", "error"})
@@ -802,14 +803,16 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
 
     Like :func:`get_issue_activity` this degrades rather than raises: a caller
     here is deciding whether to make a claim, and an unreadable GitHub means it
-    must make none.
+    must make none.  That extends to a sibling deployment whose statuses could
+    not be read: a ``failure`` computed without it could be contradicted by the
+    retry it was hiding, so the whole answer is withheld instead.
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
             resp = await http.get(
                 f"{_BASE_URL}/repos/{repo}/deployments",
                 headers=_headers(),
-                params={"sha": sha, "per_page": _DEPLOYMENT_SCAN_LIMIT},
+                params={"sha": sha, "per_page": _DEPLOYMENT_PAGE_SIZE},
             )
             if not resp.is_success:
                 logger.warning(
@@ -837,6 +840,7 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
                 return None
 
             verdict: DeploymentVerdict | None = None
+            unreadable = False
             for deployment in production[:_DEPLOYMENT_SCAN_LIMIT]:
                 status_resp = await http.get(
                     f"{_BASE_URL}/repos/{repo}/deployments/{deployment['id']}/statuses",
@@ -850,6 +854,7 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
                         deployment["id"],
                         status_resp.status_code,
                     )
+                    unreadable = True
                     continue
                 outcome = next(
                     (s for s in status_resp.json() if s.get("state") in _TERMINAL_STATES),
@@ -863,6 +868,8 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
                 if outcome["state"] == "success":
                     return {"state": "success", "url": url}
                 verdict = {"state": "failure", "url": url}
+            if unreadable:
+                return None
     except Exception:
         logger.warning(
             "github.get_production_deployment could not read repo=%s sha=%s",
