@@ -25,6 +25,7 @@ from auth import (
     resolve_user_id_from_jwt,
 )
 from settings import settings
+from tools import notifications as notify_tools
 from tools import repos as repo_tools
 from tools import requirements as req_tools
 
@@ -251,6 +252,24 @@ mcp.tool(
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.next_issue)
+
+mcp.tool(
+    description=(
+        "Set the ntfy configuration used for push notifications about this account's "
+        "work. `topic` is the ntfy topic to publish to; passing an empty topic clears "
+        "the configuration and leaves notifications inert. `server` defaults to "
+        "https://ntfy.sh, and `token` is only needed for a protected topic. "
+        "Returns the stored configuration, reporting whether a token is set rather "
+        "than echoing it back."
+    ),
+)(notify_tools.set_ntfy_config)
+
+mcp.tool(
+    description=(
+        "Send a test notification to the configured ntfy topic so it can be verified "
+        "without waiting for a real one. Reports whether delivery succeeded."
+    ),
+)(notify_tools.send_test_notification)
 
 mcp.tool(
     description=(
