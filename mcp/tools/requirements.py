@@ -76,26 +76,29 @@ async def _resolve_repo(repo: str) -> str:
     return normalized
 
 
-async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, str | None]:
+async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, dict[str, Any] | None]:
     """Locate a requirement file on the default branch or an open PR branch.
 
-    Returns ``(path, content, sha, branch)``.  *branch* is ``None`` for the
-    default branch.  Raises :class:`FileNotFoundError` if not found.
+    Returns ``(path, content, sha, pr)``.  *pr* is ``None`` for the default branch,
+    otherwise the open pull request the file was read from.  Raises
+    :class:`FileNotFoundError` if not found.
     """
     files = await github.list_files(repo, "requirements")
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    pr: dict[str, Any] | None = None
     branch: str | None = None
     if not matching:
-        branch = await github.find_pr_branch(repo, f"lachesis/req-{id}-")
-        if branch is None:
+        pr = await github.find_open_pr(repo, f"lachesis/req-{id}-")
+        if pr is None:
             raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+        branch = pr["branch"]
         files = await github.list_files(repo, "requirements", branch=branch)
         matching = [f for f in files if f["name"].startswith(f"{id}-")]
         if not matching:
             raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
     path = matching[0]["path"]
     content, sha = await github.get_file(repo, path, branch=branch)
-    return path, content, sha, branch
+    return path, content, sha, pr
 
 
 def _inactive_fields(post: frontmatter.Post) -> dict[str, Any]:
@@ -105,6 +108,32 @@ def _inactive_fields(post: frontmatter.Post) -> dict[str, Any]:
     exactly the key set it has always returned.
     """
     return {key: post[key] for key in ("reason", "superseded_by") if post.get(key)}
+
+
+def _pr_field(pr_info: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Render the pull request a requirement was read from, or ``None`` for the default branch.
+
+    ``state`` and ``merged`` are constants because every PR that reaches here came from a
+    ``state=open`` query: once a requirement PR merges, its file is on the default branch,
+    where it is found by the default-branch pass and reports no PR at all; a closed
+    unmerged one drops out of the open list along with its requirement.
+    """
+    if pr_info is None:
+        return None
+    return {
+        "number": pr_info["pr_number"],
+        "state": "open",
+        "merged": False,
+        "url": pr_info["pr_url"],
+        "branch": pr_info["branch"],
+    }
+
+
+def _entry_warning(pr: dict[str, Any] | None, numbers: list[int]) -> str | None:
+    """An unmerged PR is reported even when issues are linked — merging it unblocks them."""
+    if pr is not None:
+        return f"awaiting merge of PR #{pr['number']}"
+    return None if numbers else "no linked issues"
 
 
 _Pending = list[tuple[dict[str, Any], list[int], bool]]
@@ -176,7 +205,8 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
             "title": post["title"],
             "status": req_status,
             "github_issue": post.get("github_issue"),
-            "warning": None if numbers else "no linked issues",
+            "pr": None,
+            "warning": _entry_warning(None, numbers),
             **_inactive_fields(post),
         }
         results.append(entry)
@@ -186,8 +216,7 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
     lachesis_prs = await github.list_lachesis_prs(repo)
     for pr_info in lachesis_prs:
         branch = pr_info["branch"]
-        pr_url = pr_info["pr_url"]
-        pr_number = pr_info["pr_number"]
+        pr = _pr_field(pr_info)
         pr_files = await github.list_files(repo, "requirements", branch=branch)
         for f in pr_files:
             if not f["name"].endswith(".md"):
@@ -207,10 +236,8 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
                 "title": post["title"],
                 "status": req_status,
                 "github_issue": post.get("github_issue"),
-                "branch": branch,
-                "pr_number": pr_number,
-                "pr_url": pr_url,
-                "warning": None if numbers else "no linked issues",
+                "pr": pr,
+                "warning": _entry_warning(pr, numbers),
                 **_inactive_fields(post),
             }
             results.append(entry)
@@ -221,11 +248,16 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
     return results
 
 
-async def get_requirement(repo: str, id: str) -> str:
-    """Return the full markdown content of a single requirement file."""
+async def get_requirement(repo: str, id: str) -> dict[str, Any]:
+    """Return ``{"content", "pr"}`` for a single requirement file.
+
+    ``content`` is the full markdown including frontmatter.  ``pr`` describes the open
+    pull request the file was read from — a requirement whose file has not landed yet —
+    and is ``None`` when the file was read from the default branch.
+    """
     repo = await _resolve_repo(repo)
-    _, content, _, _ = await _locate_requirement(repo, id)
-    return content
+    _, content, _, pr_info = await _locate_requirement(repo, id)
+    return {"content": content, "pr": _pr_field(pr_info)}
 
 
 async def create_requirement(repo: str, title: str, why: str, what: str) -> dict[str, Any]:
@@ -423,7 +455,8 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     where ``repo`` defaults to the requirement's own repo.
     """
     repo = await _resolve_repo(repo)
-    path, content, sha, branch = await _locate_requirement(repo, id)
+    path, content, sha, pr = await _locate_requirement(repo, id)
+    branch = pr["branch"] if pr else None
     post = frontmatter.loads(content)
     _normalize_stored_status(post)
 
@@ -477,7 +510,8 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
     repo = await _resolve_repo(repo)
-    path, content, sha, branch = await _locate_requirement(repo, id)
+    path, content, sha, pr = await _locate_requirement(repo, id)
+    branch = pr["branch"] if pr else None
     post = frontmatter.loads(content)
     if canonical_status(post.get("status")) == "done":
         raise ValueError(
@@ -492,7 +526,8 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
     repo = await _resolve_repo(repo)
-    path, content, sha, branch = await _locate_requirement(repo, id)
+    path, content, sha, pr = await _locate_requirement(repo, id)
+    branch = pr["branch"] if pr else None
     post = frontmatter.loads(content)
     _normalize_stored_status(post)
 
@@ -1043,7 +1078,8 @@ async def get_dashboard(
                     "title": post["title"],
                     "status": req_status,
                     "github_issue": post.get("github_issue"),
-                    "warning": None if numbers else "no linked issues",
+                    "pr": None,
+                    "warning": _entry_warning(None, numbers),
                     **_inactive_fields(post),
                 }
                 repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
@@ -1056,7 +1092,7 @@ async def get_dashboard(
             lachesis_prs = await github.list_lachesis_prs(repo_name)
             for pr_info in lachesis_prs:
                 branch = pr_info["branch"]
-                pr_url = pr_info["pr_url"]
+                pr = _pr_field(pr_info)
                 pr_files = await github.list_files(repo_name, "requirements", branch=branch)
                 for f in pr_files:
                     if not f["name"].endswith(".md"):
@@ -1077,8 +1113,8 @@ async def get_dashboard(
                         "title": post["title"],
                         "status": req_status,
                         "github_issue": post.get("github_issue"),
-                        "pr_url": pr_url,
-                        "warning": None if numbers else "no linked issues",
+                        "pr": pr,
+                        "warning": _entry_warning(pr, numbers),
                         **_inactive_fields(post),
                     }
                     repo_candidates.append(groups.Candidate(repo_name, entry, numbers))

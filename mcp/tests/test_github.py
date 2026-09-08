@@ -19,7 +19,7 @@ from github import (
     create_issue,
     create_pull_request,
     enable_automerge,
-    find_pr_branch,
+    find_open_pr,
     get_branch_sha,
     get_file,
     get_issue,
@@ -224,37 +224,50 @@ async def test_get_file_sends_ref_param_when_branch_provided(httpx_mock: HTTPXMo
 
 
 # ---------------------------------------------------------------------------
-# find_pr_branch
+# find_open_pr
 # ---------------------------------------------------------------------------
 
 
-async def test_find_pr_branch_returns_matching_ref(httpx_mock: HTTPXMock) -> None:
+def _open_pr(ref: str, number: int) -> dict:
+    return {
+        "head": {"ref": ref},
+        "number": number,
+        "html_url": f"https://github.com/owner/repo/pull/{number}",
+    }
+
+
+async def test_find_open_pr_returns_matching_pr(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         json=[
-            {"head": {"ref": "lachesis/req-002-other"}},
-            {"head": {"ref": "lachesis/req-001-user-auth"}},
+            _open_pr("lachesis/req-002-other", 2),
+            _open_pr("lachesis/req-001-user-auth", 1),
         ]
     )
-    result = await find_pr_branch("owner/repo", "lachesis/req-001-")
-    assert result == "lachesis/req-001-user-auth"
+    result = await find_open_pr("owner/repo", "lachesis/req-001-")
+    assert result == {
+        "branch": "lachesis/req-001-user-auth",
+        "pr_number": 1,
+        "pr_url": "https://github.com/owner/repo/pull/1",
+    }
 
 
-async def test_find_pr_branch_returns_none_when_no_match(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(json=[{"head": {"ref": "lachesis/req-002-other"}}])
-    result = await find_pr_branch("owner/repo", "lachesis/req-001-")
+async def test_find_open_pr_returns_none_when_no_match(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json=[_open_pr("lachesis/req-002-other", 2)])
+    result = await find_open_pr("owner/repo", "lachesis/req-001-")
     assert result is None
 
 
-async def test_find_pr_branch_returns_none_when_empty(httpx_mock: HTTPXMock) -> None:
+async def test_find_open_pr_returns_none_when_empty(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(json=[])
-    result = await find_pr_branch("owner/repo", "lachesis/req-001-")
+    result = await find_open_pr("owner/repo", "lachesis/req-001-")
     assert result is None
 
 
-async def test_find_pr_branch_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+async def test_find_open_pr_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    """An unreadable PR list must not read as "this requirement has no PR"."""
     httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
     with pytest.raises(httpx.HTTPStatusError):
-        await find_pr_branch("owner/repo", "lachesis/req-001-")
+        await find_open_pr("owner/repo", "lachesis/req-001-")
 
 
 # ---------------------------------------------------------------------------

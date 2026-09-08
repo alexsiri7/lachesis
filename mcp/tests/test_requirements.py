@@ -238,8 +238,16 @@ async def test_link_issues_found_on_pr_branch_writes_back_to_branch(
     pr_branch = "lachesis/req-001-user-auth"
     # 1. list_files on default branch → empty (req not on main)
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
-    # 2. find_pr_branch → GET /pulls?state=open returns a PR with matching head
-    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}}])
+    # 2. find_open_pr → GET /pulls?state=open returns a PR with matching head
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": pr_branch},
+                "html_url": "https://github.com/owner/repo/pull/1",
+                "number": 1,
+            }
+        ]
+    )
     # 3. list_files on PR branch → returns the requirement file
     httpx_mock.add_response(json=_LIST_RESP)
     # 4. get_file on PR branch
@@ -273,7 +281,7 @@ async def test_link_issues_raises_when_not_found_on_main_or_pr_branch(
     """FileNotFoundError when file is absent from default branch and no matching open PR."""
     # list_files on default branch → no match
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
-    # find_pr_branch → open PRs exist but none match lachesis/req-001-*
+    # find_open_pr → open PRs exist but none match lachesis/req-001-*
     httpx_mock.add_response(json=[{"head": {"ref": "lachesis/req-002-something-else"}}])
 
     with pytest.raises(FileNotFoundError, match="001"):
@@ -385,7 +393,7 @@ async def test_delete_requirement_raises_when_not_found(
 ) -> None:
     """FileNotFoundError if no file starts with the id prefix."""
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
-    httpx_mock.add_response(json=[])  # find_pr_branch → no PRs
+    httpx_mock.add_response(json=[])  # find_open_pr → no PRs
 
     with pytest.raises(FileNotFoundError, match="001"):
         await delete_requirement("owner/repo", "001")
@@ -1082,6 +1090,7 @@ async def test_list_requirements_returns_metadata(httpx_mock: HTTPXMock) -> None
             "title": "User authentication",
             "status": "planned",
             "github_issue": None,
+            "pr": None,
             "warning": "no linked issues",
             "derived": _UNLINKED_DERIVED,
         },
@@ -1161,7 +1170,7 @@ async def test_get_requirement_returns_raw_content(httpx_mock: HTTPXMock) -> Non
 
     result = await get_requirement("owner/repo", "001")
 
-    assert result == _SAMPLE_MD
+    assert result == {"content": _SAMPLE_MD, "pr": None}
 
 
 async def test_get_requirement_raises_when_not_found(httpx_mock: HTTPXMock) -> None:
@@ -1194,7 +1203,7 @@ async def test_get_requirement_matches_by_id_prefix(httpx_mock: HTTPXMock) -> No
 
     result = await get_requirement("owner/repo", "002")
 
-    assert result == second_md
+    assert result["content"] == second_md
 
 
 # ---------------------------------------------------------------------------
@@ -1941,7 +1950,7 @@ async def test_add_dependency_raises_when_target_disappears_post_mutation(
 
 
 async def test_list_requirements_includes_pr_branch_requirements(httpx_mock: HTTPXMock) -> None:
-    """Requirements on open PR branches appear in list with pr_url field."""
+    """Requirements on open PR branches appear in the list with their PR reported."""
     pr_branch = "lachesis/req-002-new-feature"
     pr_url = "https://github.com/owner/repo/pull/7"
     pr_md = """\
@@ -1986,18 +1995,23 @@ Do it.
 
     assert len(result) == 2
     assert result[0]["id"] == "001"
-    assert "pr_url" not in result[0]  # main-branch req has no pr_url
+    assert result[0]["pr"] is None  # read from main, so there is no PR to report
     assert result[1]["id"] == "002"
-    assert result[1]["pr_url"] == pr_url
-    assert result[1]["branch"] == pr_branch
-    assert result[1]["pr_number"] == 7
-    assert result[1]["warning"] == "no linked issues"
+    assert result[1]["pr"] == {
+        "number": 7,
+        "state": "open",
+        "merged": False,
+        "url": pr_url,
+        "branch": pr_branch,
+    }
+    assert result[1]["warning"] == "awaiting merge of PR #7"
+    assert result[0]["warning"] == "no linked issues"
     assert result[0]["derived"]["signals"]["unlinked"] == "never_linked"
     assert result[1]["derived"]["signals"]["unlinked"] == "awaiting_pr"
 
 
 async def test_list_requirements_deduplicates_pr_and_main(httpx_mock: HTTPXMock) -> None:
-    """If the same requirement ID exists on main and a PR branch, main wins (no pr_url)."""
+    """If the same requirement ID exists on main and a PR branch, main wins (no PR)."""
     pr_branch = "lachesis/req-001-user-auth"
     # 1. main → returns 001
     httpx_mock.add_response(json=_LIST_RESP)
@@ -2014,9 +2028,7 @@ async def test_list_requirements_deduplicates_pr_and_main(httpx_mock: HTTPXMock)
 
     assert len(result) == 1
     assert result[0]["id"] == "001"
-    assert "pr_url" not in result[0]
-    assert "branch" not in result[0]
-    assert "pr_number" not in result[0]
+    assert result[0]["pr"] is None
 
 
 async def test_list_requirements_no_prs_returns_main_only(httpx_mock: HTTPXMock) -> None:
@@ -2031,6 +2043,63 @@ async def test_list_requirements_no_prs_returns_main_only(httpx_mock: HTTPXMock)
     assert result[0]["id"] == "001"
 
 
+async def test_list_requirements_reports_the_pr_even_when_issues_are_linked(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """An unmerged PR outranks the issue link: merging it is what unblocks the rest."""
+    pr_branch = "lachesis/req-002-new-feature"
+    pr_md = _BULLETED_MD.replace('id: "001"', 'id: "002"')
+    httpx_mock.add_response(json=[])  # list_files on main → nothing landed yet
+    httpx_mock.add_response(
+        json=[{"head": {"ref": pr_branch}, "html_url": "https://x/pull/7", "number": 7}]
+    )
+    pr_file = {"name": "002-new-feature.md", "path": "requirements/002-new-feature.md"}
+    httpx_mock.add_response(json=[pr_file])
+    httpx_mock.add_response(
+        json={
+            "name": pr_file["name"],
+            "path": pr_file["path"],
+            "content": base64.b64encode(pr_md.encode()).decode("ascii"),
+            "sha": "sha2",
+            "type": "file",
+        }
+    )
+    _mock_issue_activity(httpx_mock, _open_issue_node(42), _open_issue_node(43))
+
+    result = await list_requirements("owner/repo")
+
+    assert result[0]["derived"]["linked_issues"] == [42, 43]
+    assert result[0]["warning"] == "awaiting merge of PR #7"
+
+
+async def test_list_requirements_looks_up_prs_once_for_the_whole_repo(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """PR state costs one request per repo, not one per requirement."""
+    second_md = _SAMPLE_MD.replace('id: "001"', 'id: "002"')
+    httpx_mock.add_response(
+        json=[
+            {"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"},
+            {"name": "002-other.md", "path": "requirements/002-other.md"},
+        ]
+    )
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(json=_make_file_response(second_md, "sha2"))
+    httpx_mock.add_response(
+        json=[
+            {"head": {"ref": "lachesis/req-003-later"}, "html_url": "https://x/pull/9", "number": 9}
+        ]
+    )
+    httpx_mock.add_response(json=[])  # list_files on the PR branch → nothing new
+
+    result = await list_requirements("owner/repo")
+
+    assert [entry["id"] for entry in result] == ["001", "002"]
+    pr_lookups = [r for r in httpx_mock.get_requests() if "/pulls" in str(r.url)]
+    assert len(pr_lookups) == 1
+    assert "state=open" in str(pr_lookups[0].url)
+
+
 # ---------------------------------------------------------------------------
 # get_requirement — PR branch support
 # ---------------------------------------------------------------------------
@@ -2041,9 +2110,15 @@ async def test_get_requirement_finds_on_pr_branch(httpx_mock: HTTPXMock) -> None
     pr_branch = "lachesis/req-001-user-auth"
     # 1. list_files on main → no match (002 only)
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
-    # 2. list_lachesis_prs → GET /pulls?state=open
+    # 2. find_open_pr → GET /pulls?state=open
     httpx_mock.add_response(
-        json=[{"head": {"ref": pr_branch}, "html_url": "https://github.com/owner/repo/pull/1"}]
+        json=[
+            {
+                "head": {"ref": pr_branch},
+                "html_url": "https://github.com/owner/repo/pull/1",
+                "number": 1,
+            }
+        ]
     )
     # 3. list_files on PR branch → has 001
     httpx_mock.add_response(json=_LIST_RESP)
@@ -2052,7 +2127,14 @@ async def test_get_requirement_finds_on_pr_branch(httpx_mock: HTTPXMock) -> None
 
     result = await get_requirement("owner/repo", "001")
 
-    assert result == _SAMPLE_MD
+    assert result["content"] == _SAMPLE_MD
+    assert result["pr"] == {
+        "number": 1,
+        "state": "open",
+        "merged": False,
+        "url": "https://github.com/owner/repo/pull/1",
+        "branch": pr_branch,
+    }
     # Verify branch ref used in list_files and get_file calls
     requests = httpx_mock.get_requests()
     pr_branch_encoded = pr_branch.replace("/", "%2F")
@@ -2079,8 +2161,16 @@ async def test_update_requirement_writes_to_pr_branch(httpx_mock: HTTPXMock) -> 
     pr_branch = "lachesis/req-001-user-auth"
     # 1. list_files on main → no match
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
-    # 2. find_pr_branch → GET /pulls?state=open
-    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}}])
+    # 2. find_open_pr → GET /pulls?state=open
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": pr_branch},
+                "html_url": "https://github.com/owner/repo/pull/1",
+                "number": 1,
+            }
+        ]
+    )
     # 3. list_files on PR branch
     httpx_mock.add_response(json=_LIST_RESP)
     # 4. get_file on PR branch
@@ -2105,7 +2195,7 @@ async def test_update_requirement_raises_when_not_found_on_main_or_pr(
 ) -> None:
     """FileNotFoundError when not on main and no matching PR branch."""
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
-    httpx_mock.add_response(json=[])  # find_pr_branch → no PRs
+    httpx_mock.add_response(json=[])  # find_open_pr → no PRs
 
     with pytest.raises(FileNotFoundError, match="001"):
         await update_requirement("owner/repo", "001", {"status": "planned"})
@@ -2121,8 +2211,16 @@ async def test_delete_requirement_deletes_from_pr_branch(httpx_mock: HTTPXMock) 
     pr_branch = "lachesis/req-001-user-auth"
     # 1. list_files on main → no match
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
-    # 2. find_pr_branch → GET /pulls?state=open
-    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}}])
+    # 2. find_open_pr → GET /pulls?state=open
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": pr_branch},
+                "html_url": "https://github.com/owner/repo/pull/1",
+                "number": 1,
+            }
+        ]
+    )
     # 3. list_files on PR branch
     httpx_mock.add_response(json=_LIST_RESP)
     # 4. get_file on PR branch
@@ -2145,7 +2243,7 @@ async def test_delete_requirement_raises_when_not_found_on_main_or_pr(
 ) -> None:
     """FileNotFoundError when not on main and no matching PR branch."""
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
-    httpx_mock.add_response(json=[])  # find_pr_branch → no PRs
+    httpx_mock.add_response(json=[])  # find_open_pr → no PRs
 
     with pytest.raises(FileNotFoundError, match="001"):
         await delete_requirement("owner/repo", "001")
@@ -2159,7 +2257,7 @@ async def test_delete_requirement_raises_when_not_found_on_main_or_pr(
 async def test_get_dashboard_includes_pr_branch_requirements(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
-    """Dashboard includes requirements from open PR branches with pr_url field."""
+    """Dashboard includes requirements from open PR branches with their PR reported."""
     pr_branch = "lachesis/req-002-new-feature"
     pr_url = "https://github.com/owner/repo/pull/7"
     pr_md = (
@@ -2195,8 +2293,16 @@ async def test_get_dashboard_includes_pr_branch_requirements(
     assert len(reqs) == 2
     main_req = next(r for r in reqs if r["id"] == "001")
     pr_req = next(r for r in reqs if r["id"] == "002")
-    assert "pr_url" not in main_req
-    assert pr_req["pr_url"] == pr_url
+    assert main_req["pr"] is None
+    assert pr_req["pr"] == {
+        "number": 7,
+        "state": "open",
+        "merged": False,
+        "url": pr_url,
+        "branch": pr_branch,
+    }
+    assert pr_req["warning"] == "awaiting merge of PR #7"
+    assert main_req["warning"] == "no linked issues"
     assert main_req["derived"]["signals"]["unlinked"] == "never_linked"
     assert pr_req["derived"]["signals"]["unlinked"] == "awaiting_pr"
     assert result["summary"]["total"] == 2
@@ -3434,6 +3540,37 @@ async def test_get_dashboard_status_filter_narrows_the_groups(
 
     assert [entry["id"] for entry in result["groups"]["dropped"]] == ["002"]
     assert sum(result["summary"]["groups"].values()) == 1
+
+
+async def test_get_dashboard_groups_a_pr_branch_requirement_as_awaiting_pr(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """Reporting the PR in `warning` does not move the requirement to another group."""
+    pr_branch = "lachesis/req-002-new-feature"
+    pr_md = _SAMPLE_MD.replace('id: "001"', 'id: "002"')
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=[])  # list_files on main → nothing landed yet
+        httpx_mock.add_response(
+            json=[{"head": {"ref": pr_branch}, "html_url": "https://x/pull/7", "number": 7}]
+        )
+        pr_file = {"name": "002-new-feature.md", "path": "requirements/002-new-feature.md"}
+        httpx_mock.add_response(json=[pr_file])
+        httpx_mock.add_response(
+            json={
+                "name": pr_file["name"],
+                "path": pr_file["path"],
+                "content": base64.b64encode(pr_md.encode()).decode("ascii"),
+                "sha": "sha2",
+                "type": "file",
+            }
+        )
+        result = await get_dashboard()
+
+    assert [entry["id"] for entry in result["groups"]["needs_attention"]] == ["002"]
+    assert result["groups"]["needs_attention"][0]["kinds"] == ["awaiting_pr"]
 
 
 # ---------------------------------------------------------------------------
