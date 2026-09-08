@@ -14,6 +14,7 @@ import httpx
 import db
 import github
 import groups
+import landing
 from auth import current_db_user_id
 from derive import IssueFacts, derive, linked_issue_numbers
 from status import INACTIVE_STATUSES, VALID_STATUSES, canonical_status
@@ -157,6 +158,7 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
     results: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     pending: _Pending = []
+    landing_candidates: list[landing.Candidate] = []
 
     for f in files:
         if not f["name"].endswith(".md"):
@@ -179,6 +181,7 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
         }
         results.append(entry)
         pending.append((entry, numbers, False))
+        landing_candidates.append(landing.Candidate(f["path"], content, entry))
 
     lachesis_prs = await github.list_lachesis_prs(repo)
     for pr_info in lachesis_prs:
@@ -214,6 +217,7 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
             pending.append((entry, numbers, True))
 
     await _attach_derived(repo, pending)
+    await landing.notify_landed(repo, landing_candidates)
     return results
 
 
@@ -1021,6 +1025,7 @@ async def get_dashboard(
             repo_candidates: list[groups.Candidate] = []
             seen_ids: set[str] = set()
             pending: _Pending = []
+            landing_candidates: list[landing.Candidate] = []
             for f in files:
                 if not f["name"].endswith(".md"):
                     continue
@@ -1046,6 +1051,7 @@ async def get_dashboard(
                     continue
                 requirements.append(entry)
                 pending.append((entry, numbers, False))
+                landing_candidates.append(landing.Candidate(f["path"], content, entry))
 
             lachesis_prs = await github.list_lachesis_prs(repo_name)
             for pr_info in lachesis_prs:
@@ -1084,6 +1090,11 @@ async def get_dashboard(
             await _attach_derived(repo_name, pending)
             aggregated.append({"repo": repo_name, "requirements": requirements})
             all_candidates.extend(repo_candidates)
+            # After the append, so a raise here could not cost the repo its listing
+            # under this except's misleading log line. A status filter narrows the
+            # candidates, which loses nothing: an unconsidered requirement is never
+            # claimed, so a later unfiltered read still announces it.
+            await landing.notify_landed(repo_name, landing_candidates)
         except Exception:
             logger.warning("get_dashboard: failed to fetch requirements from %s", repo_name)
 

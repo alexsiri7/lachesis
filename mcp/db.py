@@ -2,7 +2,8 @@
 
 Tables (all namespaced lachesis_):
   lachesis_users          — one row per authenticated Google identity
-  lachesis_repos          — per-user repo registry (populated by repo-registry tools in #12)
+  lachesis_repos          — per-user repo registry, with the landing_signal that
+                            decides when its requirements count as in production
   lachesis_oauth_clients  — persisted OAuth client registrations
   lachesis_refresh_tokens — persisted refresh tokens (with expiry)
   lachesis_backlog        — per-repo backlog overrides (position, ready, interrupt)
@@ -81,19 +82,31 @@ def upsert_user(google_id: str, email: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def register_repo(user_id: str, repo_name: str) -> dict[str, Any]:
-    """Register a repo for user_id. Idempotent (upsert on conflict)."""
+def register_repo(
+    user_id: str, repo_name: str, landing_signal: str | None = None
+) -> dict[str, Any]:
+    """Register a repo for user_id. Idempotent (upsert on conflict).
+
+    A *landing_signal* passed as ``None`` keeps the repo's current one, so a bare
+    re-registration never resets a configured ``deployment`` back to the default.
+    The COALESCE is what supplies it: the column is NOT NULL and a bound NULL
+    would violate that, since server defaults apply only to omitted columns.
+    """
     sql = text(
         """
-        INSERT INTO lachesis_repos (user_id, repo_name)
-        VALUES (:user_id, :repo_name)
+        INSERT INTO lachesis_repos (user_id, repo_name, landing_signal)
+        VALUES (:user_id, :repo_name, COALESCE(:landing_signal, 'merge'))
         ON CONFLICT (user_id, repo_name) DO UPDATE
-            SET updated_at = now()
+            SET landing_signal = COALESCE(
+                    :landing_signal, lachesis_repos.landing_signal
+                ),
+                updated_at = now()
         RETURNING *
         """
     )
+    params = {"user_id": user_id, "repo_name": repo_name, "landing_signal": landing_signal}
     with _engine().begin() as conn:
-        result = conn.execute(sql, {"user_id": user_id, "repo_name": repo_name})
+        result = conn.execute(sql, params)
         row = result.mappings().first()
     if row is None:
         raise RuntimeError(f"register_repo returned no row for user_id={user_id!r}")
@@ -116,7 +129,7 @@ def list_repos(user_id: str) -> list[dict[str, Any]]:
     """Return all repos registered by user_id, ordered by repo_name."""
     sql = text(
         """
-        SELECT id, repo_name, created_at
+        SELECT id, repo_name, landing_signal, created_at
         FROM lachesis_repos
         WHERE user_id = :user_id
         ORDER BY repo_name
@@ -125,6 +138,21 @@ def list_repos(user_id: str) -> list[dict[str, Any]]:
     with _engine().connect() as conn:
         result = conn.execute(sql, {"user_id": user_id})
         return [dict(row) for row in result.mappings().all()]
+
+
+def get_landing_signal(user_id: str, repo_name: str) -> str:
+    """Return the repo's landing signal, or ``'merge'`` when it is not registered."""
+    sql = text(
+        """
+        SELECT landing_signal
+        FROM lachesis_repos
+        WHERE user_id = :user_id AND repo_name = :repo_name
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql, {"user_id": user_id, "repo_name": repo_name})
+        row = result.mappings().first()
+    return str(row["landing_signal"]) if row else "merge"
 
 
 # ---------------------------------------------------------------------------
@@ -359,10 +387,16 @@ def set_backlog_order(user_id: str, repo_name: str, ordered_issue_numbers: list[
 
 
 def get_ntfy_config(user_id: str) -> dict[str, Any] | None:
-    """Return the ntfy config row for user_id, or None if never configured."""
+    """Return the ntfy config row for user_id, or None if never configured.
+
+    ``created_at`` is the row's creation time and stays put across
+    reconfiguration, which makes it the epoch from which landings are worth
+    announcing: nothing that happened before the account asked for
+    notifications is news.
+    """
     sql = text(
         """
-        SELECT server, topic, token
+        SELECT server, topic, token, created_at
         FROM lachesis_ntfy_config
         WHERE user_id = :user_id
         """
@@ -401,6 +435,20 @@ def set_ntfy_config(user_id: str, server: str, topic: str, token: str) -> dict[s
 # ---------------------------------------------------------------------------
 # lachesis_notifications
 # ---------------------------------------------------------------------------
+
+
+def notified_requirement_ids(user_id: str, repo_name: str) -> set[str]:
+    """Return the ids of the repo's requirements this account was already notified about."""
+    sql = text(
+        """
+        SELECT requirement_id
+        FROM lachesis_notifications
+        WHERE user_id = :user_id AND repo_name = :repo_name
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql, {"user_id": user_id, "repo_name": repo_name})
+        return {str(row["requirement_id"]) for row in result.mappings().all()}
 
 
 def claim_notification(user_id: str, repo_name: str, requirement_id: str) -> bool:

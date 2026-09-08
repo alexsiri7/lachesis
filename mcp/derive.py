@@ -52,6 +52,7 @@ class PullFacts(TypedDict):
     merged: bool
     updated_at: str | None
     merged_at: str | None
+    merge_commit: str | None
     is_draft: bool
     checks: list[CheckFacts]
 
@@ -94,6 +95,7 @@ class Derived(TypedDict):
     diverged: bool
     last_activity: str | None
     landed_at: str | None
+    landed_commit: str | None
     linked_issues: list[int]
     blocked_by: list[BlockerFacts]
     signals: Signals
@@ -158,6 +160,23 @@ def _landed_at(issues: list[IssueFacts]) -> str | None:
     """When the last of the requirement's issues landed."""
     stamps = [stamp for issue in issues if (stamp := _issue_landed_at(issue))]
     return max(stamps) if stamps else None
+
+
+def _landed_commit(issues: list[IssueFacts]) -> str | None:
+    """The commit of the last pull request to merge, across every linked issue.
+
+    Taken across the issues directly rather than off whichever landing supplied
+    ``landed_at``, which can be a squash-close naming no pull request.  It is
+    ``None`` only when no linked pull request merged at all, and deployment
+    questions then have nothing to ask about.
+    """
+    merges = [
+        (pull["merged_at"], pull["merge_commit"])
+        for issue in issues
+        for pull in issue["pulls"]
+        if pull["merged"] and pull["merged_at"] is not None
+    ]
+    return max(merges, key=lambda merge: merge[0])[1] if merges else None
 
 
 def _blocking_issues(issues: list[IssueFacts]) -> list[BlockerFacts]:
@@ -230,6 +249,7 @@ def derive(
             "diverged": False,
             "last_activity": None,
             "landed_at": None,
+            "landed_commit": None,
             "linked_issues": [],
             "blocked_by": [],
             "signals": signals,
@@ -243,6 +263,7 @@ def derive(
             "diverged": False,
             "last_activity": None,
             "landed_at": None,
+            "landed_commit": None,
             "linked_issues": numbers,
             "blocked_by": [],
             "signals": signals,
@@ -267,6 +288,7 @@ def derive(
     else:
         status = "idea"
     signals["checks_failing_since"] = _checks_failing_since(issues)
+    landed = status == "done"
 
     return {
         "status": status,
@@ -277,7 +299,8 @@ def derive(
             and PROGRESS_RANK[recorded] != PROGRESS_RANK[status]
         ),
         "last_activity": _last_activity(issues),
-        "landed_at": _landed_at(issues) if status == "done" else None,
+        "landed_at": _landed_at(issues) if landed else None,
+        "landed_commit": _landed_commit(issues) if landed else None,
         "linked_issues": numbers,
         "blocked_by": _blocking_issues(issues),
         "signals": signals,

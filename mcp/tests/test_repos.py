@@ -37,8 +37,24 @@ async def test_register_repo_returns_row(set_user_id: str) -> None:
     }
     with patch("tools.repos.db.register_repo", return_value=row) as mock_reg:
         result = await register_repo("owner/repo")
-    mock_reg.assert_called_once_with("test-uid", "owner/repo")
+    mock_reg.assert_called_once_with("test-uid", "owner/repo", None)
     assert result["repo_name"] == "owner/repo"
+
+
+@pytest.mark.anyio
+async def test_register_repo_forwards_a_valid_landing_signal(set_user_id: str) -> None:
+    row = {"repo_name": "owner/repo", "landing_signal": "deployment"}
+    with patch("tools.repos.db.register_repo", return_value=row) as mock_reg:
+        await register_repo("owner/repo", "deployment")
+    mock_reg.assert_called_once_with("test-uid", "owner/repo", "deployment")
+
+
+@pytest.mark.anyio
+async def test_register_repo_rejects_an_unknown_landing_signal(set_user_id: str) -> None:
+    with patch("tools.repos.db.register_repo") as mock_reg:
+        with pytest.raises(ValueError, match="merge, deployment"):
+            await register_repo("owner/repo", "production")
+    mock_reg.assert_not_called()
 
 
 @pytest.mark.anyio

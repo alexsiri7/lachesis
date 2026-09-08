@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import httpx
 
@@ -628,6 +628,7 @@ fragment activity on Issue {
       merged
       updatedAt
       mergedAt
+      mergeCommit { oid }
       isDraft
       commits(last: 1) {
         nodes {
@@ -684,6 +685,7 @@ def _normalize_pull(pull: dict[str, Any]) -> PullFacts:
         "merged": bool(pull.get("merged")),
         "updated_at": pull.get("updatedAt"),
         "merged_at": pull.get("mergedAt"),
+        "merge_commit": (pull.get("mergeCommit") or {}).get("oid"),
         "is_draft": bool(pull.get("isDraft")),
         "checks": _normalize_checks(pull),
     }
@@ -766,3 +768,115 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> dict[int, IssueFa
                 if node:
                     facts[node["number"]] = _normalize_issue(node)
     return facts
+
+
+_DEPLOYMENT_PAGE_SIZE = 100
+_DEPLOYMENT_SCAN_LIMIT = 5
+_STATUS_SCAN_LIMIT = 10
+_TERMINAL_STATES = frozenset({"success", "failure", "error"})
+
+DeploymentState = Literal["success", "failure", "pending"]
+
+
+class DeploymentVerdict(TypedDict):
+    """What the production deployments for one commit currently say."""
+
+    state: DeploymentState
+    url: str | None
+
+
+async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | None:
+    """Return what production says about *sha*, or ``None`` when it says nothing yet.
+
+    Only deployments GitHub marks ``production_environment`` and whose task is a
+    deploy are considered, so a pull request preview is never announced as
+    production.  A success anywhere among them wins over a sibling failure:
+    burning a requirement's single notification on a deployment that was retried
+    successfully is the worse mistake, and a state that is still moving reports
+    ``pending`` so the next read can decide instead.
+
+    ``inactive`` statuses are skipped rather than read as an outcome.  GitHub
+    appends one to a deployment whenever a later deployment supersedes it, so
+    the newest status of a deployment that succeeded hours ago is routinely
+    ``inactive`` — reading it as "still moving" would leave a landed
+    requirement owed a notification indefinitely.
+
+    Like :func:`get_issue_activity` this degrades rather than raises: a caller
+    here is deciding whether to make a claim, and an unreadable GitHub means it
+    must make none.  That extends to a sibling deployment whose statuses could
+    not be read: a ``failure`` computed without it could be contradicted by the
+    retry it was hiding, so the whole answer is withheld instead.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.get(
+                f"{_BASE_URL}/repos/{repo}/deployments",
+                headers=_headers(),
+                params={"sha": sha, "per_page": _DEPLOYMENT_PAGE_SIZE},
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "github.get_production_deployment failed repo=%s sha=%s status=%s",
+                    repo,
+                    sha,
+                    resp.status_code,
+                )
+                return None
+            deployments = resp.json()
+            production = [
+                d
+                for d in deployments
+                if d.get("production_environment") and d.get("task") == "deploy"
+            ]
+            if not production:
+                if deployments:
+                    logger.info(
+                        "github.get_production_deployment: repo=%s sha=%s has only "
+                        "non-production deployments in environments %s",
+                        repo,
+                        sha,
+                        sorted({str(d.get("environment")) for d in deployments}),
+                    )
+                return None
+
+            verdict: DeploymentVerdict | None = None
+            unreadable = False
+            for deployment in production[:_DEPLOYMENT_SCAN_LIMIT]:
+                status_resp = await http.get(
+                    f"{_BASE_URL}/repos/{repo}/deployments/{deployment['id']}/statuses",
+                    headers=_headers(),
+                    params={"per_page": _STATUS_SCAN_LIMIT},
+                )
+                if not status_resp.is_success:
+                    logger.warning(
+                        "github.get_production_deployment statuses failed repo=%s id=%s status=%s",
+                        repo,
+                        deployment["id"],
+                        status_resp.status_code,
+                    )
+                    unreadable = True
+                    continue
+                outcome = next(
+                    (s for s in status_resp.json() if s.get("state") in _TERMINAL_STATES),
+                    None,
+                )
+                if outcome is None:
+                    if verdict is None:
+                        verdict = {"state": "pending", "url": None}
+                    continue
+                url = outcome.get("log_url") or outcome.get("target_url")
+                if outcome["state"] == "success":
+                    return {"state": "success", "url": url}
+                verdict = {"state": "failure", "url": url}
+            if unreadable:
+                return None
+    except Exception:
+        logger.warning(
+            "github.get_production_deployment could not read repo=%s sha=%s",
+            repo,
+            sha,
+            exc_info=True,
+        )
+        return None
+
+    return verdict

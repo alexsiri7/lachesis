@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 
 import httpx
 import pytest
@@ -24,6 +25,7 @@ from github import (
     get_issue,
     get_issue_activity,
     get_issue_dependencies,
+    get_production_deployment,
     get_repo_settings,
     list_blocked_by_numbers,
     list_files,
@@ -1018,3 +1020,189 @@ async def test_get_issue_activity_normalizes_a_response_without_the_newer_fields
     assert facts[42]["closed_at"] is None
     assert facts[42]["blocked_by"] == []
     assert all(pull["merged_at"] is None for pull in facts[42]["pulls"])
+
+
+# ---------------------------------------------------------------------------
+# merge commits and production deployments
+# ---------------------------------------------------------------------------
+
+
+async def test_get_issue_activity_surfaces_the_merge_commit(httpx_mock: HTTPXMock) -> None:
+    node = _activity_node()
+    node["closedByPullRequestsReferences"]["nodes"][0]["mergeCommit"] = {"oid": "deadbeef"}
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": node}}}
+    )
+
+    facts = await get_issue_activity("owner/repo", [42])
+
+    assert facts is not None
+    assert facts[42]["pulls"][0]["merge_commit"] == "deadbeef"
+    assert facts[42]["pulls"][1]["merge_commit"] is None
+
+
+_DEPLOYMENTS_URL = "https://api.github.com/repos/owner/repo/deployments?sha=abc123&per_page=100"
+
+
+def _deployment(deployment_id: int = 1, *, production: bool = True, task: str = "deploy") -> dict:
+    return {
+        "id": deployment_id,
+        "sha": "abc123",
+        "task": task,
+        "environment": "production" if production else "preview",
+        "production_environment": production,
+    }
+
+
+def _statuses_url(deployment_id: int) -> str:
+    return (
+        f"https://api.github.com/repos/owner/repo/deployments/{deployment_id}/statuses?per_page=10"
+    )
+
+
+async def test_get_production_deployment_reports_success(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment()])
+    httpx_mock.add_response(
+        url=_statuses_url(1), json=[{"state": "success", "log_url": "https://example/log"}]
+    )
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "success",
+        "url": "https://example/log",
+    }
+
+
+async def test_get_production_deployment_reports_failure_with_its_url(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment()])
+    httpx_mock.add_response(
+        url=_statuses_url(1), json=[{"state": "failure", "target_url": "https://example/failed"}]
+    )
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "failure",
+        "url": "https://example/failed",
+    }
+
+
+async def test_get_production_deployment_ignores_a_preview_environment(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A PR preview deployment for the same sha is not production."""
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment(production=False)])
+
+    assert await get_production_deployment("owner/repo", "abc123") is None
+
+
+async def test_get_production_deployment_ignores_a_non_deploy_task(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment(task="deploy:migrations")])
+
+    assert await get_production_deployment("owner/repo", "abc123") is None
+
+
+async def test_get_production_deployment_lets_success_win_over_a_sibling_failure(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A retried deploy must not burn the requirement's single notification."""
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment(1), _deployment(2)])
+    httpx_mock.add_response(url=_statuses_url(1), json=[{"state": "failure", "log_url": "u"}])
+    httpx_mock.add_response(url=_statuses_url(2), json=[{"state": "success", "log_url": "v"}])
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "success",
+        "url": "v",
+    }
+
+
+async def test_get_production_deployment_reports_pending_while_in_progress(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment()])
+    httpx_mock.add_response(url=_statuses_url(1), json=[{"state": "in_progress"}])
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "pending",
+        "url": None,
+    }
+
+
+async def test_get_production_deployment_looks_past_a_superseding_inactive_status(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """GitHub marks a deployment inactive when a later one supersedes it, not when it failed."""
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment()])
+    httpx_mock.add_response(
+        url=_statuses_url(1),
+        json=[{"state": "inactive"}, {"state": "success", "log_url": "https://example/log"}],
+    )
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "success",
+        "url": "https://example/log",
+    }
+
+
+async def test_get_production_deployment_looks_past_a_page_of_preview_deployments(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Previews for the same sha must not crowd production off the fetched page."""
+    listing = [*(_deployment(i, production=False) for i in range(1, 9)), _deployment(9)]
+
+    def page(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=listing[: int(request.url.params["per_page"])])
+
+    httpx_mock.add_callback(page, url=re.compile(r"^https://api\.github\.com/\S+/deployments\?"))
+    httpx_mock.add_response(url=_statuses_url(9), json=[{"state": "success", "log_url": "v"}])
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "success",
+        "url": "v",
+    }
+
+
+async def test_get_production_deployment_stops_after_five_production_deployments(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Only the newest five matching deployments are worth the status requests."""
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment(i) for i in range(1, 7)])
+    for deployment_id in range(1, 6):
+        httpx_mock.add_response(
+            url=_statuses_url(deployment_id), json=[{"state": "failure", "log_url": "u"}]
+        )
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "failure",
+        "url": "u",
+    }
+
+
+async def test_get_production_deployment_withholds_failure_when_a_sibling_is_unreadable(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The unread sibling could be the successful retry, so no claim is made."""
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment(1), _deployment(2)])
+    httpx_mock.add_response(url=_statuses_url(1), json=[{"state": "failure", "log_url": "u"}])
+    httpx_mock.add_response(url=_statuses_url(2), status_code=502)
+
+    assert await get_production_deployment("owner/repo", "abc123") is None
+
+
+async def test_get_production_deployment_reports_success_past_an_unreadable_sibling(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(url=_statuses_url(1), status_code=502)
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment(1), _deployment(2)])
+    httpx_mock.add_response(url=_statuses_url(2), json=[{"state": "success", "log_url": "v"}])
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "success",
+        "url": "v",
+    }
+
+
+async def test_get_production_deployment_returns_none_on_error(httpx_mock: HTTPXMock) -> None:
+    """Degrades rather than raising: a caller deciding on a claim must make none."""
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, status_code=500)
+
+    assert await get_production_deployment("owner/repo", "abc123") is None

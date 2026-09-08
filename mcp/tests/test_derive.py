@@ -60,6 +60,7 @@ def _pull(
     merged: bool = False,
     updated_at: str = "2026-08-01T00:00:00Z",
     merged_at: str | None = None,
+    merge_commit: str | None = None,
     is_draft: bool = False,
     checks: list[CheckFacts] | None = None,
 ) -> PullFacts:
@@ -69,6 +70,7 @@ def _pull(
         "merged": merged,
         "updated_at": updated_at,
         "merged_at": merged_at,
+        "merge_commit": merge_commit,
         "is_draft": is_draft,
         "checks": checks or [],
     }
@@ -368,6 +370,90 @@ def test_derive_reports_when_the_work_landed() -> None:
 
     assert result["status"] == "done"
     assert result["landed_at"] == "2026-09-01T09:00:00Z"
+
+
+def test_derive_names_the_commit_that_finished_the_requirement() -> None:
+    """The newest merge across the requirement's issues is the commit to ask about."""
+    facts = _facts(
+        _issue(
+            1,
+            state="CLOSED",
+            pulls=[
+                _pull(
+                    500,
+                    state="MERGED",
+                    merged=True,
+                    merged_at="2026-08-20T10:00:00Z",
+                    merge_commit="older",
+                )
+            ],
+        ),
+        _issue(
+            2,
+            state="CLOSED",
+            pulls=[
+                _pull(
+                    501,
+                    state="MERGED",
+                    merged=True,
+                    merged_at="2026-09-01T09:00:00Z",
+                    merge_commit="newest",
+                )
+            ],
+        ),
+    )
+
+    assert derive("done", [1, 2], facts, on_pr_branch=False)["landed_commit"] == "newest"
+
+
+def test_derive_names_the_last_merge_when_a_squash_close_landed_last() -> None:
+    """A squash close names no pull request, so the newest merge answers for it."""
+    facts = _facts(
+        _issue(
+            1,
+            state="CLOSED",
+            pulls=[
+                _pull(
+                    500,
+                    state="MERGED",
+                    merged=True,
+                    merged_at="2026-08-20T10:00:00Z",
+                    merge_commit="the-merge",
+                )
+            ],
+        ),
+        _issue(2, state="CLOSED", closed_at="2026-09-01T09:00:00Z", closed_by_commit=True),
+    )
+
+    result = derive("done", [1, 2], facts, on_pr_branch=False)
+
+    assert result["landed_at"] == "2026-09-01T09:00:00Z"
+    assert result["landed_commit"] == "the-merge"
+
+
+def test_derive_names_no_commit_when_nothing_merged() -> None:
+    """Every issue squash-closed: there is no merge commit to ask production about."""
+    facts = _facts(
+        _issue(1, state="CLOSED", closed_at="2026-08-20T10:00:00Z", closed_by_commit=True),
+        _issue(2, state="CLOSED", closed_at="2026-09-01T09:00:00Z", closed_by_commit=True),
+    )
+
+    result = derive("done", [1, 2], facts, on_pr_branch=False)
+
+    assert result["landed_at"] == "2026-09-01T09:00:00Z"
+    assert result["landed_commit"] is None
+
+
+def test_derive_names_no_commit_while_the_work_is_unfinished() -> None:
+    facts = _facts(
+        _issue(1, state="CLOSED", pulls=[_pull(500, state="MERGED", merged=True)]),
+        _issue(2, state="OPEN"),
+    )
+
+    result = derive("in-progress", [1, 2], facts, on_pr_branch=False)
+
+    assert result["status"] == "in-progress"
+    assert result["landed_commit"] is None
 
 
 def test_derive_falls_back_to_the_close_time_for_a_squash_commit() -> None:
