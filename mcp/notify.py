@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from email.header import Header
+from typing import Literal
 
 import httpx
 
@@ -19,6 +20,8 @@ from tools.repos import normalize_repo
 logger = logging.getLogger(__name__)
 
 DEFAULT_SERVER = "https://ntfy.sh"
+
+Priority = Literal["min", "low", "default", "high", "urgent"]
 
 
 def _header_value(value: str) -> str:
@@ -42,6 +45,7 @@ async def send(
     body: str,
     click: str | None = None,
     tags: Sequence[str] = (),
+    priority: Priority | None = None,
 ) -> bool:
     """POST a notification to the account's ntfy topic. Returns whether it was delivered.
 
@@ -66,6 +70,8 @@ async def send(
         headers["Click"] = click
     if tags:
         headers["Tags"] = _header_value(",".join(tags))
+    if priority:
+        headers["Priority"] = priority
     if config["token"]:
         headers["Authorization"] = f"Bearer {config['token']}"
 
@@ -92,6 +98,7 @@ async def notify_requirement(
     body: str,
     click: str | None = None,
     tags: Sequence[str] = (),
+    priority: Priority | None = None,
 ) -> bool:
     """Notify once for a requirement. Returns whether this call delivered it.
 
@@ -121,4 +128,4 @@ async def notify_requirement(
         logger.info("notify: %s %s already notified, suppressed", repo_name, requirement_id)
         return False
 
-    return await send(user_id, title=title, body=body, click=click, tags=tags)
+    return await send(user_id, title=title, body=body, click=click, tags=tags, priority=priority)

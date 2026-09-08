@@ -172,6 +172,7 @@ async def test_merge_signal_says_merged_not_deployed(set_user_id: str, configure
     assert kwargs["click"] == "https://github.com/owner/repo/blob/HEAD/requirements/026-push.md"
     assert kwargs["tags"] == ["rocket"]
     assert kwargs["requirement_id"] == "026"
+    assert kwargs["priority"] is None
 
 
 async def test_deployment_signal_success_says_deployed(set_user_id: str, configured: dict) -> None:
@@ -184,7 +185,9 @@ async def test_deployment_signal_success_says_deployed(set_user_id: str, configu
         await landing.notify_landed("owner/repo", [_candidate()])
 
     deployment.assert_awaited_once_with("owner/repo", "abc123")
-    assert "Deployed to production." in configured["sent"].await_args.kwargs["body"]
+    kwargs = configured["sent"].await_args.kwargs
+    assert "Deployed to production." in kwargs["body"]
+    assert kwargs["priority"] is None
 
 
 async def test_deployment_signal_failure_links_the_deployment(
@@ -202,6 +205,7 @@ async def test_deployment_signal_failure_links_the_deployment(
     assert kwargs["title"].startswith("Failed to deploy: ")
     assert kwargs["click"] == "https://example/failed-log"
     assert kwargs["tags"] == ["rotating_light"]
+    assert kwargs["priority"] == "high"
 
 
 async def test_pending_deployment_takes_no_claim(set_user_id: str, configured: dict) -> None:

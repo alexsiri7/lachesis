@@ -40,6 +40,16 @@ class Candidate(NamedTuple):
     entry: dict[str, Any]
 
 
+class Notification(NamedTuple):
+    """The composed announcement for one landed requirement."""
+
+    title: str
+    body: str
+    click: str
+    tags: list[str]
+    priority: notify.Priority | None
+
+
 def _extract_section(body: str, heading: str) -> str:
     """Return the text content of a '## {heading}' section from a markdown body."""
     normalized = (body or "").replace("\r\n", "\n")
@@ -133,29 +143,34 @@ async def _verdict(
     return "deployed", deployment["url"]
 
 
-def _message(
-    repo: str, candidate: Candidate, state: Verdict, url: str | None
-) -> tuple[str, str, str, list[str]]:
-    """Compose ``(title, body, click, tags)`` for one verdict."""
+def _message(repo: str, candidate: Candidate, state: Verdict, url: str | None) -> Notification:
+    """Compose the announcement for one verdict.
+
+    A failed deployment is the only verdict that asks the author to do something
+    now, so it alone is raised above the ntfy default priority: a landing they
+    are merely invited to go and use must not arrive with the same urgency.
+    """
     req_title = str(candidate.entry.get("title", ""))
     summary = summarize_what(candidate.content, req_title)
     if state == "failed":
-        return (
+        return Notification(
             f"Failed to deploy: {req_title} ({repo})",
             f"{summary}\n\nThe deployment carrying this requirement failed.",
             url or f"https://github.com/{repo}/deployments",
             ["rotating_light"],
+            "high",
         )
     closing = (
         "Deployed to production."
         if state == "deployed"
         else "Merged to the default branch — deployment is not reported for this repo."
     )
-    return (
+    return Notification(
         f"{req_title} ({repo})",
         f"{summary}\n\n{closing}",
         f"https://github.com/{repo}/blob/HEAD/{candidate.path}",
         ["rocket"],
+        None,
     )
 
 
@@ -193,15 +208,16 @@ async def notify_landed(repo: str, candidates: list[Candidate]) -> None:
             if verdict is None:
                 continue
             state, url = verdict
-            title, body, click, tags = _message(repo, candidate, state, url)
+            note = _message(repo, candidate, state, url)
             await notify.notify_requirement(
                 user_id,
                 repo=repo,
                 requirement_id=str(candidate.entry.get("id")),
-                title=title,
-                body=body,
-                click=click,
-                tags=tags,
+                title=note.title,
+                body=note.body,
+                click=note.click,
+                tags=note.tags,
+                priority=note.priority,
             )
     except Exception:
         logger.warning("landing: could not evaluate landings for %s", repo, exc_info=True)

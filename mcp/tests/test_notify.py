@@ -52,6 +52,21 @@ async def test_send_carries_click_and_tags(configured: object, httpx_mock: HTTPX
     assert request.headers["Tags"] == "rocket,tada"
 
 
+async def test_send_omits_priority_by_default(configured: object, httpx_mock: HTTPXMock) -> None:
+    """An ordinary notification must arrive at ntfy's own default priority."""
+    httpx_mock.add_response()
+    await notify.send("uid", title="Landed", body="body")
+
+    assert "Priority" not in httpx_mock.get_requests()[0].headers
+
+
+async def test_send_carries_priority(configured: object, httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response()
+    await notify.send("uid", title="Failed to deploy", body="body", priority="high")
+
+    assert httpx_mock.get_requests()[0].headers["Priority"] == "high"
+
+
 async def test_send_authenticates_when_token_configured(httpx_mock: HTTPXMock) -> None:
     config = dict(_CONFIG, token="tk_secret")
     httpx_mock.add_response()
@@ -196,6 +211,23 @@ async def test_notify_requirement_normalizes_repo_for_the_dedupe_key(
         )
 
     claim.assert_called_once_with("uid", "owner/repo", "026")
+
+
+async def test_notify_requirement_passes_priority_through(
+    configured: object, httpx_mock: HTTPXMock
+) -> None:
+    httpx_mock.add_response()
+    with patch("notify.db.claim_notification", return_value=True):
+        await notify.notify_requirement(
+            "uid",
+            repo="owner/repo",
+            requirement_id="026",
+            title="Failed to deploy",
+            body="body",
+            priority="high",
+        )
+
+    assert httpx_mock.get_requests()[0].headers["Priority"] == "high"
 
 
 async def test_notify_requirement_drops_unparseable_repo(httpx_mock: HTTPXMock) -> None:
