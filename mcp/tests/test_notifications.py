@@ -26,12 +26,19 @@ def clear_user_id():
     current_db_user_id.reset(token)
 
 
+@pytest.fixture()
+def unconfigured():
+    """Report that the account has never been configured."""
+    with patch("tools.notifications.db.get_ntfy_config", return_value=None) as mock:
+        yield mock
+
+
 # ---------------------------------------------------------------------------
 # set_ntfy_config
 # ---------------------------------------------------------------------------
 
 
-async def test_set_ntfy_config_stores_topic(set_user_id: str) -> None:
+async def test_set_ntfy_config_stores_topic(set_user_id: str, unconfigured: object) -> None:
     stored = {"server": "https://ntfy.sh", "topic": "lachesis", "token": ""}
     with patch("tools.notifications.db.set_ntfy_config", return_value=stored) as mock:
         result = await set_ntfy_config("lachesis")
@@ -40,7 +47,9 @@ async def test_set_ntfy_config_stores_topic(set_user_id: str) -> None:
     assert result == {"server": "https://ntfy.sh", "topic": "lachesis", "token_set": False}
 
 
-async def test_set_ntfy_config_never_returns_the_token(set_user_id: str) -> None:
+async def test_set_ntfy_config_never_returns_the_token(
+    set_user_id: str, unconfigured: object
+) -> None:
     stored = {"server": "https://ntfy.sh", "topic": "lachesis", "token": "tk_secret"}
     with patch("tools.notifications.db.set_ntfy_config", return_value=stored):
         result = await set_ntfy_config("lachesis", token="tk_secret")
@@ -49,7 +58,9 @@ async def test_set_ntfy_config_never_returns_the_token(set_user_id: str) -> None
     assert "tk_secret" not in str(result)
 
 
-async def test_set_ntfy_config_clears_with_empty_topic(set_user_id: str) -> None:
+async def test_set_ntfy_config_clears_with_empty_topic(
+    set_user_id: str, unconfigured: object
+) -> None:
     stored = {"server": "https://ntfy.sh", "topic": "", "token": ""}
     with patch("tools.notifications.db.set_ntfy_config", return_value=stored) as mock:
         result = await set_ntfy_config("")
@@ -58,12 +69,52 @@ async def test_set_ntfy_config_clears_with_empty_topic(set_user_id: str) -> None
     assert result["topic"] == ""
 
 
-async def test_set_ntfy_config_trims_whitespace(set_user_id: str) -> None:
+async def test_set_ntfy_config_trims_whitespace(set_user_id: str, unconfigured: object) -> None:
     stored = {"server": "https://n.example", "topic": "lachesis", "token": ""}
     with patch("tools.notifications.db.set_ntfy_config", return_value=stored) as mock:
         await set_ntfy_config("  lachesis  ", server="  https://n.example  ")
 
     mock.assert_called_once_with("test-uid", "https://n.example", "lachesis", "")
+
+
+async def test_set_ntfy_config_keeps_the_server_and_token_it_was_not_given(
+    set_user_id: str,
+) -> None:
+    """Renaming a topic must not reset the server or drop the token protecting it."""
+    existing = {"server": "https://n.example", "topic": "old", "token": "tk_secret"}
+    stored = dict(existing, topic="renamed")
+    with patch("tools.notifications.db.get_ntfy_config", return_value=existing):
+        with patch("tools.notifications.db.set_ntfy_config", return_value=stored) as mock:
+            result = await set_ntfy_config("renamed")
+
+    mock.assert_called_once_with("test-uid", "https://n.example", "renamed", "tk_secret")
+    assert result == {"server": "https://n.example", "topic": "renamed", "token_set": True}
+
+
+async def test_set_ntfy_config_clears_the_token_when_given_an_empty_one(
+    set_user_id: str,
+) -> None:
+    """Leaving a value alone is the omitted case; an empty string still clears it."""
+    existing = {"server": "https://n.example", "topic": "lachesis", "token": "tk_secret"}
+    stored = dict(existing, token="")
+    with patch("tools.notifications.db.get_ntfy_config", return_value=existing) as read:
+        with patch("tools.notifications.db.set_ntfy_config", return_value=stored) as mock:
+            result = await set_ntfy_config("lachesis", token="")
+
+    read.assert_called_once_with("test-uid")
+    mock.assert_called_once_with("test-uid", "https://n.example", "lachesis", "")
+    assert result["token_set"] is False
+
+
+async def test_set_ntfy_config_does_not_read_the_row_when_given_every_field(
+    set_user_id: str,
+) -> None:
+    stored = {"server": "https://n.example", "topic": "lachesis", "token": "tk"}
+    with patch("tools.notifications.db.get_ntfy_config") as read:
+        with patch("tools.notifications.db.set_ntfy_config", return_value=stored):
+            await set_ntfy_config("lachesis", server="https://n.example", token="tk")
+
+    read.assert_not_called()
 
 
 async def test_set_ntfy_config_raises_when_no_user(clear_user_id: None) -> None:

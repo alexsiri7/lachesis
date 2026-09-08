@@ -26,11 +26,20 @@ def _public_config(config: dict[str, Any] | None) -> dict[str, Any]:
 
 async def set_ntfy_config(
     topic: str,
-    server: str = notify.DEFAULT_SERVER,
-    token: str = "",
+    server: str | None = None,
+    token: str | None = None,
 ) -> dict[str, Any]:
-    """Set the account's ntfy configuration. An empty topic clears it."""
+    """Set the account's ntfy configuration. An empty topic clears it.
+
+    An omitted server or token keeps whatever is already stored, so renaming a
+    topic does not silently drop the auth token that protects it.
+    """
     user_id = _require_user_id()
+    existing = db.get_ntfy_config(user_id) if server is None or token is None else None
+    if server is None:
+        server = existing["server"] if existing else notify.DEFAULT_SERVER
+    if token is None:
+        token = existing["token"] if existing else ""
     config = db.set_ntfy_config(user_id, server.strip(), topic.strip(), token.strip())
     return _public_config(config)
 
