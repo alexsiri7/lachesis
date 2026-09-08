@@ -2,8 +2,8 @@
 
 The dashboard's readers ask what shipped, what was dropped and what went quiet.
 Every fact needed is on a requirement's ``derived`` block already; what is
-missing is a verdict, so these helpers sort the corpus into six named groups and
-threshold silence into a staleness judgement.
+missing is a verdict, so these helpers sort the corpus into seven named groups
+and threshold silence into a staleness judgement.
 
 Kept apart from :mod:`derive`, whose contract is one requirement's issue facts:
 grouping needs a clock and a threshold, and is a pure function of the corpus.
@@ -19,7 +19,15 @@ from status import INACTIVE_STATUSES
 
 DEFAULT_STALE_AFTER_DAYS = 14
 
-GROUP_NAMES = ("landed", "dropped", "stalled", "needs_attention", "diverged", "in_flight")
+GROUP_NAMES = (
+    "landed",
+    "dropped",
+    "awaiting_merge",
+    "stalled",
+    "needs_attention",
+    "diverged",
+    "in_flight",
+)
 
 NEEDS_ATTENTION_KINDS = (
     "closed_without_merge",
@@ -27,7 +35,6 @@ NEEDS_ATTENTION_KINDS = (
     "closed_but_recorded_in_progress",
     "unavailable",
     "never_linked",
-    "awaiting_pr",
 )
 
 
@@ -67,7 +74,6 @@ def _needs_attention_kinds(derived: dict[str, Any]) -> list[str]:
         "closed_but_recorded_in_progress": bool(signals.get("closed_but_recorded_in_progress")),
         "unavailable": derived.get("source") == "unavailable",
         "never_linked": signals.get("unlinked") == "never_linked",
-        "awaiting_pr": signals.get("unlinked") == "awaiting_pr",
     }
     return [kind for kind in NEEDS_ATTENTION_KINDS if present[kind]]
 
@@ -122,16 +128,35 @@ def _by_repo_and_id(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(entries, key=lambda entry: (entry["repo"], entry["id"]))
 
 
+def _oldest_pr_first(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort *entries* by when their pull request was opened, oldest first, unknowns last.
+
+    The oldest unmerged requirement PR is the one most likely forgotten, so it leads.
+    ISO-8601 stamps sort lexicographically, which is chronological.  PR numbers cannot
+    stand in for the stamp here: they are per-repo, and this group spans repos.
+    """
+    known = [entry for entry in entries if entry["pr"].get("created_at")]
+    unknown = [entry for entry in entries if not entry["pr"].get("created_at")]
+    known.sort(key=lambda entry: (entry["pr"]["created_at"], entry["repo"], entry["id"]))
+    return known + _by_repo_and_id(unknown)
+
+
 def group_requirements(
     candidates: list[Candidate], *, now: datetime, stale_after_days: int
 ) -> dict[str, list[dict[str, Any]]]:
-    """Sort *candidates* into the six dashboard groups, each landing in exactly one.
+    """Sort *candidates* into the seven dashboard groups, each landing in exactly one.
 
-    The groups are tested in the order dropped, landed, needs attention,
-    stalled, diverged, in flight.  Recorded intent to drop the work outranks any
-    observation of it; a requirement whose work landed is reported as landed
-    even when its file was never updated to say so, since those lagging records
-    are exactly the ones derivation exists to find.  A named fault outranks the
+    The groups are tested in the order dropped, awaiting merge, landed, needs
+    attention, stalled, diverged, in flight.  Recorded intent to drop the work
+    outranks any observation of it — a cancelled requirement's open PR wants
+    closing, not merging.  Below that, a requirement file still sitting on an
+    open pull request outranks everything: the group is only trustworthy as the
+    answer to "which requirement PRs are unmerged?" if nothing can hide a
+    member, and ``landed`` is the most misleading hiding place of all, reading
+    as "this shipped" for the file most likely forgotten.  So a requirement
+    whose work landed is reported as landed even when its file was never updated
+    to say so — those lagging records are exactly the ones derivation exists to
+    find — unless that file is itself still on a PR.  A named fault outranks the
     symptom of silence, and forgotten work outranks stale bookkeeping.
 
     Every group is present, empty when nothing matched.
@@ -152,6 +177,11 @@ def group_requirements(
                 if candidate.entry.get(key):
                     entry[key] = candidate.entry[key]
             grouped["dropped"].append(entry)
+        elif candidate.entry.get("pr"):
+            entry["pr"] = candidate.entry["pr"]
+            if kinds:
+                entry["kinds"] = kinds
+            grouped["awaiting_merge"].append(entry)
         elif derived.get("status") == "done":
             entry["landed_at"] = derived.get("landed_at")
             grouped["landed"].append(entry)
@@ -169,6 +199,7 @@ def group_requirements(
         else:
             grouped["in_flight"].append(entry)
 
+    grouped["awaiting_merge"] = _oldest_pr_first(grouped["awaiting_merge"])
     grouped["landed"] = _by_descending(grouped["landed"], "landed_at")
     grouped["stalled"] = _by_descending(grouped["stalled"], "days_quiet")
     grouped["needs_attention"] = _by_descending(grouped["needs_attention"], "days_quiet")

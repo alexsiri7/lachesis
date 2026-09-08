@@ -117,6 +117,8 @@ def _pr_field(pr_info: dict[str, Any] | None) -> dict[str, Any] | None:
     ``state=open`` query: once a requirement PR merges, its file is on the default branch,
     where it is found by the default-branch pass and reports no PR at all; a closed
     unmerged one drops out of the open list along with its requirement.
+
+    ``created_at`` is when the PR was opened, and ``None`` when GitHub did not report it.
     """
     if pr_info is None:
         return None
@@ -126,6 +128,7 @@ def _pr_field(pr_info: dict[str, Any] | None) -> dict[str, Any] | None:
         "merged": False,
         "url": pr_info["pr_url"],
         "branch": pr_info["branch"],
+        "created_at": pr_info.get("created_at"),
     }
 
 
@@ -1023,9 +1026,16 @@ async def get_dashboard(
     recorded status.
 
     ``groups`` answers what shipped, what was dropped and what went quiet without
-    a second call.  Every requirement read lands in exactly one of ``landed``,
-    ``dropped``, ``stalled``, ``needs_attention``, ``diverged`` and ``in_flight``,
-    tested in that order, and every group is present even when empty.  Grouping
+    a second call.  Every requirement read lands in exactly one of ``dropped``,
+    ``awaiting_merge``, ``landed``, ``needs_attention``, ``stalled``, ``diverged``
+    and ``in_flight``, tested in that order, and every group is present even when
+    empty.  ``awaiting_merge`` holds the requirements whose file is still on an
+    open Lachesis pull request, oldest PR first, each carrying its ``pr`` and its
+    ``kinds`` when a fault is present too.  ``awaiting_merge_count`` repeats its
+    size next to ``unlinked_count``, which it neither contains nor is contained by:
+    a requirement on a PR branch may link issues, and the two counts are read off
+    different bases — the whole corpus for the groups, the returned listings for
+    ``unlinked_count`` — so they must not be summed.  Grouping
     covers the whole corpus regardless of ``include_inactive`` — otherwise
     ``dropped`` would be empty by default — and is narrowed only by ``status``.
     A requirement counts as stalled after ``stale_after_days`` of silence unless
@@ -1151,6 +1161,7 @@ async def get_dashboard(
             "total": total,
             "by_status": status_counts,
             "unlinked_count": unlinked_count,
+            "awaiting_merge_count": len(grouped["awaiting_merge"]),
             "groups": {name: len(grouped[name]) for name in groups.GROUP_NAMES},
             "stale_after_days": stale_after_days,
         },
