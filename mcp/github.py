@@ -292,7 +292,9 @@ async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
 
     ``created_at`` is read leniently: a payload that omits it still reports its PR,
     since the surrounding ``except KeyError`` would otherwise discard every PR in the
-    repo over one missing timestamp.
+    repo over one missing timestamp.  An HTTP failure, by contrast, propagates rather
+    than reading as an empty list: a lookup that could not run is not the same fact as
+    a repo with no Lachesis pull requests.
     """
     result: list[dict[str, Any]] = []
     try:
@@ -310,12 +312,6 @@ async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
     except (KeyError, TypeError) as exc:
         logger.warning(
             "github.list_lachesis_prs unexpected response shape repo=%s error=%r", repo, exc
-        )
-    except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "github.list_lachesis_prs HTTP error repo=%s status=%s; returning []",
-            repo,
-            exc.response.status_code,
         )
     return result
 

@@ -875,11 +875,11 @@ async def test_list_lachesis_prs_returns_empty_when_no_lachesis_prs(httpx_mock: 
     assert result == []
 
 
-async def test_list_lachesis_prs_returns_empty_on_http_error(httpx_mock: HTTPXMock) -> None:
-    """HTTP errors from the GitHub API are caught and an empty list is returned."""
+async def test_list_lachesis_prs_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    """A fetch that could not run is not the same fact as a repo with no Lachesis PRs."""
     httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
-    result = await list_lachesis_prs("owner/repo")
-    assert result == []
+    with pytest.raises(httpx.HTTPStatusError):
+        await list_lachesis_prs("owner/repo")
 
 
 # ---------------------------------------------------------------------------

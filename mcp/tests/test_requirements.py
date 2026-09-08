@@ -2044,6 +2044,19 @@ async def test_list_requirements_no_prs_returns_main_only(httpx_mock: HTTPXMock)
     assert result[0]["id"] == "001"
 
 
+async def test_list_requirements_falls_back_to_main_when_the_pr_fetch_fails(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A PR list that could not be read costs the PR branches, not the whole call."""
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
+
+    result = await list_requirements("owner/repo")
+
+    assert [entry["id"] for entry in result] == ["001"]
+
+
 async def test_list_requirements_reports_the_pr_even_when_issues_are_linked(
     httpx_mock: HTTPXMock,
 ) -> None:
@@ -3578,6 +3591,75 @@ async def test_get_dashboard_groups_a_pr_branch_requirement_as_awaiting_merge(
     assert result["groups"]["awaiting_merge"][0]["pr"]["number"] == 7
     assert result["summary"]["awaiting_merge_count"] == 1
     assert result["summary"]["groups"]["awaiting_merge"] == 1
+    assert result["summary"]["incomplete_repos"] == []
+
+
+async def test_get_dashboard_awaiting_merge_leads_with_the_oldest_pr(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """The PR's open date reaches the group through _pr_field, and orders it.
+
+    The older PR carries the higher id, so the expected order cannot be produced
+    by the repo-and-id fallback the entries fall back to without a timestamp.
+    """
+    older = {
+        "head": {"ref": "lachesis/req-003-older"},
+        "html_url": "https://x/pull/3",
+        "number": 3,
+        "created_at": "2026-07-01T00:00:00Z",
+    }
+    newer = {
+        "head": {"ref": "lachesis/req-002-newer"},
+        "html_url": "https://x/pull/9",
+        "number": 9,
+        "created_at": "2026-09-05T00:00:00Z",
+    }
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=[])  # list_files on main → nothing landed yet
+        httpx_mock.add_response(json=[older, newer])
+        for req_id, slug in (("003", "older"), ("002", "newer")):
+            pr_file = {"name": f"{req_id}-{slug}.md", "path": f"requirements/{req_id}-{slug}.md"}
+            httpx_mock.add_response(json=[pr_file])
+            httpx_mock.add_response(
+                json={
+                    "name": pr_file["name"],
+                    "path": pr_file["path"],
+                    "content": base64.b64encode(
+                        _SAMPLE_MD.replace('id: "001"', f'id: "{req_id}"').encode()
+                    ).decode("ascii"),
+                    "sha": f"sha-{req_id}",
+                    "type": "file",
+                }
+            )
+        result = await get_dashboard()
+
+    awaiting = result["groups"]["awaiting_merge"]
+    assert [entry["id"] for entry in awaiting] == ["003", "002"]
+    assert awaiting[0]["pr"]["created_at"] == "2026-07-01T00:00:00Z"
+
+
+async def test_get_dashboard_names_the_repo_whose_pr_fetch_failed(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A failed PR fetch costs the PR branches, not the repo — and says so."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
+        result = await get_dashboard()
+
+    assert [req["id"] for req in result["repos"][0]["requirements"]] == ["001"]
+    summary = result["summary"]
+    assert summary["incomplete_repos"] == ["owner/repo"]
+    assert summary["awaiting_merge_count"] == 0
+    assert summary["total"] == 1
+    assert summary["by_status"] == {"planned": 1}
 
 
 async def test_get_dashboard_counts_awaiting_merge_without_redefining_unlinked(

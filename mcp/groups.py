@@ -11,6 +11,7 @@ grouping needs a clock and a threshold, and is a pure function of the corpus.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, NamedTuple
 
@@ -110,34 +111,29 @@ def _base_fields(
     }
 
 
-def _by_descending(entries: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
-    """Sort *entries* on *key* descending with the unknowns last, ties by repo and id.
-
-    Reversing a single sort key would put the unknowns first and cannot be
-    applied to the string timestamps, so the two halves are ordered separately.
-    """
-    known = [entry for entry in entries if entry[key] is not None]
-    unknown = [entry for entry in entries if entry[key] is None]
-    known.sort(key=lambda entry: (entry["repo"], entry["id"]))
-    known.sort(key=lambda entry: entry[key], reverse=True)
-    unknown.sort(key=lambda entry: (entry["repo"], entry["id"]))
-    return known + unknown
-
-
 def _by_repo_and_id(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(entries, key=lambda entry: (entry["repo"], entry["id"]))
 
 
-def _oldest_pr_first(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Sort *entries* by when their pull request was opened, oldest first, unknowns last.
+def _sorted_by(
+    entries: list[dict[str, Any]],
+    key_fn: Callable[[dict[str, Any]], Any],
+    *,
+    reverse: bool,
+) -> list[dict[str, Any]]:
+    """Sort *entries* on *key_fn* with the unknowns last, ties by repo and id.
 
-    The oldest unmerged requirement PR is the one most likely forgotten, so it leads.
-    ISO-8601 stamps sort lexicographically, which is chronological.  PR numbers cannot
-    stand in for the stamp here: they are per-repo, and this group spans repos.
+    An entry whose *key_fn* reads ``None`` is unknown.  Reversing a single sort
+    key would put those first and cannot be applied to the string timestamps, so
+    the two halves are ordered separately; the presort is what makes repo and id
+    break ties in either direction.  Where the key is when a pull request was
+    opened, PR numbers cannot stand in for the stamp: they are per-repo, and that
+    group spans repos.
     """
-    known = [entry for entry in entries if entry["pr"].get("created_at")]
-    unknown = [entry for entry in entries if not entry["pr"].get("created_at")]
-    known.sort(key=lambda entry: (entry["pr"]["created_at"], entry["repo"], entry["id"]))
+    known = [entry for entry in entries if key_fn(entry) is not None]
+    unknown = [entry for entry in entries if key_fn(entry) is None]
+    known.sort(key=lambda entry: (entry["repo"], entry["id"]))
+    known.sort(key=key_fn, reverse=reverse)
     return known + _by_repo_and_id(unknown)
 
 
@@ -199,10 +195,20 @@ def group_requirements(
         else:
             grouped["in_flight"].append(entry)
 
-    grouped["awaiting_merge"] = _oldest_pr_first(grouped["awaiting_merge"])
-    grouped["landed"] = _by_descending(grouped["landed"], "landed_at")
-    grouped["stalled"] = _by_descending(grouped["stalled"], "days_quiet")
-    grouped["needs_attention"] = _by_descending(grouped["needs_attention"], "days_quiet")
+    grouped["awaiting_merge"] = _sorted_by(
+        grouped["awaiting_merge"],
+        lambda entry: entry["pr"].get("created_at") or None,
+        reverse=False,
+    )
+    grouped["landed"] = _sorted_by(
+        grouped["landed"], lambda entry: entry["landed_at"], reverse=True
+    )
+    grouped["stalled"] = _sorted_by(
+        grouped["stalled"], lambda entry: entry["days_quiet"], reverse=True
+    )
+    grouped["needs_attention"] = _sorted_by(
+        grouped["needs_attention"], lambda entry: entry["days_quiet"], reverse=True
+    )
     grouped["needs_attention"].sort(
         key=lambda entry: NEEDS_ATTENTION_KINDS.index(entry["kinds"][0])
     )
