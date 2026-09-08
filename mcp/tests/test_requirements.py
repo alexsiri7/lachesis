@@ -2003,6 +2003,7 @@ Do it.
         "merged": False,
         "url": pr_url,
         "branch": pr_branch,
+        "created_at": None,
     }
     assert result[1]["warning"] == "awaiting merge of PR #7"
     assert result[0]["warning"] == "no linked issues"
@@ -2134,6 +2135,7 @@ async def test_get_requirement_finds_on_pr_branch(httpx_mock: HTTPXMock) -> None
         "merged": False,
         "url": "https://github.com/owner/repo/pull/1",
         "branch": pr_branch,
+        "created_at": None,
     }
     # Verify branch ref used in list_files and get_file calls
     requests = httpx_mock.get_requests()
@@ -2300,6 +2302,7 @@ async def test_get_dashboard_includes_pr_branch_requirements(
         "merged": False,
         "url": pr_url,
         "branch": pr_branch,
+        "created_at": None,
     }
     assert pr_req["warning"] == "awaiting merge of PR #7"
     assert main_req["warning"] == "no linked issues"
@@ -3426,7 +3429,7 @@ def _mock_quiet_dashboard(httpx_mock: HTTPXMock, days: int) -> None:
 async def test_get_dashboard_reports_every_group_even_when_empty(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
-    """A repo with no requirements still answers all six questions."""
+    """A repo with no requirements still answers all seven questions."""
     with patch(
         "tools.requirements.db.list_repos",
         return_value=[{"repo_name": "owner/repo"}],
@@ -3438,6 +3441,7 @@ async def test_get_dashboard_reports_every_group_even_when_empty(
     assert result["groups"] == {
         "landed": [],
         "dropped": [],
+        "awaiting_merge": [],
         "stalled": [],
         "needs_attention": [],
         "diverged": [],
@@ -3542,10 +3546,10 @@ async def test_get_dashboard_status_filter_narrows_the_groups(
     assert sum(result["summary"]["groups"].values()) == 1
 
 
-async def test_get_dashboard_groups_a_pr_branch_requirement_as_awaiting_pr(
+async def test_get_dashboard_groups_a_pr_branch_requirement_as_awaiting_merge(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
-    """Reporting the PR in `warning` does not move the requirement to another group."""
+    """A requirement read off an open PR branch is reported as waiting on that merge."""
     pr_branch = "lachesis/req-002-new-feature"
     pr_md = _SAMPLE_MD.replace('id: "001"', 'id: "002"')
     with patch(
@@ -3569,8 +3573,44 @@ async def test_get_dashboard_groups_a_pr_branch_requirement_as_awaiting_pr(
         )
         result = await get_dashboard()
 
-    assert [entry["id"] for entry in result["groups"]["needs_attention"]] == ["002"]
-    assert result["groups"]["needs_attention"][0]["kinds"] == ["awaiting_pr"]
+    assert result["groups"]["needs_attention"] == []
+    assert [entry["id"] for entry in result["groups"]["awaiting_merge"]] == ["002"]
+    assert result["groups"]["awaiting_merge"][0]["pr"]["number"] == 7
+    assert result["summary"]["awaiting_merge_count"] == 1
+    assert result["summary"]["groups"]["awaiting_merge"] == 1
+
+
+async def test_get_dashboard_counts_awaiting_merge_without_redefining_unlinked(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """The two counts overlap: an unlinked requirement on a PR is counted by both."""
+    pr_branch = "lachesis/req-002-new-feature"
+    pr_md = _SAMPLE_MD.replace('id: "001"', 'id: "002"')
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(
+            json=[{"head": {"ref": pr_branch}, "html_url": "https://x/pull/7", "number": 7}]
+        )
+        pr_file = {"name": "002-new-feature.md", "path": "requirements/002-new-feature.md"}
+        httpx_mock.add_response(json=[pr_file])
+        httpx_mock.add_response(
+            json={
+                "name": pr_file["name"],
+                "path": pr_file["path"],
+                "content": base64.b64encode(pr_md.encode()).decode("ascii"),
+                "sha": "sha2",
+                "type": "file",
+            }
+        )
+        result = await get_dashboard()
+
+    summary = result["summary"]
+    assert summary["awaiting_merge_count"] == summary["groups"]["awaiting_merge"] == 1
+    assert summary["unlinked_count"] == 2
 
 
 # ---------------------------------------------------------------------------

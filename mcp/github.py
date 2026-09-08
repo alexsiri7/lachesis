@@ -266,9 +266,10 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
 async def find_open_pr(repo: str, head_prefix: str) -> dict[str, Any] | None:
     """Return the first open PR whose head branch starts with *head_prefix*.
 
-    Returns ``{"branch": str, "pr_number": int, "pr_url": str}``, or ``None`` when no
-    open PR matches.  An HTTP failure propagates rather than reading as ``None``: a
-    lookup that could not run is not the same fact as a requirement that has no PR.
+    Returns ``{"branch": str, "pr_number": int, "pr_url": str, "created_at": str | None}``,
+    or ``None`` when no open PR matches.  An HTTP failure propagates rather than reading
+    as ``None``: a lookup that could not run is not the same fact as a requirement that
+    has no PR.
     """
     try:
         for pr in await _list_open_prs(repo):
@@ -277,6 +278,7 @@ async def find_open_pr(repo: str, head_prefix: str) -> dict[str, Any] | None:
                     "branch": pr["head"]["ref"],
                     "pr_url": pr["html_url"],
                     "pr_number": pr["number"],
+                    "created_at": pr.get("created_at"),
                 }
     except (KeyError, TypeError) as exc:
         logger.warning("github.find_open_pr unexpected response shape repo=%s error=%r", repo, exc)
@@ -286,14 +288,25 @@ async def find_open_pr(repo: str, head_prefix: str) -> dict[str, Any] | None:
 async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
     """Return all open PRs whose head branch starts with 'lachesis/'.
 
-    Returns list of {"branch": str, "pr_number": int, "pr_url": str}.
+    Returns list of {"branch": str, "pr_number": int, "pr_url": str, "created_at": str | None}.
+
+    ``created_at`` is read leniently: a payload that omits it still reports its PR,
+    since the surrounding ``except KeyError`` would otherwise discard every PR in the
+    repo over one missing timestamp.
     """
     result: list[dict[str, Any]] = []
     try:
         for pr in await _list_open_prs(repo):
             ref = pr["head"]["ref"]
             if ref.startswith("lachesis/"):
-                result.append({"branch": ref, "pr_url": pr["html_url"], "pr_number": pr["number"]})
+                result.append(
+                    {
+                        "branch": ref,
+                        "pr_url": pr["html_url"],
+                        "pr_number": pr["number"],
+                        "created_at": pr.get("created_at"),
+                    }
+                )
     except (KeyError, TypeError) as exc:
         logger.warning(
             "github.list_lachesis_prs unexpected response shape repo=%s error=%r", repo, exc

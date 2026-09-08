@@ -1,4 +1,4 @@
-"""Unit tests for mcp/groups.py — the dashboard's six requirement groups."""
+"""Unit tests for mcp/groups.py — the dashboard's seven requirement groups."""
 
 from __future__ import annotations
 
@@ -75,6 +75,17 @@ def _grouped(*candidates: Candidate, stale_after_days: int = 14) -> dict[str, li
 
 def _blocker(*, number: int = 99, last_activity: str) -> dict[str, Any]:
     return {"repo": "owner/repo", "number": number, "last_activity": last_activity}
+
+
+def _pr(number: int, *, created_at: str | None = "2026-09-01T00:00:00Z") -> dict[str, Any]:
+    return {
+        "number": number,
+        "state": "open",
+        "merged": False,
+        "url": f"https://github.com/owner/repo/pull/{number}",
+        "branch": f"lachesis/req-{number:03d}",
+        "created_at": created_at,
+    }
 
 
 def test_landed_wins_over_diverged_for_a_lagging_record() -> None:
@@ -179,8 +190,8 @@ def test_an_unreadable_requirement_needs_attention() -> None:
     assert grouped["needs_attention"][0]["kinds"] == ["unavailable"]
 
 
-def test_the_two_unlinked_kinds_are_named_apart() -> None:
-    """A requirement awaiting its PR is a different fault from one never linked."""
+def test_a_requirement_awaiting_its_pr_is_not_one_that_was_never_linked() -> None:
+    """The two want opposite responses: one wants a merge, the other attention."""
     grouped = _grouped(
         _candidate(
             "009",
@@ -190,14 +201,16 @@ def test_the_two_unlinked_kinds_are_named_apart() -> None:
         ),
         _candidate(
             "010",
+            pr=_pr(10),
             derived=_derived(
                 status=None, source="unlinked", signals=_signals(unlinked="awaiting_pr")
             ),
         ),
     )
 
-    kinds = {entry["id"]: entry["kinds"] for entry in grouped["needs_attention"]}
-    assert kinds == {"009": ["never_linked"], "010": ["awaiting_pr"]}
+    assert [entry["id"] for entry in grouped["needs_attention"]] == ["009"]
+    assert grouped["needs_attention"][0]["kinds"] == ["never_linked"]
+    assert [entry["id"] for entry in grouped["awaiting_merge"]] == ["010"]
 
 
 def test_a_recent_divergence_with_no_fault_is_diverged() -> None:
@@ -221,6 +234,7 @@ def test_every_group_is_present_and_empty_for_no_candidates() -> None:
     assert grouped == {
         "landed": [],
         "dropped": [],
+        "awaiting_merge": [],
         "stalled": [],
         "needs_attention": [],
         "diverged": [],
@@ -325,3 +339,65 @@ def test_needs_attention_leads_with_the_likeliest_failure_then_the_quietest() ->
         ("003", 50),
         ("001", 5),
     ]
+
+
+# ---------------------------------------------------------------------------
+# awaiting_merge
+# ---------------------------------------------------------------------------
+
+
+def test_a_requirement_whose_file_is_still_on_a_pr_is_not_reported_as_landed() -> None:
+    """Its issues shipped, but the requirement itself is stuck behind an unmerged PR."""
+    grouped = _grouped(
+        _candidate(
+            "020",
+            pr=_pr(20),
+            derived=_derived(status="done", landed_at="2026-09-01T10:00:00Z"),
+        )
+    )
+
+    assert grouped["landed"] == []
+    assert [entry["id"] for entry in grouped["awaiting_merge"]] == ["020"]
+    assert grouped["awaiting_merge"][0]["pr"]["number"] == 20
+
+
+def test_awaiting_merge_still_names_the_fault_it_also_has() -> None:
+    """Saying what to do about the file must not lose what is wrong with the work."""
+    grouped = _grouped(
+        _candidate(
+            "021",
+            pr=_pr(21),
+            derived=_derived(signals=_signals(checks_failing_since="2026-09-01T00:00:00Z")),
+        )
+    )
+
+    assert [entry["id"] for entry in grouped["awaiting_merge"]] == ["021"]
+    assert grouped["awaiting_merge"][0]["kinds"] == ["checks_failing_since"]
+
+
+def test_a_cancelled_requirement_on_a_pr_is_still_dropped() -> None:
+    """A cancelled requirement's open PR wants closing, not merging."""
+    grouped = _grouped(_candidate("022", status="cancelled", pr=_pr(22), derived=_derived()))
+
+    assert grouped["awaiting_merge"] == []
+    assert [entry["id"] for entry in grouped["dropped"]] == ["022"]
+
+
+def test_awaiting_merge_leads_with_the_oldest_pr_across_repos() -> None:
+    """The oldest unmerged requirement PR is the one most likely forgotten."""
+    grouped = _grouped(
+        _candidate("023", repo="owner/other", pr=_pr(3, created_at="2026-08-20T00:00:00Z")),
+        _candidate("024", pr=_pr(24, created_at="2026-07-01T00:00:00Z")),
+        _candidate("025", pr=_pr(25, created_at=None)),
+        _candidate("026", pr=_pr(26, created_at="2026-09-05T00:00:00Z")),
+    )
+
+    assert [entry["id"] for entry in grouped["awaiting_merge"]] == ["024", "023", "026", "025"]
+
+
+def test_a_requirement_on_the_default_branch_is_untouched_by_the_new_group() -> None:
+    """Requirements whose file already landed on main group exactly as before."""
+    grouped = _grouped(_candidate("027", pr=None, derived=_derived(diverged=True)))
+
+    assert grouped["awaiting_merge"] == []
+    assert [entry["id"] for entry in grouped["diverged"]] == ["027"]

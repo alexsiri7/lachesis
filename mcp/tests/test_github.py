@@ -233,6 +233,7 @@ def _open_pr(ref: str, number: int) -> dict:
         "head": {"ref": ref},
         "number": number,
         "html_url": f"https://github.com/owner/repo/pull/{number}",
+        "created_at": "2026-09-01T00:00:00Z",
     }
 
 
@@ -248,6 +249,7 @@ async def test_find_open_pr_returns_matching_pr(httpx_mock: HTTPXMock) -> None:
         "branch": "lachesis/req-001-user-auth",
         "pr_number": 1,
         "pr_url": "https://github.com/owner/repo/pull/1",
+        "created_at": "2026-09-01T00:00:00Z",
     }
 
 
@@ -813,11 +815,13 @@ async def test_list_lachesis_prs_returns_branch_url_and_number(httpx_mock: HTTPX
                 "head": {"ref": "lachesis/req-007-auth"},
                 "html_url": "https://github.com/owner/repo/pull/7",
                 "number": 7,
+                "created_at": "2026-09-01T00:00:00Z",
             },
             {
                 "head": {"ref": "feature/not-lachesis"},
                 "html_url": "https://github.com/owner/repo/pull/8",
                 "number": 8,
+                "created_at": "2026-09-02T00:00:00Z",
             },
         ]
     )
@@ -827,6 +831,26 @@ async def test_list_lachesis_prs_returns_branch_url_and_number(httpx_mock: HTTPX
     assert result[0]["pr_url"] == "https://github.com/owner/repo/pull/7"
     assert result[0]["pr_number"] == 7
     assert isinstance(result[0]["pr_number"], int)
+    assert result[0]["created_at"] == "2026-09-01T00:00:00Z"
+
+
+async def test_list_lachesis_prs_reports_no_created_at_without_dropping_the_pr(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A missing timestamp costs the dashboard a sort key, not the whole PR list."""
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": "lachesis/req-007-auth"},
+                "html_url": "https://github.com/owner/repo/pull/7",
+                "number": 7,
+            }
+        ]
+    )
+    result = await list_lachesis_prs("owner/repo")
+    assert len(result) == 1
+    assert result[0]["pr_number"] == 7
+    assert result[0]["created_at"] is None
 
 
 async def test_list_lachesis_prs_returns_empty_on_missing_number_key(httpx_mock: HTTPXMock) -> None:
