@@ -845,6 +845,19 @@ def _response_failure(resp: httpx.Response) -> ActivityFailure:
     return "transient"
 
 
+def failure_from_exception(exc: BaseException) -> ActivityFailure:
+    """Classify what stopped a read when the exception is all that is left to go on.
+
+    Anything this cannot name is ``transient`` deliberately: an unrecognised
+    failure must not read as a permanent verdict about the repo.  That covers
+    :class:`FileNotFoundError`, which :func:`get_file` raises instead of an HTTP
+    error when a file listed a moment earlier is already gone.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return _response_failure(exc.response)
+    return "transient"
+
+
 async def _read_issue_chunk(
     http: httpx.AsyncClient, repo: str, chunk: list[int]
 ) -> tuple[dict[int, IssueFacts], ActivityFailure | None]:

@@ -19,6 +19,7 @@ from github import (
     create_issue,
     create_pull_request,
     enable_automerge,
+    failure_from_exception,
     find_open_pr,
     get_branch_sha,
     get_file,
@@ -1361,3 +1362,33 @@ async def test_get_production_deployment_returns_none_on_error(httpx_mock: HTTPX
     httpx_mock.add_response(url=_DEPLOYMENTS_URL, status_code=500)
 
     assert await get_production_deployment("owner/repo", "abc123") is None
+
+
+# ---------------------------------------------------------------------------
+# failure_from_exception
+# ---------------------------------------------------------------------------
+
+
+def _status_error(status_code: int, headers: dict[str, str] | None = None) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.github.com/repos/owner/repo/contents/requirements")
+    response = httpx.Response(status_code, headers=headers or {}, request=request)
+    return httpx.HTTPStatusError("failed", request=request, response=response)
+
+
+def test_failure_from_exception_reads_spent_quota_as_rate_limited() -> None:
+    error = _status_error(403, {"x-ratelimit-remaining": "0"})
+
+    assert failure_from_exception(error) == "rate_limited"
+
+
+def test_failure_from_exception_reads_a_404_as_inaccessible() -> None:
+    assert failure_from_exception(_status_error(404)) == "inaccessible"
+
+
+def test_failure_from_exception_reads_a_server_error_as_transient() -> None:
+    assert failure_from_exception(_status_error(500)) == "transient"
+
+
+def test_failure_from_exception_calls_an_unrecognised_exception_transient() -> None:
+    """A cause we cannot name must not read as a permanent verdict about the repo."""
+    assert failure_from_exception(FileNotFoundError("gone")) == "transient"
