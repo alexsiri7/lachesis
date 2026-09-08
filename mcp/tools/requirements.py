@@ -193,6 +193,7 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
     """
     repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
+    seen_paths = {f["path"] for f in files}
     results: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     pending: _Pending = []
@@ -238,6 +239,10 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
         pr_files = await github.list_files(repo, "requirements", branch=branch)
         for f in pr_files:
             if not f["name"].endswith(".md"):
+                continue
+            if f["path"] in seen_paths:
+                # The default branch already served this file; the id check
+                # below would discard it, after a request per open pull request.
                 continue
             content, _ = await github.get_file(repo, f["path"], branch=branch)
             post = frontmatter.loads(content)
@@ -1081,6 +1086,15 @@ async def get_dashboard(
     the whole corpus the groups cover, so a cancelled requirement whose issues
     could not be read is grouped without reaching this count.
     Both are present and empty when nothing failed.
+
+    ``summary.failed_repos`` names the repos that were not read at all, ``{"repo",
+    "cause"}`` each, its cause drawn from the same set as ``unavailable_cause`` less
+    ``issue_missing``, and is empty when every repo contributed.  It is the widest of
+    the three failures: such a repo reached neither ``repos`` nor the grouping, so
+    ``unlinked_count`` and every ``groups`` count miss it entirely, while ``total``
+    and ``by_status`` may still carry the requirements read before it failed.  A repo
+    that was listed and then hit a failure afterwards stays out of this list — its
+    listing is intact — and is reported in the logs only.
     """
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(_invalid_status_message(status))
@@ -1100,11 +1114,14 @@ async def get_dashboard(
     all_candidates: list[groups.Candidate] = []
     status_counts: dict[str, int] = {}
     incomplete_repos: list[str] = []
+    failed_repos: list[dict[str, Any]] = []
 
     for repo_row in repos:
         repo_name = normalize_repo(repo_row["repo_name"])
+        listed = False
         try:
             files = await github.list_files(repo_name, "requirements")
+            seen_paths = {f["path"] for f in files}
             requirements: list[dict[str, Any]] = []
             repo_candidates: list[groups.Candidate] = []
             seen_ids: set[str] = set()
@@ -1147,6 +1164,10 @@ async def get_dashboard(
                     for f in pr_files:
                         if not f["name"].endswith(".md"):
                             continue
+                        if f["path"] in seen_paths:
+                            # The default branch already served this file; the id check
+                            # below would discard it, after a request per open pull request.
+                            continue
                         content, _ = await github.get_file(repo_name, f["path"], branch=branch)
                         post = frontmatter.loads(content)
                         req_id = post["id"]
@@ -1187,14 +1208,21 @@ async def get_dashboard(
 
             await _attach_derived(repo_name, pending)
             aggregated.append({"repo": repo_name, "requirements": requirements})
+            listed = True
             all_candidates.extend(repo_candidates)
             # After the append, so a raise here could not cost the repo its listing
             # under this except's misleading log line. A status filter narrows the
             # candidates, which loses nothing: an unconsidered requirement is never
             # claimed, so a later unfiltered read still announces it.
             await landing.notify_landed(repo_name, landing_candidates)
-        except Exception:
-            logger.warning("get_dashboard: failed to fetch requirements from %s", repo_name)
+        except Exception as exc:
+            logger.warning(
+                "get_dashboard: failed to fetch requirements from %s error=%r", repo_name, exc
+            )
+            if not listed:
+                failed_repos.append(
+                    {"repo": repo_name, "cause": github.failure_from_exception(exc)}
+                )
 
     total = sum(status_counts.values())
     unlinked_count = sum(
@@ -1228,6 +1256,7 @@ async def get_dashboard(
             "awaiting_merge_count": len(grouped["awaiting_merge"]),
             "groups": {name: len(grouped[name]) for name in groups.GROUP_NAMES},
             "incomplete_repos": sorted(incomplete_repos),
+            "failed_repos": sorted(failed_repos, key=lambda entry: entry["repo"]),
             "stale_after_days": stale_after_days,
         },
     }

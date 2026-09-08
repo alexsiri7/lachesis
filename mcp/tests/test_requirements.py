@@ -2134,10 +2134,8 @@ async def test_list_requirements_deduplicates_pr_and_main(httpx_mock: HTTPXMock)
     # 2. list_lachesis_prs → PR exists for same req
     pr_url_3 = "https://github.com/owner/repo/pull/3"
     httpx_mock.add_response(json=[{"head": {"ref": pr_branch}, "html_url": pr_url_3, "number": 3}])
-    # 3. list_files on PR branch → also has 001
+    # 3. list_files on PR branch → also has 001, whose path is skipped without a fetch
     httpx_mock.add_response(json=_LIST_RESP)
-    # 4. get_file on PR branch (needed to read frontmatter id for dedup check)
-    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha2"))
 
     result = await list_requirements("owner/repo")
 
@@ -3917,3 +3915,163 @@ async def test_get_dashboard_offers_candidates_that_reached_derivation(
     candidates = notify_landed.await_args.args[1]
     assert [c.entry["id"] for c in candidates] == ["001"]
     assert all("derived" in c.entry for c in candidates)
+
+
+# ---------------------------------------------------------------------------
+# PR-branch files already read from the default branch
+# ---------------------------------------------------------------------------
+
+_THIRD_PATH = "requirements/003-audit-log.md"
+_THIRD_MD = _SAMPLE_MD.replace('id: "001"', 'id: "003"')
+_SECOND_SAMPLE_MD = _SAMPLE_MD.replace('id: "001"', 'id: "002"')
+
+
+def _make_third_file_response(content: str, sha: str) -> dict:
+    """Build a Contents API file object for a requirement only a PR branch has."""
+    return {
+        "name": "003-audit-log.md",
+        "path": _THIRD_PATH,
+        "content": base64.b64encode(content.encode()).decode("ascii"),
+        "sha": sha,
+        "type": "file",
+    }
+
+
+def _register_pr_branch_repeating_main(httpx_mock: HTTPXMock) -> None:
+    """Two requirements on the default branch, a PR branch adding a third to them."""
+    httpx_mock.add_response(json=_TWO_FILES_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(json=_make_second_file_response(_SECOND_SAMPLE_MD, "sha2"))
+    branch = "lachesis/req-003-audit-log"
+    httpx_mock.add_response(
+        json=[{"head": {"ref": branch}, "html_url": "https://x/pull/9", "number": 9}]
+    )
+    httpx_mock.add_response(
+        json=[*_TWO_FILES_RESP, {"name": "003-audit-log.md", "path": _THIRD_PATH}]
+    )
+    httpx_mock.add_response(json=_make_third_file_response(_THIRD_MD, "sha3"))
+
+
+async def test_get_dashboard_does_not_refetch_pr_branch_files_already_on_main(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A PR branch carries the whole default branch; refetching it costs a request each."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        _register_pr_branch_repeating_main(httpx_mock)
+        result = await get_dashboard()
+
+    requirements = result["repos"][0]["requirements"]
+    assert sorted(req["id"] for req in requirements) == ["001", "002", "003"]
+    assert {req["id"] for req in requirements if req["pr"]} == {"003"}
+    # Two directory listings, three file reads, one pull-request lookup.
+    assert len(httpx_mock.get_requests()) == 6
+
+
+async def test_list_requirements_does_not_refetch_pr_branch_files_already_on_main(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The same skip on the other call site that walks PR branches."""
+    _register_pr_branch_repeating_main(httpx_mock)
+
+    result = await list_requirements("owner/repo")
+
+    assert sorted(req["id"] for req in result) == ["001", "002", "003"]
+    assert {req["id"] for req in result if req["pr"]} == {"003"}
+    assert len(httpx_mock.get_requests()) == 6
+
+
+# ---------------------------------------------------------------------------
+# get_dashboard failed_repos
+# ---------------------------------------------------------------------------
+
+
+async def test_get_dashboard_names_a_repo_it_could_not_read(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A repo that contributed nothing is named, not silently subtracted from the totals."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/first"}, {"repo_name": "owner/second"}],
+    ):
+        httpx_mock.add_response(
+            status_code=403,
+            headers={"x-ratelimit-remaining": "0"},
+            json={"message": "API rate limit exceeded"},
+        )
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        result = await get_dashboard()
+
+    summary = result["summary"]
+    assert [repo["repo"] for repo in result["repos"]] == ["owner/second"]
+    assert summary["failed_repos"] == [{"repo": "owner/first", "cause": "rate_limited"}]
+    assert summary["unavailable_repos"] == []
+    assert summary["incomplete_repos"] == []
+
+
+async def test_get_dashboard_reports_no_failed_repos_when_every_repo_was_read(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """The key is present and empty rather than absent when nothing failed."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        result = await get_dashboard()
+
+    assert result["summary"]["failed_repos"] == []
+
+
+async def test_get_dashboard_calls_an_unclassifiable_repo_failure_transient(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A file without an id fails no HTTP check, so only the catch-all can name it.
+
+    It fails on the second file, which also pins how far the counts are a floor:
+    ``total`` keeps what was read before the failure, the listings keep none of it.
+    """
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_TWO_FILES_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(
+            json=_make_second_file_response(_SAMPLE_MD.replace('id: "001"\n', ""), "sha2")
+        )
+        result = await get_dashboard()
+
+    assert result["summary"]["failed_repos"] == [{"repo": "owner/repo", "cause": "transient"}]
+    assert result["repos"] == []
+    assert result["summary"]["total"] == 1
+
+
+async def test_get_dashboard_does_not_call_a_listed_repo_failed(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A raise after the listing already landed costs a log line, not the repo's name."""
+    with (
+        patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/repo"}],
+        ),
+        patch(
+            "tools.requirements.landing.notify_landed",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ),
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        result = await get_dashboard()
+
+    assert [req["id"] for req in result["repos"][0]["requirements"]] == ["001"]
+    assert result["summary"]["failed_repos"] == []
