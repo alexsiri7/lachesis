@@ -1042,17 +1042,23 @@ async def get_dashboard(
 
     ``groups`` answers what shipped, what was dropped and what went quiet without
     a second call.  Every requirement read lands in exactly one of ``dropped``,
-    ``awaiting_merge``, ``landed``, ``needs_attention``, ``stalled``, ``diverged``
-    and ``in_flight``, tested in that order, and every group is present even when
-    empty.  ``awaiting_merge`` holds the requirements whose file is still on an
-    open Lachesis pull request, oldest PR first, each carrying its ``pr`` and its
-    ``kinds`` when a fault is present too.  ``awaiting_merge_count`` repeats its
-    size next to ``unlinked_count``, which it neither contains nor is contained by:
-    a requirement on a PR branch may link issues, and the two counts are read off
-    different bases — the whole corpus for the groups, the returned listings for
-    ``unlinked_count`` — so they must not be summed.  Grouping
-    covers the whole corpus regardless of ``include_inactive`` — otherwise
-    ``dropped`` would be empty by default — and is narrowed only by ``status``.
+    ``awaiting_merge``, ``landed``, ``needs_attention``, ``unreadable``,
+    ``never_linked``, ``stalled``, ``diverged`` and ``in_flight``, tested in that
+    order, and every group is present even when empty.  ``needs_attention`` holds
+    only work that was acted upon and then went wrong, so it stays a worklist:
+    ``never_linked`` collects the requirements no issue was ever opened for —
+    work not started, not work gone wrong — and ``unreadable`` the ones whose
+    linked issues could not be read, where a large group is a GitHub read failure
+    rather than a corpus of faults.  ``awaiting_merge`` holds the requirements
+    whose file is still on an open Lachesis pull request, oldest PR first, each
+    carrying its ``pr`` and its ``kinds`` when a fault is present too.
+    ``awaiting_merge_count`` repeats its size next to ``unlinked_count``, which it
+    neither contains nor is contained by: a requirement on a PR branch may link
+    issues, and the two counts are read off different bases — the whole corpus for
+    the groups, the returned listings for ``unlinked_count`` — so they must not be
+    summed.  Grouping covers the whole corpus regardless of ``include_inactive``
+    — otherwise ``dropped`` would be empty by default — and is narrowed only by
+    ``status``.
     A requirement counts as stalled after ``stale_after_days`` of silence unless
     an open blocker is itself still moving, which explains it.
 
@@ -1073,7 +1079,7 @@ async def get_dashboard(
     found and counted, so only their ``derived`` block is unknown, not the totals.
     Both are counted over the returned listings like ``unlinked_count``, not over
     the whole corpus the groups cover, so a cancelled requirement whose issues
-    could not be read reaches ``needs_attention`` without reaching this count.
+    could not be read is grouped without reaching this count.
     Both are present and empty when nothing failed.
     """
     if status is not None and status not in VALID_STATUSES:

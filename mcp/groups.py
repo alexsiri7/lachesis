@@ -2,7 +2,7 @@
 
 The dashboard's readers ask what shipped, what was dropped and what went quiet.
 Every fact needed is on a requirement's ``derived`` block already; what is
-missing is a verdict, so these helpers sort the corpus into seven named groups
+missing is a verdict, so these helpers sort the corpus into nine named groups
 and threshold silence into a staleness judgement.
 
 Kept apart from :mod:`derive`, whose contract is one requirement's issue facts:
@@ -26,6 +26,8 @@ GROUP_NAMES = (
     "awaiting_merge",
     "stalled",
     "needs_attention",
+    "unreadable",
+    "never_linked",
     "diverged",
     "in_flight",
 )
@@ -34,8 +36,6 @@ NEEDS_ATTENTION_KINDS = (
     "closed_without_merge",
     "checks_failing_since",
     "closed_but_recorded_in_progress",
-    "unavailable",
-    "never_linked",
 )
 
 
@@ -67,14 +67,17 @@ def days_since(stamp: str | None, now: datetime) -> int | None:
 
 
 def _needs_attention_kinds(derived: dict[str, Any]) -> list[str]:
-    """Name every fault the derivation reported, in the order they matter."""
+    """Name every fault the derivation reported, in the order they matter.
+
+    A fault is work that was acted upon and then went wrong.  Work nobody has
+    linked an issue to, and work whose issues could not be read, are not faults
+    in the work and answer to their own groups.
+    """
     signals = derived.get("signals") or {}
     present = {
         "closed_without_merge": bool(signals.get("closed_without_merge")),
         "checks_failing_since": bool(signals.get("checks_failing_since")),
         "closed_but_recorded_in_progress": bool(signals.get("closed_but_recorded_in_progress")),
-        "unavailable": derived.get("source") == "unavailable",
-        "never_linked": signals.get("unlinked") == "never_linked",
     }
     return [kind for kind in NEEDS_ATTENTION_KINDS if present[kind]]
 
@@ -140,20 +143,28 @@ def _sorted_by(
 def group_requirements(
     candidates: list[Candidate], *, now: datetime, stale_after_days: int
 ) -> dict[str, list[dict[str, Any]]]:
-    """Sort *candidates* into the seven dashboard groups, each landing in exactly one.
+    """Sort *candidates* into the nine dashboard groups, each landing in exactly one.
 
     The groups are tested in the order dropped, awaiting merge, landed, needs
-    attention, stalled, diverged, in flight.  Recorded intent to drop the work
-    outranks any observation of it — a cancelled requirement's open PR wants
-    closing, not merging.  Below that, a requirement file still sitting on an
-    open pull request outranks everything: the group is only trustworthy as the
-    answer to "which requirement PRs are unmerged?" if nothing can hide a
-    member, and ``landed`` is the most misleading hiding place of all, reading
-    as "this shipped" for the file most likely forgotten.  So a requirement
-    whose work landed is reported as landed even when its file was never updated
-    to say so — those lagging records are exactly the ones derivation exists to
-    find — unless that file is itself still on a PR.  A named fault outranks the
-    symptom of silence, and forgotten work outranks stale bookkeeping.
+    attention, unreadable, never linked, stalled, diverged, in flight.  Recorded
+    intent to drop the work outranks any observation of it — a cancelled
+    requirement's open PR wants closing, not merging.  Below that, a
+    requirement file still sitting on an open pull request outranks everything:
+    the group is only trustworthy as the answer to "which requirement PRs are
+    unmerged?" if nothing can hide a member, and ``landed`` is the most
+    misleading hiding place of all, reading as "this shipped" for the file most
+    likely forgotten.  So a requirement whose work landed is reported as landed
+    even when its file was never updated to say so — those lagging records are
+    exactly the ones derivation exists to find — unless that file is itself
+    still on a PR.  A named fault outranks the symptom of silence, and forgotten
+    work outranks stale bookkeeping.
+
+    ``unreadable`` and ``never_linked`` are tested above the silence branches
+    because neither has a ``last_activity`` to be silent about: left to fall
+    through they would reach ``in_flight`` and read as healthy and moving, which
+    is the one thing known about them that is false.  Both are answers about
+    work not started or not seen, so they stay out of ``needs_attention``, which
+    lists only work that was acted upon and then went wrong.
 
     Every group is present, empty when nothing matched.
     """
@@ -186,6 +197,10 @@ def group_requirements(
         elif kinds:
             entry["kinds"] = kinds
             grouped["needs_attention"].append(entry)
+        elif derived.get("source") == "unavailable":
+            grouped["unreadable"].append(entry)
+        elif (derived.get("signals") or {}).get("unlinked") == "never_linked":
+            grouped["never_linked"].append(entry)
         elif (
             days_quiet is not None
             and days_quiet >= stale_after_days
@@ -214,6 +229,6 @@ def group_requirements(
     grouped["needs_attention"].sort(
         key=lambda entry: NEEDS_ATTENTION_KINDS.index(entry["kinds"][0])
     )
-    for name in ("dropped", "diverged", "in_flight"):
+    for name in ("dropped", "unreadable", "never_linked", "diverged", "in_flight"):
         grouped[name] = _by_repo_and_id(grouped[name])
     return grouped
