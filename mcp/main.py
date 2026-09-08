@@ -87,13 +87,21 @@ mcp.tool(
         "`unlinked` — `diverged` (true when the derived status disagrees with "
         "the recorded one), `last_activity` (when those issues or PRs last "
         "moved, not when the file was edited), `linked_issues`, and `signals` "
-        "for work that stalled without looking stalled."
+        "for work that stalled without looking stalled. "
+        "`pr` describes the open pull request the requirement file still sits on "
+        "(`number`, `state`, `merged`, `url`, `branch`), and is null once the file "
+        "is on the default branch; such an entry warns `awaiting merge of PR #N` "
+        "rather than `no linked issues`, since merging it is what unblocks the rest."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.list_requirements)
 
 mcp.tool(
-    description="Return the full content of a single requirement file.",
+    description=(
+        "Return `{content, pr}` for a single requirement file. `content` is the full "
+        "markdown including frontmatter; `pr` describes the open pull request the file "
+        "still sits on, and is null when it is on the default branch."
+    ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_requirement)
 
@@ -181,7 +189,11 @@ mcp.tool(
     " and superseded requirements whatever `include_inactive` says."
     " A requirement counts as stalled after `stale_after_days` of silence"
     " (default 14, echoed back in the summary) unless an open blocker is itself"
-    " still moving. summary.groups gives the count per group.",
+    " still moving. summary.groups gives the count per group."
+    " Each listed requirement carries `pr`: the open pull request its file still sits"
+    " on (`number`, `state`, `merged`, `url`, `branch`), null once the file is on the"
+    " default branch; such an entry warns `awaiting merge of PR #N` rather than"
+    " `no linked issues`.",
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dashboard)
 
