@@ -168,6 +168,28 @@ async def test_notify_requirement_delivers_on_first_claim(
     assert len(httpx_mock.get_requests()) == 1
 
 
+async def test_notify_requirement_forwards_the_click_link(
+    configured: object, httpx_mock: HTTPXMock
+) -> None:
+    """The click-through link has to survive the trip from the trigger to the request."""
+    httpx_mock.add_response()
+    click = "https://github.com/owner/repo/blob/main/requirements/026-x.md"
+    with patch("notify.db.claim_notification", return_value=True):
+        await notify.notify_requirement(
+            "uid",
+            repo="owner/repo",
+            requirement_id="026",
+            title="Landed",
+            body="body",
+            click=click,
+            tags=["rocket"],
+        )
+
+    request = httpx_mock.get_requests()[0]
+    assert request.headers["Click"] == click
+    assert request.headers["Tags"] == "rocket"
+
+
 async def test_notify_requirement_suppresses_second_attempt(
     configured: object, httpx_mock: HTTPXMock
 ) -> None:
