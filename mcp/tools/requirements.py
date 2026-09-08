@@ -216,7 +216,16 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
         pending.append((entry, numbers, False))
         landing_candidates.append(landing.Candidate(f["path"], content, entry))
 
-    lachesis_prs = await github.list_lachesis_prs(repo)
+    try:
+        lachesis_prs = await github.list_lachesis_prs(repo)
+    except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
+        logger.warning(
+            "list_requirements: PR-branch scan failed repo=%s error=%r; "
+            "reporting default-branch requirements only",
+            repo,
+            exc,
+        )
+        lachesis_prs = []
     for pr_info in lachesis_prs:
         branch = pr_info["branch"]
         pr = _pr_field(pr_info)
@@ -1043,6 +1052,13 @@ async def get_dashboard(
 
     With a ``status`` filter the group counts sum to the matching requirements
     while ``summary.total`` keeps counting the whole corpus, as it always has.
+
+    ``summary.incomplete_repos`` names the repos whose open-pull-request fetch
+    failed, and is empty when every repo was read in full.  While it is non-empty
+    every count in ``summary`` is a floor rather than a total — ``total`` and
+    ``by_status`` included, since both are tallied as the pull request branches
+    are walked — so a zero there means "none found" only for the repos absent
+    from that list.
     """
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(_invalid_status_message(status))
@@ -1061,6 +1077,7 @@ async def get_dashboard(
     aggregated: list[dict[str, Any]] = []
     all_candidates: list[groups.Candidate] = []
     status_counts: dict[str, int] = {}
+    incomplete_repos: list[str] = []
 
     for repo_row in repos:
         repo_name = normalize_repo(repo_row["repo_name"])
@@ -1099,39 +1116,52 @@ async def get_dashboard(
                 pending.append((entry, numbers, False))
                 landing_candidates.append(landing.Candidate(f["path"], content, entry))
 
-            lachesis_prs = await github.list_lachesis_prs(repo_name)
-            for pr_info in lachesis_prs:
-                branch = pr_info["branch"]
-                pr = _pr_field(pr_info)
-                pr_files = await github.list_files(repo_name, "requirements", branch=branch)
-                for f in pr_files:
-                    if not f["name"].endswith(".md"):
-                        continue
-                    content, _ = await github.get_file(repo_name, f["path"], branch=branch)
-                    post = frontmatter.loads(content)
-                    req_id = post["id"]
-                    if req_id in seen_ids:
-                        continue
-                    seen_ids.add(req_id)
-                    req_status = canonical_status(post.get("status", ""))
-                    status_counts[req_status] = status_counts.get(req_status, 0) + 1
-                    if status is not None and req_status != status:
-                        continue
-                    numbers = linked_issue_numbers(post)
-                    entry = {
-                        "id": req_id,
-                        "title": post["title"],
-                        "status": req_status,
-                        "github_issue": post.get("github_issue"),
-                        "pr": pr,
-                        "warning": _entry_warning(pr, numbers),
-                        **_inactive_fields(post),
-                    }
-                    repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
-                    if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
-                        continue
-                    requirements.append(entry)
-                    pending.append((entry, numbers, True))
+            try:
+                lachesis_prs = await github.list_lachesis_prs(repo_name)
+                for pr_info in lachesis_prs:
+                    branch = pr_info["branch"]
+                    pr = _pr_field(pr_info)
+                    pr_files = await github.list_files(repo_name, "requirements", branch=branch)
+                    for f in pr_files:
+                        if not f["name"].endswith(".md"):
+                            continue
+                        content, _ = await github.get_file(repo_name, f["path"], branch=branch)
+                        post = frontmatter.loads(content)
+                        req_id = post["id"]
+                        if req_id in seen_ids:
+                            continue
+                        seen_ids.add(req_id)
+                        req_status = canonical_status(post.get("status", ""))
+                        status_counts[req_status] = status_counts.get(req_status, 0) + 1
+                        if status is not None and req_status != status:
+                            continue
+                        numbers = linked_issue_numbers(post)
+                        entry = {
+                            "id": req_id,
+                            "title": post["title"],
+                            "status": req_status,
+                            "github_issue": post.get("github_issue"),
+                            "pr": pr,
+                            "warning": _entry_warning(pr, numbers),
+                            **_inactive_fields(post),
+                        }
+                        repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
+                        if (
+                            status is None
+                            and not include_inactive
+                            and req_status in INACTIVE_STATUSES
+                        ):
+                            continue
+                        requirements.append(entry)
+                        pending.append((entry, numbers, True))
+            except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
+                # Falls through rather than reaching the outer handler: what this repo's
+                # default branch already yielded is real, and every count below it is a
+                # floor that incomplete_repos qualifies.
+                logger.warning(
+                    "get_dashboard: PR-branch pass failed repo=%s error=%r", repo_name, exc
+                )
+                incomplete_repos.append(repo_name)
 
             await _attach_derived(repo_name, pending)
             aggregated.append({"repo": repo_name, "requirements": requirements})
@@ -1163,6 +1193,7 @@ async def get_dashboard(
             "unlinked_count": unlinked_count,
             "awaiting_merge_count": len(grouped["awaiting_merge"]),
             "groups": {name: len(grouped[name]) for name in groups.GROUP_NAMES},
+            "incomplete_repos": sorted(incomplete_repos),
             "stale_after_days": stale_after_days,
         },
     }
