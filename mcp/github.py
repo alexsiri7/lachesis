@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 from typing import Any, Literal, TypedDict
 
 import httpx
 
-from derive import BlockerFacts, CheckFacts, IssueFacts, PullFacts
+from derive import ActivityFailure, BlockerFacts, CheckFacts, IssueFacts, PullFacts
 from settings import settings
 
 logger = logging.getLogger(__name__)
@@ -780,49 +781,138 @@ def _normalize_issue(issue: dict[str, Any]) -> IssueFacts:
     }
 
 
-async def get_issue_activity(repo: str, numbers: list[int]) -> dict[int, IssueFacts] | None:
-    """Return activity facts for *numbers*, keyed by issue number, or ``None``.
+_ISSUE_ALIAS = re.compile(r"i\d+")
+
+_FAILURE_RANK: dict[ActivityFailure, int] = {"rate_limited": 0, "inaccessible": 1, "transient": 2}
+
+
+class IssueActivity(TypedDict):
+    """One repo's issue facts, and the worst thing that stopped the rest being read."""
+
+    facts: dict[int, IssueFacts]
+    failure: ActivityFailure | None
+
+
+def _worse(current: ActivityFailure | None, candidate: ActivityFailure) -> ActivityFailure:
+    """The failure worth reporting of two, so the answer does not depend on chunk order."""
+    if current is None:
+        return candidate
+    return min(current, candidate, key=_FAILURE_RANK.__getitem__)
+
+
+def _missing_issue(error: dict[str, Any]) -> bool:
+    """True when an error means only "no such issue", which the null node already says.
+
+    GitHub reports a number that is a pull request, or an issue since deleted or
+    transferred, as a ``NOT_FOUND`` under that issue's own alias.  A repo it
+    cannot see is a ``NOT_FOUND`` at ``["repository"]``, which this leaves alone.
+    """
+    path = error.get("path") or []
+    return (
+        error.get("type") == "NOT_FOUND"
+        and len(path) == 2
+        and path[0] == "repository"
+        and bool(_ISSUE_ALIAS.fullmatch(str(path[1])))
+    )
+
+
+def _graphql_failure(errors: list[dict[str, Any]]) -> ActivityFailure | None:
+    """Classify what is left of *errors* once the merely-missing issues are dropped.
+
+    Dropping those first is load-bearing: classified the other way round, one
+    linked number that is a pull request marks its whole repo unreadable.
+    """
+    remaining = [error for error in errors if not _missing_issue(error)]
+    if not remaining:
+        return None
+    types = {error.get("type") for error in remaining}
+    if "RATE_LIMITED" in types:
+        return "rate_limited"
+    if types & {"NOT_FOUND", "FORBIDDEN"}:
+        return "inaccessible"
+    return "transient"
+
+
+def _response_failure(resp: httpx.Response) -> ActivityFailure:
+    """Classify an unsuccessful response, separating spent quota from refusal."""
+    if resp.status_code == 429 or (
+        resp.status_code == 403
+        and ("retry-after" in resp.headers or resp.headers.get("x-ratelimit-remaining") == "0")
+    ):
+        return "rate_limited"
+    if resp.status_code in (401, 403, 404):
+        return "inaccessible"
+    return "transient"
+
+
+async def _read_issue_chunk(
+    http: httpx.AsyncClient, repo: str, chunk: list[int]
+) -> tuple[dict[int, IssueFacts], ActivityFailure | None]:
+    """Read one aliased batch, returning the issues it yielded and what it could not."""
+    owner, _, name = repo.partition("/")
+    try:
+        resp = await http.post(
+            "https://api.github.com/graphql",
+            headers=_headers(),
+            json={
+                "query": _issue_activity_query(chunk),
+                "variables": {"owner": owner, "name": name},
+            },
+        )
+    except httpx.RequestError as exc:
+        logger.warning("github.get_issue_activity unreachable repo=%s error=%r", repo, exc)
+        return {}, "transient"
+    if not resp.is_success:
+        refused = _response_failure(resp)
+        logger.warning(
+            "github.get_issue_activity failed repo=%s status=%s cause=%s",
+            repo,
+            resp.status_code,
+            refused,
+        )
+        return {}, refused
+    data = resp.json()
+    errors = data.get("errors") or []
+    failure = _graphql_failure(errors)
+    if failure is not None:
+        logger.warning(
+            "github.get_issue_activity graphql errors repo=%s cause=%s: %s", repo, failure, errors
+        )
+    repository = (data.get("data") or {}).get("repository")
+    if repository is None:
+        logger.warning("github.get_issue_activity: no repository for repo=%s", repo)
+        return {}, _worse(failure, "inaccessible")
+    return {node["number"]: _normalize_issue(node) for node in repository.values() if node}, failure
+
+
+async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
+    """Return activity facts for *numbers* keyed by issue number, and what failed.
 
     Issues are fetched in aliased batches, so a whole repo's requirements cost a
     request or two instead of one per requirement, and an empty *numbers* costs
-    none.  Issues that no longer exist are absent from the returned map.
+    none.  Issues that no longer exist are absent from ``facts``.
 
-    Unlike the rest of this module this returns ``None`` instead of raising when
-    GitHub cannot be read: a caller reporting derived status degrades to saying
-    so rather than failing the listing it was really asked for.
+    Unlike the rest of this module this never raises when GitHub cannot be read:
+    a caller reporting derived status degrades to saying so rather than failing
+    the listing it was really asked for.  So ``facts`` keeps whatever the
+    readable batches yielded and ``failure`` names the worst cause seen — and a
+    cause no retry can improve stops the remaining batches instead of spending
+    quota to fail identically.
     """
     if not numbers:
-        return {}
-    owner, _, name = repo.partition("/")
+        return {"facts": {}, "failure": None}
     facts: dict[int, IssueFacts] = {}
+    failure: ActivityFailure | None = None
     async with httpx.AsyncClient(timeout=10.0) as http:
         for start in range(0, len(numbers), _ISSUE_ACTIVITY_CHUNK):
             chunk = numbers[start : start + _ISSUE_ACTIVITY_CHUNK]
-            resp = await http.post(
-                "https://api.github.com/graphql",
-                headers=_headers(),
-                json={
-                    "query": _issue_activity_query(chunk),
-                    "variables": {"owner": owner, "name": name},
-                },
-            )
-            if not resp.is_success:
-                logger.warning(
-                    "github.get_issue_activity failed repo=%s status=%s", repo, resp.status_code
-                )
-                return None
-            data = resp.json()
-            if "errors" in data:
-                logger.warning("github.get_issue_activity graphql errors: %s", data["errors"])
-                return None
-            repository = (data.get("data") or {}).get("repository")
-            if repository is None:
-                logger.warning("github.get_issue_activity: no repository for repo=%s", repo)
-                return None
-            for node in repository.values():
-                if node:
-                    facts[node["number"]] = _normalize_issue(node)
-    return facts
+            read, chunk_failure = await _read_issue_chunk(http, repo, chunk)
+            facts.update(read)
+            if chunk_failure is not None:
+                failure = _worse(failure, chunk_failure)
+                if chunk_failure != "transient":
+                    break
+    return {"facts": facts, "failure": failure}
 
 
 _DEPLOYMENT_PAGE_SIZE = 100

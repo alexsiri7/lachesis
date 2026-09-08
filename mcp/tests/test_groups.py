@@ -29,6 +29,7 @@ def _derived(
     *,
     status: str | None = "in-progress",
     source: str = "issues",
+    unavailable_cause: str | None = None,
     diverged: bool = False,
     last_activity: str | None = "2026-09-07T00:00:00Z",
     landed_at: str | None = None,
@@ -39,6 +40,7 @@ def _derived(
     return {
         "status": status,
         "source": source,
+        "unavailable_cause": unavailable_cause,
         "diverged": diverged,
         "last_activity": last_activity,
         "landed_at": landed_at,
@@ -182,12 +184,25 @@ def test_two_signals_report_one_entry_carrying_both_kinds() -> None:
 
 
 def test_an_unreadable_requirement_needs_attention() -> None:
-    """A requirement GitHub could not be read for is never reported as healthy."""
+    """A requirement GitHub could not be read for is never reported as healthy.
+
+    The cause rides along: without it the one place a human reads "unavailable"
+    cannot tell a spent rate limit from a repo the token lost access to.
+    """
     grouped = _grouped(
-        _candidate("008", derived=_derived(status=None, source="unavailable", last_activity=None))
+        _candidate(
+            "008",
+            derived=_derived(
+                status=None,
+                source="unavailable",
+                unavailable_cause="rate_limited",
+                last_activity=None,
+            ),
+        )
     )
 
     assert grouped["needs_attention"][0]["kinds"] == ["unavailable"]
+    assert grouped["needs_attention"][0]["unavailable_cause"] == "rate_limited"
 
 
 def test_a_requirement_awaiting_its_pr_is_not_one_that_was_never_linked() -> None:

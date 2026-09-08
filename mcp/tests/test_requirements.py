@@ -120,6 +120,7 @@ _GRAPHQL_URL = "https://api.github.com/graphql"
 _UNLINKED_DERIVED = {
     "status": None,
     "source": "unlinked",
+    "unavailable_cause": None,
     "diverged": False,
     "last_activity": None,
     "landed_at": None,
@@ -1415,6 +1416,7 @@ async def test_list_requirements_degrades_when_issue_activity_fails(
     assert result[0]["id"] == "001"
     assert result[0]["derived"]["source"] == "unavailable"
     assert result[0]["derived"]["status"] is None
+    assert result[0]["derived"]["unavailable_cause"] == "transient"
 
 
 async def test_get_dashboard_keeps_the_repo_when_issue_activity_fails(
@@ -1434,6 +1436,118 @@ async def test_get_dashboard_keeps_the_repo_when_issue_activity_fails(
     requirements = result["repos"][0]["requirements"]
     assert [r["id"] for r in requirements] == ["001"]
     assert requirements[0]["derived"]["source"] == "unavailable"
+
+
+_SECOND_MD = """\
+---
+id: "002"
+title: "Login endpoints"
+status: "draft"
+github_issue: null
+created: "2026-05-11"
+updated: "2026-05-11"
+---
+
+## Issues
+
+- #99 — Filed against a number that turned out to be a pull request
+"""
+
+_TWO_FILE_LIST_RESP = [
+    {"name": _NAME, "path": _PATH},
+    {"name": "002-login.md", "path": "requirements/002-login.md"},
+]
+
+
+async def test_get_dashboard_counts_what_it_could_not_derive(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """An unread requirement is named in the summary, not silently counted as healthy."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+        result = await get_dashboard()
+
+    summary = result["summary"]
+    assert summary["unavailable_count"] == 1
+    assert summary["unavailable_repos"] == [
+        {"repo": "owner/repo", "count": 1, "causes": ["transient"]}
+    ]
+    # A derivation that failed leaves every count whole, which incomplete_repos does not.
+    assert summary["incomplete_repos"] == []
+    assert summary["total"] == 1
+
+
+async def test_get_dashboard_reports_no_unavailable_when_everything_was_read(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """Both fields are present and empty rather than absent when nothing failed."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(
+            method="POST",
+            url=_GRAPHQL_URL,
+            json={
+                "data": {"repository": {"i42": _open_issue_node(42), "i43": _open_issue_node(43)}}
+            },
+        )
+        result = await get_dashboard()
+
+    assert result["summary"]["unavailable_count"] == 0
+    assert result["summary"]["unavailable_repos"] == []
+
+
+async def test_get_dashboard_keeps_deriving_around_a_number_that_is_not_an_issue(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """One bad linked number costs its own requirement, not every sibling in the repo.
+
+    GitHub answers the batch 200 with a null node and a NOT_FOUND naming that
+    alias; treating that as a failed read marked the whole repo unavailable.
+    """
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_TWO_FILE_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_BULLETED_MD, "sha1"))
+        httpx_mock.add_response(json=_make_file_response(_SECOND_MD, "sha2"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(
+            method="POST",
+            url=_GRAPHQL_URL,
+            json={
+                "data": {
+                    "repository": {
+                        "i42": _open_issue_node(42),
+                        "i43": _open_issue_node(43),
+                        "i99": None,
+                    }
+                },
+                "errors": [{"type": "NOT_FOUND", "path": ["repository", "i99"]}],
+            },
+        )
+        result = await get_dashboard()
+
+    derived = {req["id"]: req["derived"] for req in result["repos"][0]["requirements"]}
+    assert derived["001"]["source"] == "issues"
+    assert derived["001"]["unavailable_cause"] is None
+    assert derived["002"]["source"] == "unavailable"
+    assert derived["002"]["unavailable_cause"] == "issue_missing"
+    assert result["summary"]["unavailable_count"] == 1
+    assert result["summary"]["unavailable_repos"] == [
+        {"repo": "owner/repo", "count": 1, "causes": ["issue_missing"]}
+    ]
 
 
 async def test_get_dashboard_unlinked_count_excludes_bulleted_issues(
