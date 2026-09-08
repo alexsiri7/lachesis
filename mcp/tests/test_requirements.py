@@ -3662,6 +3662,34 @@ async def test_get_dashboard_names_the_repo_whose_pr_fetch_failed(
     assert summary["by_status"] == {"planned": 1}
 
 
+async def test_get_dashboard_keeps_a_repo_whose_pr_branch_read_failed(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A PR branch that could not be read costs that branch, not the repo's whole listing."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(
+            json=[
+                {
+                    "head": {"ref": "lachesis/req-002-new-feature"},
+                    "html_url": "https://x/pull/7",
+                    "number": 7,
+                    "created_at": "2026-09-01T00:00:00Z",
+                }
+            ]
+        )
+        httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
+        result = await get_dashboard()
+
+    assert [req["id"] for req in result["repos"][0]["requirements"]] == ["001"]
+    assert result["summary"]["incomplete_repos"] == ["owner/repo"]
+    assert result["summary"]["total"] == 1
+
+
 async def test_get_dashboard_counts_awaiting_merge_without_redefining_unlinked(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
