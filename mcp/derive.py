@@ -52,6 +52,7 @@ class PullFacts(TypedDict):
     merged: bool
     updated_at: str | None
     merged_at: str | None
+    merge_commit: str | None
     is_draft: bool
     checks: list[CheckFacts]
 
@@ -94,6 +95,7 @@ class Derived(TypedDict):
     diverged: bool
     last_activity: str | None
     landed_at: str | None
+    landed_commit: str | None
     linked_issues: list[int]
     blocked_by: list[BlockerFacts]
     signals: Signals
@@ -140,24 +142,36 @@ def _last_activity(issues: list[IssueFacts]) -> str | None:
     return max(stamps) if stamps else None
 
 
-def _issue_landed_at(issue: IssueFacts) -> str | None:
-    """When this issue's work landed, preferring the merge over the close.
+def _issue_landing(issue: IssueFacts) -> tuple[str, str | None] | None:
+    """When this issue's work landed and the commit that carried it, or ``None``.
 
     A squash merge closes its issue through the squash commit, so an issue can
     carry both a merged pull request and a commit closer.  The merge is the
     moment the work landed; the close time only stands in when no merged pull
-    request offers a timestamp.
+    request offers a timestamp, and it names no commit we can ask about.
     """
-    merges = [pull["merged_at"] for pull in issue["pulls"] if pull["merged"] and pull["merged_at"]]
+    merges = [
+        (pull["merged_at"], pull["merge_commit"])
+        for pull in issue["pulls"]
+        if pull["merged"] and pull["merged_at"] is not None
+    ]
     if merges:
-        return max(merges)
-    return issue["closed_at"] if issue["closed_by_commit"] else None
+        return max(merges, key=lambda merge: merge[0])
+    if issue["closed_by_commit"] and issue["closed_at"]:
+        return issue["closed_at"], None
+    return None
 
 
-def _landed_at(issues: list[IssueFacts]) -> str | None:
-    """When the last of the requirement's issues landed."""
-    stamps = [stamp for issue in issues if (stamp := _issue_landed_at(issue))]
-    return max(stamps) if stamps else None
+def _landing(issues: list[IssueFacts]) -> tuple[str, str | None] | None:
+    """When the last of the requirement's issues landed, and on which commit.
+
+    The commit is read off the same landing that supplied the timestamp, so
+    deployment questions are asked about the merge that finished the
+    requirement rather than an earlier one.  It is ``None`` when that last
+    landing was a squash-close, which names no pull request.
+    """
+    landings = [landing for issue in issues if (landing := _issue_landing(issue))]
+    return max(landings, key=lambda landing: landing[0]) if landings else None
 
 
 def _blocking_issues(issues: list[IssueFacts]) -> list[BlockerFacts]:
@@ -230,6 +244,7 @@ def derive(
             "diverged": False,
             "last_activity": None,
             "landed_at": None,
+            "landed_commit": None,
             "linked_issues": [],
             "blocked_by": [],
             "signals": signals,
@@ -243,6 +258,7 @@ def derive(
             "diverged": False,
             "last_activity": None,
             "landed_at": None,
+            "landed_commit": None,
             "linked_issues": numbers,
             "blocked_by": [],
             "signals": signals,
@@ -267,6 +283,7 @@ def derive(
     else:
         status = "idea"
     signals["checks_failing_since"] = _checks_failing_since(issues)
+    landing = _landing(issues) if status == "done" else None
 
     return {
         "status": status,
@@ -277,7 +294,8 @@ def derive(
             and PROGRESS_RANK[recorded] != PROGRESS_RANK[status]
         ),
         "last_activity": _last_activity(issues),
-        "landed_at": _landed_at(issues) if status == "done" else None,
+        "landed_at": landing[0] if landing else None,
+        "landed_commit": landing[1] if landing else None,
         "linked_issues": numbers,
         "blocked_by": _blocking_issues(issues),
         "signals": signals,

@@ -6,7 +6,7 @@ import base64
 import contextlib
 import json
 from datetime import UTC, date, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import frontmatter
 import httpx
@@ -122,6 +122,7 @@ _UNLINKED_DERIVED = {
     "diverged": False,
     "last_activity": None,
     "landed_at": None,
+    "landed_commit": None,
     "linked_issues": [],
     "blocked_by": [],
     "signals": {
@@ -3367,3 +3368,83 @@ async def test_get_dashboard_status_filter_narrows_the_groups(
 
     assert [entry["id"] for entry in result["groups"]["dropped"]] == ["002"]
     assert sum(result["summary"]["groups"].values()) == 1
+
+
+# ---------------------------------------------------------------------------
+# landing notifications
+# ---------------------------------------------------------------------------
+
+
+async def test_list_requirements_offers_only_default_branch_landing_candidates(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A requirement still on a PR branch has not settled and is not a candidate."""
+    pr_branch = "lachesis/req-002-new-feature"
+    pr_md = _SAMPLE_MD.replace('id: "001"', 'id: "002"')
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(
+        json=[{"head": {"ref": pr_branch}, "html_url": "https://x/pull/7", "number": 7}]
+    )
+    pr_file = {"name": "002-new-feature.md", "path": "requirements/002-new-feature.md"}
+    httpx_mock.add_response(json=[pr_file])
+    httpx_mock.add_response(
+        json={
+            "name": pr_file["name"],
+            "path": pr_file["path"],
+            "content": base64.b64encode(pr_md.encode()).decode("ascii"),
+            "sha": "sha2",
+            "type": "file",
+        }
+    )
+
+    with patch("tools.requirements.landing.notify_landed", new_callable=AsyncMock) as notify_landed:
+        await list_requirements("owner/repo")
+
+    repo, candidates = notify_landed.await_args.args
+    assert repo == "owner/repo"
+    assert [c.entry["id"] for c in candidates] == ["001"]
+    assert candidates[0].path == _PATH
+    assert candidates[0].content == _SAMPLE_MD
+
+
+async def test_get_dashboard_keeps_the_repo_when_landing_evaluation_raises(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A notification is never worth the listing the caller actually asked for."""
+    with (
+        patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/repo"}],
+        ),
+        patch(
+            "tools.requirements.landing.notify_landed",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ),
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        result = await get_dashboard()
+
+    assert [r["id"] for r in result["repos"][0]["requirements"]] == ["001"]
+
+
+async def test_get_dashboard_offers_candidates_that_reached_derivation(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A cancelled requirement never reaches _attach_derived, so it is not a candidate."""
+    with (
+        patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/repo"}],
+        ),
+        patch("tools.requirements.landing.notify_landed", new_callable=AsyncMock) as notify_landed,
+    ):
+        _mock_cancelled_dashboard(httpx_mock)
+        await get_dashboard()
+
+    candidates = notify_landed.await_args.args[1]
+    assert [c.entry["id"] for c in candidates] == ["001"]
+    assert all("derived" in c.entry for c in candidates)

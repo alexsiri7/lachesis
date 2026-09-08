@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,6 +72,58 @@ def test_register_repo_returns_row() -> None:
     with patch("db._engine", return_value=mock):
         result = db.register_repo("uid", "owner/repo")
     assert result["repo_name"] == "owner/repo"
+
+
+def test_register_repo_leaves_an_omitted_landing_signal_alone() -> None:
+    """An omitted signal binds NULL so COALESCE preserves the configured one."""
+    mock = _mock_engine([{"repo_name": "owner/repo", "landing_signal": "deployment"}])
+    with patch("db._engine", return_value=mock):
+        db.register_repo("uid", "owner/repo")
+
+    params = mock.begin.return_value.execute.call_args[0][1]
+    assert params["landing_signal"] is None
+    sql = " ".join(str(mock.begin.return_value.execute.call_args[0][0]).split())
+    assert "COALESCE(:landing_signal, 'merge')" in sql
+    assert "COALESCE( :landing_signal, lachesis_repos.landing_signal )" in sql
+
+
+def test_register_repo_stores_a_given_landing_signal() -> None:
+    mock = _mock_engine([{"repo_name": "owner/repo", "landing_signal": "deployment"}])
+    with patch("db._engine", return_value=mock):
+        result = db.register_repo("uid", "owner/repo", "deployment")
+
+    assert result["landing_signal"] == "deployment"
+    assert mock.begin.return_value.execute.call_args[0][1]["landing_signal"] == "deployment"
+
+
+def test_get_landing_signal_defaults_to_merge_when_unregistered() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        assert db.get_landing_signal("uid", "owner/repo") == "merge"
+
+
+def test_get_landing_signal_returns_the_stored_value() -> None:
+    mock = _mock_engine([{"landing_signal": "deployment"}])
+    with patch("db._engine", return_value=mock):
+        assert db.get_landing_signal("uid", "owner/repo") == "deployment"
+
+
+def test_notified_requirement_ids_returns_a_set() -> None:
+    mock = _mock_engine([{"requirement_id": "026"}, {"requirement_id": "027"}])
+    with patch("db._engine", return_value=mock):
+        assert db.notified_requirement_ids("uid", "owner/repo") == {"026", "027"}
+
+
+def test_get_ntfy_config_carries_the_epoch() -> None:
+    """The row's creation time is what decides which landings are worth announcing."""
+    created = datetime(2026, 9, 1, tzinfo=UTC)
+    mock = _mock_engine([{"server": "s", "topic": "t", "token": "", "created_at": created}])
+    with patch("db._engine", return_value=mock):
+        config = db.get_ntfy_config("uid")
+
+    assert config is not None
+    assert config["created_at"] == created
+    assert "created_at" in str(mock.connect.return_value.execute.call_args[0][0])
 
 
 def test_list_repos_returns_list() -> None:

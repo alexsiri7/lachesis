@@ -43,10 +43,17 @@ def _require_user_id() -> str:
     return user_id
 
 
-async def register_repo(repo: str) -> dict[str, Any]:
-    """Register a repo so Lachesis tracks it."""
+LANDING_SIGNALS = ("merge", "deployment")
+
+
+async def register_repo(repo: str, landing_signal: str | None = None) -> dict[str, Any]:
+    """Register a repo so Lachesis tracks it. Omitting *landing_signal* leaves it alone."""
     user_id = _require_user_id()
-    return db.register_repo(user_id, normalize_repo(repo))
+    if landing_signal is not None and landing_signal not in LANDING_SIGNALS:
+        raise ValueError(
+            f"landing_signal must be one of {', '.join(LANDING_SIGNALS)}, got {landing_signal!r}"
+        )
+    return db.register_repo(user_id, normalize_repo(repo), landing_signal)
 
 
 async def unregister_repo(repo: str) -> dict[str, Any]:
