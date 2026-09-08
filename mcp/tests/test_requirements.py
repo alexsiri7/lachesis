@@ -24,6 +24,7 @@ from tools.requirements import (
     get_dependencies,
     get_github_issue,
     get_initial_instructions,
+    get_pull_request,
     get_requirement,
     link_issues,
     list_requirements,
@@ -1704,6 +1705,71 @@ async def test_get_github_issue_raises_on_404(httpx_mock: HTTPXMock) -> None:
 
     with pytest.raises(FileNotFoundError, match="Issue #99 not found"):
         await get_github_issue("owner/repo", 99)
+
+
+# ---------------------------------------------------------------------------
+# get_pull_request tests
+# ---------------------------------------------------------------------------
+
+_PULL_URL = "https://api.github.com/repos/owner/repo/pulls/7"
+
+_PULL_JSON = {
+    "number": 7,
+    "title": "Add the thing",
+    "html_url": "https://github.com/owner/repo/pull/7",
+    "state": "open",
+    "merged": False,
+    "merged_at": None,
+    "mergeable": True,
+    "mergeable_state": "unstable",
+    "head": {"ref": "feature/thing"},
+    "base": {"ref": "main"},
+    "draft": False,
+}
+
+
+@pytest.mark.anyio
+async def test_get_pull_request_returns_pr_fields(httpx_mock: HTTPXMock) -> None:
+    """Happy path: found=True alongside the fields extracted from the GitHub response."""
+    httpx_mock.add_response(method="GET", url=_PULL_URL, json=_PULL_JSON)
+
+    result = await get_pull_request("owner/repo", 7)
+
+    assert result["found"] is True
+    assert result["number"] == 7
+    assert result["title"] == "Add the thing"
+    assert result["url"] == "https://github.com/owner/repo/pull/7"
+    assert result["state"] == "open"
+    assert result["merged"] is False
+    assert result["merged_at"] is None
+    assert result["mergeable"] is True
+    assert result["mergeable_state"] == "unstable"
+    assert result["head_ref"] == "feature/thing"
+    assert result["base_ref"] == "main"
+    assert result["draft"] is False
+
+
+@pytest.mark.anyio
+async def test_get_pull_request_reports_not_found_without_raising(httpx_mock: HTTPXMock) -> None:
+    """A missing pull request is a result, not an error."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.github.com/repos/owner/repo/pulls/99",
+        status_code=404,
+    )
+
+    result = await get_pull_request("owner/repo", 99)
+
+    assert result == {"found": False, "number": 99, "repo": "owner/repo"}
+
+
+@pytest.mark.anyio
+async def test_get_pull_request_propagates_server_error(httpx_mock: HTTPXMock) -> None:
+    """A 5xx is not a not-found result — it propagates."""
+    httpx_mock.add_response(method="GET", url=_PULL_URL, status_code=500)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_pull_request("owner/repo", 7)
 
 
 # ---------------------------------------------------------------------------

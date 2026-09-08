@@ -26,6 +26,7 @@ from github import (
     get_issue_activity,
     get_issue_dependencies,
     get_production_deployment,
+    get_pull_request,
     get_repo_settings,
     list_blocked_by_numbers,
     list_files,
@@ -520,6 +521,58 @@ async def test_get_issue_no_linked_pr_returns_none(httpx_mock: HTTPXMock) -> Non
     result = await get_issue("owner/repo", 1)
     assert result is not None
     assert result["linked_pr"] is None
+
+
+# ---------------------------------------------------------------------------
+# get_pull_request
+# ---------------------------------------------------------------------------
+
+_PULL_JSON = {
+    "number": 7,
+    "title": "Add the thing",
+    "html_url": "https://github.com/o/r/pull/7",
+    "state": "closed",
+    "merged": True,
+    "merged_at": "2026-09-01T10:00:00Z",
+    "mergeable": None,
+    "mergeable_state": "unknown",
+    "head": {"ref": "feature/thing"},
+    "base": {"ref": "main"},
+    "draft": False,
+}
+
+
+async def test_get_pull_request_returns_all_fields(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/pulls/7",
+        json=_PULL_JSON,
+    )
+    result = await get_pull_request("owner/repo", 7)
+    assert result == {
+        "number": 7,
+        "title": "Add the thing",
+        "url": "https://github.com/o/r/pull/7",
+        "state": "closed",
+        "merged": True,
+        "merged_at": "2026-09-01T10:00:00Z",
+        "mergeable": None,
+        "mergeable_state": "unknown",
+        "head_ref": "feature/thing",
+        "base_ref": "main",
+        "draft": False,
+    }
+
+
+async def test_get_pull_request_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=404)
+    result = await get_pull_request("owner/repo", 999)
+    assert result is None
+
+
+async def test_get_pull_request_raises_on_server_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=500)
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_pull_request("owner/repo", 7)
 
 
 # ---------------------------------------------------------------------------

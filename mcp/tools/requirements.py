@@ -1133,6 +1133,20 @@ async def get_github_issue(repo: str, issue_number: int) -> dict[str, Any]:
     return issue
 
 
+async def get_pull_request(repo: str, pr_number: int) -> dict[str, Any]:
+    """Return the current state of a pull request.
+
+    Returns ``{"found": True, ...}`` with number, title, url, state, merged, merged_at,
+    mergeable, mergeable_state, head_ref, base_ref and draft, or ``{"found": False}``
+    when the pull request does not exist.
+    """
+    repo = await _resolve_repo(repo)
+    pull = await github.get_pull_request(repo, pr_number)
+    if pull is None:
+        return {"found": False, "number": pr_number, "repo": repo}
+    return {"found": True, **pull}
+
+
 async def update_github_issue(
     repo: str, issue_number: int, fields: dict[str, Any]
 ) -> dict[str, Any]:

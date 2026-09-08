@@ -196,6 +196,19 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Return the current state of a pull request: number, title, url, state "
+        "(open/closed), merged, merged_at, mergeable, mergeable_state, head_ref, "
+        "base_ref and draft. Works for any pull request in the repo, not only ones "
+        "Lachesis opened. `merged` distinguishes merged from closed-unmerged, which "
+        "`state` alone does not; a `mergeable_state` of `unstable` means checks are "
+        "pending, not that the pull request is blocked. Returns found=false instead "
+        "of failing when the number does not exist."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(req_tools.get_pull_request)
+
+mcp.tool(
+    description=(
         "Update a GitHub issue's title, body, and/or state. "
         "fields accepts: title (str), body (str), state ('open' or 'closed'). "
         "Returns the updated issue number, title, and URL."
