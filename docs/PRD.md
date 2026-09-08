@@ -226,6 +226,14 @@ Marks a GitHub issue as blocked by another issue.
 
 ---
 
+### `get_pull_request`
+Returns the current state of a pull request, for any pull request in the repo — not only ones Lachesis opened.
+
+**Input**: `repo`, `pr_number` (integer)
+**Output**: `{found: true, number, title, url, state, merged, merged_at, mergeable, mergeable_state, head_ref, base_ref, draft}`, or `{found: false, number, repo}` when the pull request does not exist. `merged` distinguishes merged from closed-unmerged; a `mergeable_state` of `unstable` means checks are pending, not that the pull request is blocked.
+
+---
+
 ## Typical Workflow
 
 ### Capturing a new requirement

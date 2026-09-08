@@ -179,6 +179,48 @@ async def create_pull_request(
     return {"number": data["number"], "url": data["html_url"], "node_id": data["node_id"]}
 
 
+async def get_pull_request(repo: str, pr_number: int) -> dict[str, Any] | None:
+    """Return pull request fields for *pr_number*, or ``None`` on 404.
+
+    Returned keys: ``number``, ``title``, ``url``, ``state`` (``"open"``/``"closed"``),
+    ``merged``, ``merged_at``, ``mergeable``, ``mergeable_state``, ``head_ref``,
+    ``base_ref``, ``draft``.
+
+    ``mergeable`` and ``mergeable_state`` are null until GitHub finishes computing
+    mergeability in the background, so a null there means "not known yet", not "blocked".
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/pulls/{pr_number}",
+            headers=_headers(),
+        )
+    if resp.status_code == 404:
+        logger.debug("github.get_pull_request 404 repo=%s pr=%s", repo, pr_number)
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.get_pull_request failed repo=%s pr=%s status=%s",
+            repo,
+            pr_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "number": data["number"],
+        "title": data["title"],
+        "url": data["html_url"],
+        "state": data["state"],  # "open" | "closed"
+        "merged": data["merged"],
+        "merged_at": data.get("merged_at"),
+        "mergeable": data.get("mergeable"),
+        "mergeable_state": data.get("mergeable_state"),
+        "head_ref": data["head"]["ref"],
+        "base_ref": data["base"]["ref"],
+        "draft": data["draft"],
+    }
+
+
 async def _list_open_prs(repo: str) -> list[dict[str, Any]]:
     """Return raw PR objects for all open PRs in *repo* (up to 100)."""
     async with httpx.AsyncClient(timeout=10.0) as http:
