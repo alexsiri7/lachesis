@@ -95,10 +95,10 @@ async def notify_requirement(
 ) -> bool:
     """Notify once for a requirement. Returns whether this call delivered it.
 
-    The claim is taken before delivery is attempted, so a requirement whose
-    notification could not be delivered is dropped rather than retried on the
-    next evaluation. That is what lets the landing trigger run repeatedly
-    without the author receiving the same notification twice.
+    The claim is taken before delivery so that two evaluations racing on the
+    same requirement cannot both notify, and released again when delivery does
+    not land — a record that outlived a failed send would read as "already
+    notified" forever, and the landing trigger would never retry.
     """
     try:
         repo_name = normalize_repo(repo)
@@ -121,4 +121,15 @@ async def notify_requirement(
         logger.info("notify: %s %s already notified, suppressed", repo_name, requirement_id)
         return False
 
-    return await send(user_id, title=title, body=body, click=click, tags=tags)
+    delivered = await send(user_id, title=title, body=body, click=click, tags=tags)
+    if not delivered:
+        try:
+            db.release_notification(user_id, repo_name, requirement_id)
+        except Exception:
+            logger.warning(
+                "notify: could not release the claim for %s %s after a failed delivery",
+                repo_name,
+                requirement_id,
+                exc_info=True,
+            )
+    return delivered

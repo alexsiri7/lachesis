@@ -223,15 +223,46 @@ async def test_notify_requirement_drops_when_claim_fails(
     assert "could not claim notification" in caplog.text
 
 
-async def test_notify_requirement_claims_before_delivering(
+async def test_notify_requirement_keeps_the_claim_when_delivery_succeeds(
     configured: object, httpx_mock: HTTPXMock
 ) -> None:
-    """A failed delivery still consumes the claim — dropped, never retried."""
-    httpx_mock.add_exception(httpx.ConnectError("boom"))
+    """Only a failed send gives the claim back — a delivered one is what suppresses the rest."""
+    httpx_mock.add_response()
     with patch("notify.db.claim_notification", return_value=True) as claim:
-        delivered = await notify.notify_requirement(
-            "uid", repo="owner/repo", requirement_id="026", title="t", body="b"
-        )
+        with patch("notify.db.release_notification") as release:
+            await notify.notify_requirement(
+                "uid", repo="owner/repo", requirement_id="026", title="t", body="b"
+            )
+
+    claim.assert_called_once()
+    release.assert_not_called()
+
+
+async def test_notify_requirement_releases_the_claim_when_delivery_fails(
+    configured: object, httpx_mock: HTTPXMock
+) -> None:
+    """A transient ntfy outage must leave the requirement retryable, not look delivered."""
+    httpx_mock.add_exception(httpx.ConnectError("boom"))
+    with patch("notify.db.claim_notification", return_value=True):
+        with patch("notify.db.release_notification") as release:
+            delivered = await notify.notify_requirement(
+                "uid", repo="owner/repo", requirement_id="026", title="t", body="b"
+            )
 
     assert delivered is False
-    claim.assert_called_once()
+    release.assert_called_once_with("uid", "owner/repo", "026")
+
+
+async def test_notify_requirement_survives_a_failed_release(
+    configured: object, httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    httpx_mock.add_exception(httpx.ConnectError("boom"))
+    with patch("notify.db.claim_notification", return_value=True):
+        with patch("notify.db.release_notification", side_effect=RuntimeError("no DB")):
+            with caplog.at_level(logging.WARNING, logger="notify"):
+                delivered = await notify.notify_requirement(
+                    "uid", repo="owner/repo", requirement_id="026", title="t", body="b"
+                )
+
+    assert delivered is False
+    assert "could not release the claim" in caplog.text

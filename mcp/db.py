@@ -423,3 +423,22 @@ def claim_notification(user_id: str, repo_name: str, requirement_id: str) -> boo
     with _engine().begin() as conn:
         result = conn.execute(sql, params)
         return result.mappings().first() is not None
+
+
+def release_notification(user_id: str, repo_name: str, requirement_id: str) -> None:
+    """Give a claim back when its notification never landed, so it can be retried.
+
+    Without this the dedupe row would record a notification nobody received, and
+    every later evaluation would read it as "already notified".
+    """
+    sql = text(
+        """
+        DELETE FROM lachesis_notifications
+        WHERE user_id = :user_id
+          AND repo_name = :repo_name
+          AND requirement_id = :requirement_id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "requirement_id": requirement_id}
+    with _engine().begin() as conn:
+        conn.execute(sql, params)

@@ -179,3 +179,13 @@ def test_claim_notification_false_when_already_claimed() -> None:
 
     sql = str(mock.begin.return_value.execute.call_args[0][0])
     assert "DO NOTHING" in sql
+
+
+def test_release_notification_deletes_the_claim() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        db.release_notification("uid", "owner/repo", "026")
+
+    call = mock.begin.return_value.execute.call_args
+    assert "DELETE FROM lachesis_notifications" in str(call[0][0])
+    assert call[0][1] == {"user_id": "uid", "repo_name": "owner/repo", "requirement_id": "026"}
