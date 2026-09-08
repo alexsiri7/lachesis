@@ -1055,7 +1055,7 @@ def _deployment(deployment_id: int = 1, *, production: bool = True, task: str = 
 
 def _statuses_url(deployment_id: int) -> str:
     return (
-        f"https://api.github.com/repos/owner/repo/deployments/{deployment_id}/statuses?per_page=1"
+        f"https://api.github.com/repos/owner/repo/deployments/{deployment_id}/statuses?per_page=10"
     )
 
 
@@ -1123,6 +1123,22 @@ async def test_get_production_deployment_reports_pending_while_in_progress(
     assert await get_production_deployment("owner/repo", "abc123") == {
         "state": "pending",
         "url": None,
+    }
+
+
+async def test_get_production_deployment_looks_past_a_superseding_inactive_status(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """GitHub marks a deployment inactive when a later one supersedes it, not when it failed."""
+    httpx_mock.add_response(url=_DEPLOYMENTS_URL, json=[_deployment()])
+    httpx_mock.add_response(
+        url=_statuses_url(1),
+        json=[{"state": "inactive"}, {"state": "success", "log_url": "https://example/log"}],
+    )
+
+    assert await get_production_deployment("owner/repo", "abc123") == {
+        "state": "success",
+        "url": "https://example/log",
     }
 
 

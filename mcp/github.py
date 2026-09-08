@@ -771,6 +771,8 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> dict[int, IssueFa
 
 
 _DEPLOYMENT_SCAN_LIMIT = 5
+_STATUS_SCAN_LIMIT = 10
+_TERMINAL_STATES = frozenset({"success", "failure", "error"})
 
 DeploymentState = Literal["success", "failure", "pending"]
 
@@ -791,6 +793,12 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
     burning a requirement's single notification on a deployment that was retried
     successfully is the worse mistake, and a state that is still moving reports
     ``pending`` so the next read can decide instead.
+
+    ``inactive`` statuses are skipped rather than read as an outcome.  GitHub
+    appends one to a deployment whenever a later deployment supersedes it, so
+    the newest status of a deployment that succeeded hours ago is routinely
+    ``inactive`` — reading it as "still moving" would leave a landed
+    requirement owed a notification indefinitely.
 
     Like :func:`get_issue_activity` this degrades rather than raises: a caller
     here is deciding whether to make a claim, and an unreadable GitHub means it
@@ -833,7 +841,7 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
                 status_resp = await http.get(
                     f"{_BASE_URL}/repos/{repo}/deployments/{deployment['id']}/statuses",
                     headers=_headers(),
-                    params={"per_page": 1},
+                    params={"per_page": _STATUS_SCAN_LIMIT},
                 )
                 if not status_resp.is_success:
                     logger.warning(
@@ -843,19 +851,18 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
                         status_resp.status_code,
                     )
                     continue
-                statuses = status_resp.json()
-                if not statuses:
-                    verdict = verdict or {"state": "pending", "url": None}
+                outcome = next(
+                    (s for s in status_resp.json() if s.get("state") in _TERMINAL_STATES),
+                    None,
+                )
+                if outcome is None:
+                    if verdict is None:
+                        verdict = {"state": "pending", "url": None}
                     continue
-                latest = statuses[0]
-                state = latest.get("state")
-                url = latest.get("log_url") or latest.get("target_url")
-                if state == "success":
+                url = outcome.get("log_url") or outcome.get("target_url")
+                if outcome["state"] == "success":
                     return {"state": "success", "url": url}
-                if state in ("failure", "error"):
-                    verdict = {"state": "failure", "url": url}
-                elif verdict is None or verdict["state"] != "failure":
-                    verdict = {"state": "pending", "url": None}
+                verdict = {"state": "failure", "url": url}
     except Exception:
         logger.warning(
             "github.get_production_deployment could not read repo=%s sha=%s",

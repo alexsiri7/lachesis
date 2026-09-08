@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import db
 import github
@@ -24,6 +24,8 @@ from auth import current_db_user_id
 from status import INACTIVE_STATUSES, canonical_status
 
 logger = logging.getLogger(__name__)
+
+Verdict = Literal["merged", "deployed", "failed"]
 
 _SUMMARY_MAX_CHARS = 200
 _EMPHASIS = re.compile(r"[*_]+")
@@ -103,7 +105,9 @@ def _landed_after(candidate: Candidate, epoch: datetime) -> bool:
     return landed_at is not None and landed_at > epoch
 
 
-async def _verdict(repo: str, signal: str, candidate: Candidate) -> tuple[str, str | None] | None:
+async def _verdict(
+    repo: str, signal: str, candidate: Candidate
+) -> tuple[Verdict, str | None] | None:
     """Return ``(state, url)`` for a landed requirement, or ``None`` to decide later.
 
     ``None`` leaves the notification owed: no claim is taken, so a deployment
@@ -130,7 +134,7 @@ async def _verdict(repo: str, signal: str, candidate: Candidate) -> tuple[str, s
 
 
 def _message(
-    repo: str, candidate: Candidate, state: str, url: str | None
+    repo: str, candidate: Candidate, state: Verdict, url: str | None
 ) -> tuple[str, str, str, list[str]]:
     """Compose ``(title, body, click, tags)`` for one verdict."""
     req_title = str(candidate.entry.get("title", ""))
