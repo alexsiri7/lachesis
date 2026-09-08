@@ -3556,7 +3556,7 @@ def _mock_quiet_dashboard(httpx_mock: HTTPXMock, days: int) -> None:
 async def test_get_dashboard_reports_every_group_even_when_empty(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
-    """A repo with no requirements still answers all seven questions."""
+    """A repo with no requirements still answers all nine questions."""
     with patch(
         "tools.requirements.db.list_repos",
         return_value=[{"repo_name": "owner/repo"}],
@@ -3571,6 +3571,8 @@ async def test_get_dashboard_reports_every_group_even_when_empty(
         "awaiting_merge": [],
         "stalled": [],
         "needs_attention": [],
+        "unreadable": [],
+        "never_linked": [],
         "diverged": [],
         "in_flight": [],
     }
@@ -3653,7 +3655,7 @@ async def test_get_dashboard_groups_span_every_registered_repo(
         for entry in group
     }
     assert placed == {
-        ("owner/repo", "001"): "needs_attention",
+        ("owner/repo", "001"): "never_linked",
         ("owner/other", "001"): "stalled",
     }
 

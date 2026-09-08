@@ -1,4 +1,4 @@
-"""Unit tests for mcp/groups.py — the dashboard's seven requirement groups."""
+"""Unit tests for mcp/groups.py — the dashboard's nine requirement groups."""
 
 from __future__ import annotations
 
@@ -183,11 +183,13 @@ def test_two_signals_report_one_entry_carrying_both_kinds() -> None:
     ]
 
 
-def test_an_unreadable_requirement_needs_attention() -> None:
+def test_an_unreadable_requirement_is_grouped_as_unreadable() -> None:
     """A requirement GitHub could not be read for is never reported as healthy.
 
-    The cause rides along: without it the one place a human reads "unavailable"
-    cannot tell a spent rate limit from a repo the token lost access to.
+    It is not a fault in the work either, so it answers to its own group rather
+    than diluting the worklist.  The cause rides along: without it the one place
+    a human reads "unavailable" cannot tell a spent rate limit from a repo the
+    token lost access to.
     """
     grouped = _grouped(
         _candidate(
@@ -201,12 +203,71 @@ def test_an_unreadable_requirement_needs_attention() -> None:
         )
     )
 
-    assert grouped["needs_attention"][0]["kinds"] == ["unavailable"]
-    assert grouped["needs_attention"][0]["unavailable_cause"] == "rate_limited"
+    assert [entry["id"] for entry in grouped["unreadable"]] == ["008"]
+    assert grouped["unreadable"][0]["unavailable_cause"] == "rate_limited"
+    assert grouped["needs_attention"] == []
+
+
+def test_an_unreadable_requirement_quiet_for_months_is_unreadable_not_stalled() -> None:
+    """Being unread outranks silence: the silence is not known to be the work's."""
+    grouped = _grouped(
+        _candidate(
+            "008",
+            derived=_derived(
+                status=None,
+                source="unavailable",
+                unavailable_cause="rate_limited",
+                last_activity="2026-01-01T00:00:00Z",
+            ),
+        )
+    )
+
+    assert [entry["id"] for entry in grouped["unreadable"]] == ["008"]
+    assert grouped["stalled"] == []
+    assert grouped["in_flight"] == []
+
+
+def test_a_never_linked_requirement_quiet_for_months_is_never_linked_not_stalled() -> None:
+    """Nobody has been silent about work nobody has started: it wants a decision, not a nudge."""
+    grouped = _grouped(
+        _candidate(
+            "009",
+            derived=_derived(
+                status=None,
+                source="unlinked",
+                last_activity="2026-01-01T00:00:00Z",
+                signals=_signals(unlinked="never_linked"),
+            ),
+        )
+    )
+
+    assert [entry["id"] for entry in grouped["never_linked"]] == ["009"]
+    assert grouped["stalled"] == []
+    assert grouped["in_flight"] == []
+
+
+def test_an_unreadable_requirement_on_an_open_pr_awaits_its_merge() -> None:
+    """The PR is the actionable fact, and the read failure rides along as its cause."""
+    grouped = _grouped(
+        _candidate(
+            "008",
+            pr=_pr(8),
+            derived=_derived(
+                status=None,
+                source="unavailable",
+                unavailable_cause="rate_limited",
+                last_activity=None,
+            ),
+        )
+    )
+
+    assert [entry["id"] for entry in grouped["awaiting_merge"]] == ["008"]
+    assert grouped["awaiting_merge"][0]["unavailable_cause"] == "rate_limited"
+    assert "kinds" not in grouped["awaiting_merge"][0]
 
 
 def test_a_requirement_awaiting_its_pr_is_not_one_that_was_never_linked() -> None:
-    """The two want opposite responses: one wants a merge, the other attention."""
+    """The two want opposite responses: one wants a merge, the other a decision to start."""
     grouped = _grouped(
         _candidate(
             "009",
@@ -223,9 +284,9 @@ def test_a_requirement_awaiting_its_pr_is_not_one_that_was_never_linked() -> Non
         ),
     )
 
-    assert [entry["id"] for entry in grouped["needs_attention"]] == ["009"]
-    assert grouped["needs_attention"][0]["kinds"] == ["never_linked"]
+    assert [entry["id"] for entry in grouped["never_linked"]] == ["009"]
     assert [entry["id"] for entry in grouped["awaiting_merge"]] == ["010"]
+    assert grouped["needs_attention"] == []
 
 
 def test_a_recent_divergence_with_no_fault_is_diverged() -> None:
@@ -252,6 +313,8 @@ def test_every_group_is_present_and_empty_for_no_candidates() -> None:
         "awaiting_merge": [],
         "stalled": [],
         "needs_attention": [],
+        "unreadable": [],
+        "never_linked": [],
         "diverged": [],
         "in_flight": [],
     }
@@ -273,12 +336,22 @@ def test_every_requirement_is_counted_exactly_once() -> None:
         _candidate("004", derived=_derived(diverged=True, last_activity="2026-01-01T00:00:00Z")),
         _candidate("005", status="idea", derived=_derived(diverged=True)),
         _candidate("006", derived=_derived()),
+        _candidate("007", derived=_derived(status=None, source="unavailable", last_activity=None)),
+        _candidate(
+            "008",
+            derived=_derived(
+                status=None,
+                source="unlinked",
+                last_activity=None,
+                signals=_signals(unlinked="never_linked"),
+            ),
+        ),
     ]
 
     grouped = group_requirements(candidates, now=_NOW, stale_after_days=14)
 
     found = [entry["id"] for group in grouped.values() for entry in group]
-    assert sorted(found) == ["001", "002", "003", "004", "005", "006"]
+    assert sorted(found) == ["001", "002", "003", "004", "005", "006", "007", "008"]
     assert sum(len(group) for group in grouped.values()) == len(candidates)
 
 
