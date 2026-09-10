@@ -1,8 +1,8 @@
 ---
 created: '2026-09-10'
-github_issue: null
+github_issue: 141
 id: 029
-status: draft
+status: idea
 title: Requirement files must stay writable after the first write
 updated: '2026-09-10'
 ---
@@ -31,4 +31,5 @@ Existing behaviour that must not regress: `link_issues` on a fresh requirement a
 
 ## Issues
 
-_None yet._
+- #141 — Requirement file writes 409 permanently after the first successful write
+- #142 — Re-examine #109: its diagnosis and workaround do not match observed behaviour
