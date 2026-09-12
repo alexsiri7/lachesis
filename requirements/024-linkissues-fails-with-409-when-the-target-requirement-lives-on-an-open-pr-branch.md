@@ -1,11 +1,11 @@
 ---
 created: '2026-08-30'
-github_issue: 109
+github_issue: 143
 id: '024'
 status: idea
 title: link_issues fails with 409 when the target requirement lives on an open PR
   branch
-updated: '2026-08-30'
+updated: '2026-09-12'
 ---
 
 ## Why
@@ -20,4 +20,4 @@ This should be consistent with the read-side fix already shipped for `list_requi
 
 ## Issues
 
-- #109 — link_issues should write back to the branch a requirement actually lives on, not assume main
+- #143 — link_issues still 409s when the requirement's PR is unmerged — #109's fix did not land
