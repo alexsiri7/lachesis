@@ -2385,7 +2385,9 @@ _PR_BRANCH = "lachesis/req-001-user-auth"
 _CONFLICT_JSON = {"message": "requirements/001-user-auth.md does not match stalesha"}
 
 
-def _mock_pr_branch_read(httpx_mock: HTTPXMock, sha: str = "branchsha") -> None:
+def _mock_pr_branch_read(
+    httpx_mock: HTTPXMock, sha: str = "branchsha", content: str = _SAMPLE_MD
+) -> None:
     """Register the four GETs that locate a requirement living only on its PR branch."""
     httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
     httpx_mock.add_response(
@@ -2398,7 +2400,15 @@ def _mock_pr_branch_read(httpx_mock: HTTPXMock, sha: str = "branchsha") -> None:
         ]
     )
     httpx_mock.add_response(json=_LIST_RESP)
-    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, sha))
+    httpx_mock.add_response(json=_make_file_response(content, sha))
+
+
+_RENAMED_MD = _SAMPLE_MD.replace('title: "User authentication"', 'title: "Renamed upstream"')
+
+
+def _written_post(request_body: dict) -> frontmatter.Post:
+    """Decode the requirement a Contents API write carried."""
+    return frontmatter.loads(base64.b64decode(request_body["content"]).decode())
 
 
 async def test_link_issues_retries_a_conflicted_write_with_the_branch_sha(
@@ -2407,7 +2417,7 @@ async def test_link_issues_retries_a_conflicted_write_with_the_branch_sha(
     """A 409 on the PR branch costs a re-read and another attempt, not the whole call."""
     _mock_pr_branch_read(httpx_mock, sha="stalesha")
     httpx_mock.add_response(status_code=409, json=_CONFLICT_JSON)
-    _mock_pr_branch_read(httpx_mock, sha="freshsha")
+    _mock_pr_branch_read(httpx_mock, sha="freshsha", content=_RENAMED_MD)
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
     result = await link_issues("owner/repo", "001", _ISSUES)
@@ -2418,6 +2428,12 @@ async def test_link_issues_retries_a_conflicted_write_with_the_branch_sha(
     assert [w["sha"] for w in writes] == ["stalesha", "freshsha"]
     assert {w["branch"] for w in writes} == {_PR_BRANCH}
 
+    # The retry rebuilds from what the second read returned, rather than resending the
+    # first attempt's body under a newer sha.
+    retried = _written_post(writes[1])
+    assert retried["title"] == "Renamed upstream"
+    assert retried["github_issue"] == 42
+
 
 async def test_update_requirement_retries_a_conflicted_write_with_the_branch_sha(
     httpx_mock: HTTPXMock,
@@ -2425,16 +2441,20 @@ async def test_update_requirement_retries_a_conflicted_write_with_the_branch_sha
     """The re-read feeds the update, so the retry writes against the current sha."""
     _mock_pr_branch_read(httpx_mock, sha="stalesha")
     httpx_mock.add_response(status_code=409, json=_CONFLICT_JSON)
-    _mock_pr_branch_read(httpx_mock, sha="freshsha")
+    _mock_pr_branch_read(httpx_mock, sha="freshsha", content=_RENAMED_MD)
     httpx_mock.add_response(json={"content": {}, "commit": {}})
 
-    result = await update_requirement("owner/repo", "001", {"status": "planned"})
+    result = await update_requirement("owner/repo", "001", {"status": "idea"})
 
-    assert frontmatter.loads(result)["status"] == "planned"
+    assert frontmatter.loads(result)["title"] == "Renamed upstream"
 
     writes = [json.loads(r.content) for r in httpx_mock.get_requests() if r.method == "PUT"]
     assert [w["sha"] for w in writes] == ["stalesha", "freshsha"]
     assert {w["branch"] for w in writes} == {_PR_BRANCH}
+
+    retried = _written_post(writes[1])
+    assert retried["title"] == "Renamed upstream"
+    assert retried["status"] == "idea"
 
 
 async def test_delete_requirement_retries_a_conflicted_delete_with_the_branch_sha(

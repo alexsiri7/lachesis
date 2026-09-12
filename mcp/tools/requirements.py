@@ -124,12 +124,11 @@ async def _write_requirement[T](
             if exc.response.status_code != 409 or attempt == _MAX_WRITE_ATTEMPTS:
                 raise
             logger.warning(
-                "requirement write conflicted repo=%s id=%s attempt=%d/%d: %s",
+                "requirement write conflicted repo=%s id=%s attempt=%d/%d",
                 repo,
                 id,
                 attempt,
                 _MAX_WRITE_ATTEMPTS,
-                exc.response.text,
             )
     raise AssertionError("unreachable: the last attempt either returns or raises")
 
