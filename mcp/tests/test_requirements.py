@@ -2473,6 +2473,21 @@ async def test_delete_requirement_retries_a_conflicted_delete_with_the_branch_sh
     assert {d["branch"] for d in deletes} == {_PR_BRANCH}
 
 
+async def test_delete_requirement_refuses_a_status_that_turned_done_before_the_retry(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The retry judges the requirement it just re-read, so a freshly done one survives."""
+    _mock_pr_branch_read(httpx_mock, sha="stalesha")
+    httpx_mock.add_response(status_code=409, json=_CONFLICT_JSON)
+    _mock_pr_branch_read(httpx_mock, sha="freshsha", content=_DONE_MD)
+
+    with pytest.raises(ValueError, match="done requirement"):
+        await delete_requirement("owner/repo", "001")
+
+    deletes = [json.loads(r.content) for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    assert [d["sha"] for d in deletes] == ["stalesha"]
+
+
 async def test_link_issues_stops_retrying_a_conflict_that_never_clears(
     httpx_mock: HTTPXMock,
 ) -> None:
