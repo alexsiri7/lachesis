@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 from typing import Any, NamedTuple, cast
 
@@ -99,6 +100,38 @@ async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, dict[s
     path = matching[0]["path"]
     content, sha = await github.get_file(repo, path, branch=branch)
     return path, content, sha, pr
+
+
+_MAX_WRITE_ATTEMPTS = 3
+
+
+async def _write_requirement[T](
+    repo: str, id: str, write: Callable[[str, str, str, str | None], Awaitable[T]]
+) -> T:
+    """Locate requirement *id* and hand ``(path, content, sha, branch)`` to *write*.
+
+    The Contents API answers a write carrying a sha that is no longer the file's
+    current one with 409, and documents re-reading as the recovery.  Anything that
+    invalidates the sha between the read and the write therefore costs a fresh
+    locate and another attempt rather than the caller's whole tool call.
+    """
+    for attempt in range(1, _MAX_WRITE_ATTEMPTS + 1):
+        path, content, sha, pr = await _locate_requirement(repo, id)
+        branch = pr["branch"] if pr else None
+        try:
+            return await write(path, content, sha, branch)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 409 or attempt == _MAX_WRITE_ATTEMPTS:
+                raise
+            logger.warning(
+                "requirement write conflicted repo=%s id=%s attempt=%d/%d: %s",
+                repo,
+                id,
+                attempt,
+                _MAX_WRITE_ATTEMPTS,
+                exc.response.text,
+            )
+    raise AssertionError("unreachable: the last attempt either returns or raises")
 
 
 def _inactive_fields(post: frontmatter.Post) -> dict[str, Any]:
@@ -478,116 +511,123 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
     where ``repo`` defaults to the requirement's own repo.
     """
     repo = await _resolve_repo(repo)
-    path, content, sha, pr = await _locate_requirement(repo, id)
-    branch = pr["branch"] if pr else None
-    post = frontmatter.loads(content)
-    _normalize_stored_status(post)
 
-    allowed = {"title", "why", "what", "status", "reason", "superseded_by"}
-    unknown = set(fields) - allowed
-    if unknown:
-        raise ValueError(f"Unknown fields: {unknown!r}. Allowed: {allowed!r}")
+    async def write(path: str, content: str, sha: str, branch: str | None) -> str:
+        post = frontmatter.loads(content)
+        _normalize_stored_status(post)
 
-    if "status" in fields and fields["status"] not in VALID_STATUSES:
-        raise ValueError(_invalid_status_message(fields["status"]))
+        allowed = {"title", "why", "what", "status", "reason", "superseded_by"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"Unknown fields: {unknown!r}. Allowed: {allowed!r}")
 
-    resulting_status = fields.get("status", canonical_status(post.get("status", "")))
-    _validate_lifecycle_fields(fields, post, resulting_status)
-    if "superseded_by" in fields:
-        fields = {
-            **fields,
-            "superseded_by": await _normalize_superseded_by(fields["superseded_by"], repo),
-        }
+        if "status" in fields and fields["status"] not in VALID_STATUSES:
+            raise ValueError(_invalid_status_message(fields["status"]))
 
-    for key in ("title", "status", "reason", "superseded_by"):
-        if key in fields:
-            post[key] = fields[key]
-    if resulting_status != "cancelled":
-        post.metadata.pop("reason", None)
-    if resulting_status != "superseded":
-        post.metadata.pop("superseded_by", None)
+        resulting_status = fields.get("status", canonical_status(post.get("status", "")))
+        _validate_lifecycle_fields(fields, post, resulting_status)
+        resolved_fields = fields
+        if "superseded_by" in fields:
+            resolved_fields = {
+                **fields,
+                "superseded_by": await _normalize_superseded_by(fields["superseded_by"], repo),
+            }
 
-    body = post.content
-    for section, key in (("Why", "why"), ("What", "what")):
-        if key not in fields:
-            continue
-        new_block = f"## {section}\n\n{fields[key]}\n"
-        body, n = re.subn(
-            rf"^## {section}\b[^\n]*\n(?:(?!^## )[^\n]*\n?)*",
-            new_block,
-            body,
-            flags=re.MULTILINE,
+        for key in ("title", "status", "reason", "superseded_by"):
+            if key in resolved_fields:
+                post[key] = resolved_fields[key]
+        if resulting_status != "cancelled":
+            post.metadata.pop("reason", None)
+        if resulting_status != "superseded":
+            post.metadata.pop("superseded_by", None)
+
+        body = post.content
+        for section, key in (("Why", "why"), ("What", "what")):
+            if key not in resolved_fields:
+                continue
+            new_block = f"## {section}\n\n{resolved_fields[key]}\n"
+            body, n = re.subn(
+                rf"^## {section}\b[^\n]*\n(?:(?!^## )[^\n]*\n?)*",
+                new_block,
+                body,
+                flags=re.MULTILINE,
+            )
+            if n == 0:
+                body = body.rstrip("\n") + f"\n\n{new_block}"
+        post.content = body
+        post["updated"] = date.today().isoformat()
+
+        updated_content = frontmatter.dumps(post)
+        await github.update_file(
+            repo, path, updated_content, sha, f"chore: update requirement {id}", branch=branch
         )
-        if n == 0:
-            body = body.rstrip("\n") + f"\n\n{new_block}"
-    post.content = body
-    post["updated"] = date.today().isoformat()
+        return cast(str, updated_content)
 
-    updated_content = frontmatter.dumps(post)
-    await github.update_file(
-        repo, path, updated_content, sha, f"chore: update requirement {id}", branch=branch
-    )
-    return cast(str, updated_content)
+    return await _write_requirement(repo, id, write)
 
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
     """Delete a requirement. Refuses if status is 'done'."""
     repo = await _resolve_repo(repo)
-    path, content, sha, pr = await _locate_requirement(repo, id)
-    branch = pr["branch"] if pr else None
-    post = frontmatter.loads(content)
-    if canonical_status(post.get("status")) == "done":
-        raise ValueError(
-            "Cannot delete a done requirement — it represents implemented code. "
-            "Create a new requirement to remove the feature."
-        )
 
-    await github.delete_file(repo, path, sha, f"chore: delete requirement {id}", branch=branch)
-    return {"deleted": path}
+    async def write(path: str, content: str, sha: str, branch: str | None) -> dict[str, Any]:
+        post = frontmatter.loads(content)
+        if canonical_status(post.get("status")) == "done":
+            raise ValueError(
+                "Cannot delete a done requirement — it represents implemented code. "
+                "Create a new requirement to remove the feature."
+            )
+
+        await github.delete_file(repo, path, sha, f"chore: delete requirement {id}", branch=branch)
+        return {"deleted": path}
+
+    return await _write_requirement(repo, id, write)
 
 
 async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
     """Write GitHub issue numbers into the requirement's Issues section."""
     repo = await _resolve_repo(repo)
-    path, content, sha, pr = await _locate_requirement(repo, id)
-    branch = pr["branch"] if pr else None
-    post = frontmatter.loads(content)
-    _normalize_stored_status(post)
 
-    # Update metadata
-    if issues:
-        post["github_issue"] = issues[0]["number"]
-    if post.get("status") == "draft":
-        post["status"] = "idea"
-    post["updated"] = date.today().isoformat()
+    async def write(path: str, content: str, sha: str, branch: str | None) -> str:
+        post = frontmatter.loads(content)
+        _normalize_stored_status(post)
 
-    # Build new ## Issues section body
-    bullet_block = "\n".join(f"- #{i['number']} \u2014 {i['title']}" for i in issues)
-    new_section = f"## Issues\n\n{bullet_block}\n" if bullet_block else "## Issues\n"
+        # Update metadata
+        if issues:
+            post["github_issue"] = issues[0]["number"]
+        if post.get("status") == "draft":
+            post["status"] = "idea"
+        post["updated"] = date.today().isoformat()
 
-    # Replace existing ## Issues section in the body, or append if absent
-    body = post.content
-    body, n = re.subn(
-        r"^## Issues\b[^\n]*\n(?:(?!^## )[^\n]*\n?)*",
-        new_section,
-        body,
-        flags=re.MULTILINE,
-    )
-    if n == 0:
-        body = body.rstrip("\n") + "\n\n" + new_section
-    post.content = body
+        # Build new ## Issues section body
+        bullet_block = "\n".join(f"- #{i['number']} \u2014 {i['title']}" for i in issues)
+        new_section = f"## Issues\n\n{bullet_block}\n" if bullet_block else "## Issues\n"
 
-    # Serialize and write back
-    updated_content = frontmatter.dumps(post)
-    await github.update_file(
-        repo,
-        path,
-        updated_content,
-        sha,
-        f"chore: link issues to requirement {id}",
-        branch=branch,
-    )
-    return cast(str, updated_content)
+        # Replace existing ## Issues section in the body, or append if absent
+        body = post.content
+        body, n = re.subn(
+            r"^## Issues\b[^\n]*\n(?:(?!^## )[^\n]*\n?)*",
+            new_section,
+            body,
+            flags=re.MULTILINE,
+        )
+        if n == 0:
+            body = body.rstrip("\n") + "\n\n" + new_section
+        post.content = body
+
+        # Serialize and write back
+        updated_content = frontmatter.dumps(post)
+        await github.update_file(
+            repo,
+            path,
+            updated_content,
+            sha,
+            f"chore: link issues to requirement {id}",
+            branch=branch,
+        )
+        return cast(str, updated_content)
+
+    return await _write_requirement(repo, id, write)
 
 
 async def _apply_backlog_overrides(
