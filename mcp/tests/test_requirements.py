@@ -15,6 +15,7 @@ from pytest_httpx import HTTPXMock
 
 from auth import current_db_user_id
 from tools.requirements import (
+    _MAX_WRITE_ATTEMPTS,
     add_dependency,
     create_github_issues,
     create_requirement,
@@ -2374,6 +2375,147 @@ async def test_delete_requirement_raises_when_not_found_on_main_or_pr(
 
     with pytest.raises(FileNotFoundError, match="001"):
         await delete_requirement("owner/repo", "001")
+
+
+# ---------------------------------------------------------------------------
+# write conflicts on the PR branch
+# ---------------------------------------------------------------------------
+
+_PR_BRANCH = "lachesis/req-001-user-auth"
+_CONFLICT_JSON = {"message": "requirements/001-user-auth.md does not match stalesha"}
+
+
+def _mock_pr_branch_read(
+    httpx_mock: HTTPXMock, sha: str = "branchsha", content: str = _SAMPLE_MD
+) -> None:
+    """Register the four GETs that locate a requirement living only on its PR branch."""
+    httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": _PR_BRANCH},
+                "html_url": "https://github.com/owner/repo/pull/1",
+                "number": 1,
+            }
+        ]
+    )
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(content, sha))
+
+
+_RENAMED_MD = _SAMPLE_MD.replace('title: "User authentication"', 'title: "Renamed upstream"')
+
+
+def _written_post(request_body: dict) -> frontmatter.Post:
+    """Decode the requirement a Contents API write carried."""
+    return frontmatter.loads(base64.b64decode(request_body["content"]).decode())
+
+
+async def test_link_issues_retries_a_conflicted_write_with_the_branch_sha(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A 409 on the PR branch costs a re-read and another attempt, not the whole call."""
+    _mock_pr_branch_read(httpx_mock, sha="stalesha")
+    httpx_mock.add_response(status_code=409, json=_CONFLICT_JSON)
+    _mock_pr_branch_read(httpx_mock, sha="freshsha", content=_RENAMED_MD)
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    result = await link_issues("owner/repo", "001", _ISSUES)
+
+    assert frontmatter.loads(result)["github_issue"] == 42
+
+    writes = [json.loads(r.content) for r in httpx_mock.get_requests() if r.method == "PUT"]
+    assert [w["sha"] for w in writes] == ["stalesha", "freshsha"]
+    assert {w["branch"] for w in writes} == {_PR_BRANCH}
+
+    # The retry rebuilds from what the second read returned, rather than resending the
+    # first attempt's body under a newer sha.
+    retried = _written_post(writes[1])
+    assert retried["title"] == "Renamed upstream"
+    assert retried["github_issue"] == 42
+
+
+async def test_update_requirement_retries_a_conflicted_write_with_the_branch_sha(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The re-read feeds the update, so the retry writes against the current sha."""
+    _mock_pr_branch_read(httpx_mock, sha="stalesha")
+    httpx_mock.add_response(status_code=409, json=_CONFLICT_JSON)
+    _mock_pr_branch_read(httpx_mock, sha="freshsha", content=_RENAMED_MD)
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    result = await update_requirement("owner/repo", "001", {"status": "idea"})
+
+    assert frontmatter.loads(result)["title"] == "Renamed upstream"
+
+    writes = [json.loads(r.content) for r in httpx_mock.get_requests() if r.method == "PUT"]
+    assert [w["sha"] for w in writes] == ["stalesha", "freshsha"]
+    assert {w["branch"] for w in writes} == {_PR_BRANCH}
+
+    retried = _written_post(writes[1])
+    assert retried["title"] == "Renamed upstream"
+    assert retried["status"] == "idea"
+
+
+async def test_delete_requirement_retries_a_conflicted_delete_with_the_branch_sha(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Deletes carry the same sha as writes do, so they recover the same way."""
+    _mock_pr_branch_read(httpx_mock, sha="stalesha")
+    httpx_mock.add_response(status_code=409, json=_CONFLICT_JSON)
+    _mock_pr_branch_read(httpx_mock, sha="freshsha")
+    httpx_mock.add_response(status_code=200, json={"commit": {}, "content": None})
+
+    assert await delete_requirement("owner/repo", "001") == {"deleted": _PATH}
+
+    deletes = [json.loads(r.content) for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    assert [d["sha"] for d in deletes] == ["stalesha", "freshsha"]
+    assert {d["branch"] for d in deletes} == {_PR_BRANCH}
+
+
+async def test_delete_requirement_refuses_a_status_that_turned_done_before_the_retry(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The retry judges the requirement it just re-read, so a freshly done one survives."""
+    _mock_pr_branch_read(httpx_mock, sha="stalesha")
+    httpx_mock.add_response(status_code=409, json=_CONFLICT_JSON)
+    _mock_pr_branch_read(httpx_mock, sha="freshsha", content=_DONE_MD)
+
+    with pytest.raises(ValueError, match="done requirement"):
+        await delete_requirement("owner/repo", "001")
+
+    deletes = [json.loads(r.content) for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    assert [d["sha"] for d in deletes] == ["stalesha"]
+
+
+async def test_link_issues_stops_retrying_a_conflict_that_never_clears(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Retries are bounded — a permanent conflict reaches the caller instead of looping."""
+    for _ in range(_MAX_WRITE_ATTEMPTS):
+        _mock_pr_branch_read(httpx_mock, sha="stalesha")
+        httpx_mock.add_response(status_code=409, json=_CONFLICT_JSON)
+
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        await link_issues("owner/repo", "001", _ISSUES)
+
+    assert exc.value.response.status_code == 409
+    writes = [r for r in httpx_mock.get_requests() if r.method == "PUT"]
+    assert len(writes) == _MAX_WRITE_ATTEMPTS
+
+
+async def test_link_issues_does_not_retry_a_write_rejected_for_another_reason(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Only a stale sha is worth re-reading for; a 422 is reported as it happened."""
+    _mock_pr_branch_read(httpx_mock)
+    httpx_mock.add_response(status_code=422, json={"message": "Invalid request"})
+
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        await link_issues("owner/repo", "001", _ISSUES)
+
+    assert exc.value.response.status_code == 422
+    assert len([r for r in httpx_mock.get_requests() if r.method == "PUT"]) == 1
 
 
 # ---------------------------------------------------------------------------

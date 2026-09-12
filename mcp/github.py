@@ -16,6 +16,7 @@ from settings import settings
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.github.com"
+_ERROR_BODY_CHARS = 500
 
 
 def _headers() -> dict[str, str]:
@@ -337,10 +338,11 @@ async def update_file(
         )
     if not resp.is_success:
         logger.warning(
-            "github.update_file failed repo=%s path=%s status=%s",
+            "github.update_file failed repo=%s path=%s status=%s body=%s",
             repo,
             path,
             resp.status_code,
+            resp.text[:_ERROR_BODY_CHARS],
         )
     resp.raise_for_status()
     return resp.json()  # type: ignore[no-any-return]
@@ -365,10 +367,11 @@ async def delete_file(
         )
     if not resp.is_success:
         logger.warning(
-            "github.delete_file failed repo=%s path=%s status=%s",
+            "github.delete_file failed repo=%s path=%s status=%s body=%s",
             repo,
             path,
             resp.status_code,
+            resp.text[:_ERROR_BODY_CHARS],
         )
     resp.raise_for_status()
 
