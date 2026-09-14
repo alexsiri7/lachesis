@@ -2479,6 +2479,16 @@ async def test_link_issues_retries_a_conflicted_write_with_the_branch_sha(
     assert [w["sha"] for w in writes] == ["stalesha", "freshsha"]
     assert {w["branch"] for w in writes} == {_PR_BRANCH}
 
+    # The file exists only on the PR branch, so the retry's re-read must go back there:
+    # every Contents API read of the locate, first and second, carries the branch ref.
+    reads = [
+        str(r.url)
+        for r in httpx_mock.get_requests()
+        if r.method == "GET" and "/contents/" in str(r.url)
+    ]
+    assert len(reads) == 4
+    assert all(f"ref={_PR_BRANCH.replace('/', '%2F')}" in url for url in reads)
+
     # The retry rebuilds from what the second read returned, rather than resending the
     # first attempt's body under a newer sha.
     retried = _written_post(writes[1])
