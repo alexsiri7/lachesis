@@ -136,9 +136,10 @@ Returns all requirements for a given repo.
 **Input**: `repo` (string, e.g. `alexuser/filmduel`)
 **Output**: Array of requirement summaries (id, title, status, github_issue).
 Each item carries a `pr` field: `{number, state, merged, url, branch, created_at}` for a
-requirement whose file still sits on an open PR branch, `null` once the file is on the default
-branch. Such an item warns `awaiting merge of PR #N` instead of `no linked issues`, so a
-requirement waiting on a merge is distinguishable from one nobody has filed issues for.
+requirement read from an open Lachesis PR — the one its file has not yet landed from, or the one
+carrying its pending edit — and `null` when it was read from the default branch. Such an item
+warns `awaiting merge of PR #N` instead of `no linked issues`, so a requirement waiting on a
+merge is distinguishable from one nobody has filed issues for.
 Each item also carries a `derived` block read from its linked issues and their PRs:
 `status` (idea, in-progress, done, or null), `source` (`issues` when the status was derived,
 `unlinked` when the requirement links no issues, `unavailable` when GitHub could not be read —
@@ -153,8 +154,9 @@ Returns the full content of a single requirement file, with the pull request it 
 
 **Input**: `repo`, `id`
 **Output**: `{content, pr}` — `content` is the full markdown, `pr` is `{number, state, merged,
-url, branch, created_at}` when the file was read from an open PR branch and `null` when it was
-read from the default branch.
+url, branch, created_at}` when the file was read from an open Lachesis PR — the one it has not
+yet landed from, or the one carrying its pending edit — and `null` when it was read from the
+default branch.
 
 ---
 
