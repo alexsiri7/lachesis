@@ -2561,10 +2561,14 @@ _FALLBACK_PR = {"number": 9, "html_url": "https://github.com/owner/repo/pull/9",
 
 
 def _mock_protected_main_write(httpx_mock: HTTPXMock, *, method: str = "PUT") -> None:
-    """Register every attempt against main answering 409 — the sha is fresh each time."""
+    """Register every attempt against main answering 409 — the sha is fresh each time.
+
+    The last refusal is followed by the lookup for a pull request already open.
+    """
     for _ in range(_MAX_WRITE_ATTEMPTS):
         _mock_read_flow(httpx_mock)
         httpx_mock.add_response(method=method, status_code=409, json=_PROTECTED_JSON)
+    httpx_mock.add_response(json=[])
 
 
 def _mock_fallback_pull_request(httpx_mock: HTTPXMock, *, automerge: bool = True) -> None:
@@ -2666,6 +2670,39 @@ async def test_delete_requirement_lands_on_a_pull_request_when_main_keeps_refusi
     deletes = [json.loads(r.content) for r in httpx_mock.get_requests() if r.method == "DELETE"]
     assert deletes[-1]["branch"] == result["pr"]["branch"]
     assert deletes[-1]["sha"] == "branchsha"
+
+
+async def test_a_write_refuses_to_race_an_open_deletion_pull_request(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Main answers for a requirement whose PR is deleting it; a refused write names that PR.
+
+    Opening a second pull request from main's copy would race the deletion: whichever
+    merges first leaves the other unmergeable, or silently undone.
+    """
+    deletion_branch = "lachesis/req-001-user-auth-20260914T100000Z"
+    deletion_pr = {
+        "head": {"ref": deletion_branch},
+        "html_url": "https://github.com/owner/repo/pull/9",
+        "number": 9,
+    }
+    for _ in range(_MAX_WRITE_ATTEMPTS):
+        httpx_mock.add_response(json=[deletion_pr])
+        httpx_mock.add_response(json=[])  # the deletion branch no longer lists the file
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(method="PUT", status_code=409, json=_PROTECTED_JSON)
+    httpx_mock.add_response(json=[deletion_pr])
+
+    with pytest.raises(RuntimeError) as exc:
+        await update_requirement("owner/repo", "001", {"status": "idea"})
+
+    message = str(exc.value)
+    assert _PATH in message
+    assert "#9" in message
+    assert "https://github.com/owner/repo/pull/9" in message
+    assert isinstance(exc.value.__cause__, httpx.HTTPStatusError)
+    assert [r.method for r in httpx_mock.get_requests() if r.method != "GET"] == ["PUT"] * 3
 
 
 async def test_a_second_write_joins_the_open_fallback_pull_request(

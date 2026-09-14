@@ -134,6 +134,11 @@ async def _write_requirement[T](
     conflicting on the last attempt is landed on a fresh branch and a pull request
     instead, as ``create_requirement`` already does for a protected ``main``.
     *change* names the edit in that pull request's title.
+
+    A pull request already open for the requirement at that point is one the
+    locate could not write to — a pending deletion, whose branch no longer has
+    the file — or one opened since.  Either way the write is refused rather than
+    landed on a second pull request racing the first.
     """
     for attempt in range(1, _MAX_WRITE_ATTEMPTS + 1):
         path, content, sha, pr = await _locate_requirement(repo, id)
@@ -158,6 +163,13 @@ async def _write_requirement[T](
                     f"{_MAX_WRITE_ATTEMPTS} consecutive attempts, each against a freshly "
                     f"read version of the file on branch {branch!r}. Something else is "
                     "changing that file concurrently; retry once it settles."
+                ) from exc
+            open_pr = await github.find_open_pr(repo, f"lachesis/req-{id}-")
+            if open_pr is not None:
+                raise RuntimeError(
+                    f"Could not write {path} in {repo!r}: the default branch refuses direct "
+                    f"writes and pull request #{open_pr['pr_number']} ({open_pr['pr_url']}) "
+                    "is already open for this requirement. Merge or close it, then retry."
                 ) from exc
             logger.warning(
                 "requirement write on the default branch still conflicts after %d attempts "
