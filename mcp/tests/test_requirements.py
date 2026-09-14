@@ -2176,6 +2176,31 @@ async def test_list_requirements_reports_a_requirements_own_pending_edit(
     assert f"ref={pr_branch.replace('/', '%2F')}" in str(httpx_mock.get_requests()[4].url)
 
 
+async def test_list_requirements_keeps_the_first_listed_of_two_pull_requests_for_one_id(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Two open PRs for one requirement resolve to the first listed, as get_requirement does."""
+    first_branch = "lachesis/req-001-user-auth-20260914T110000Z"
+    second_branch = "lachesis/req-001-user-auth-20260914T100000Z"
+    first_md = _SAMPLE_MD.replace('title: "User authentication"', 'title: "Sign-in"')
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(
+        json=[
+            {"head": {"ref": first_branch}, "html_url": "https://x/pull/4", "number": 4},
+            {"head": {"ref": second_branch}, "html_url": "https://x/pull/3", "number": 3},
+        ]
+    )
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(first_md, "sha-first"))
+    httpx_mock.add_response(json=_LIST_RESP)  # the second branch's copy is not read
+
+    result = await list_requirements("owner/repo")
+
+    assert [(req["title"], req["pr"]["number"]) for req in result] == [("Sign-in", 4)]
+    assert len(httpx_mock.get_requests()) == 6
+
+
 async def test_list_requirements_no_prs_returns_main_only(httpx_mock: HTTPXMock) -> None:
     """When no open Lachesis PRs exist, result is same as before."""
     httpx_mock.add_response(json=_LIST_RESP)
