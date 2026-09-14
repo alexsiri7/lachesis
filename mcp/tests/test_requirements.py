@@ -2557,7 +2557,12 @@ async def test_link_issues_does_not_retry_a_write_rejected_for_another_reason(
 _PROTECTED_JSON = {
     "message": 'Could not update file: Required status check "Build & test" is expected.'
 }
-_FALLBACK_PR = {"number": 9, "html_url": "https://github.com/owner/repo/pull/9", "node_id": "PR_9"}
+_FALLBACK_PR = {
+    "number": 9,
+    "html_url": "https://github.com/owner/repo/pull/9",
+    "node_id": "PR_9",
+    "created_at": "2026-09-14T10:00:00Z",
+}
 
 
 def _mock_protected_main_write(httpx_mock: HTTPXMock, *, method: str = "PUT") -> None:
@@ -2610,6 +2615,7 @@ async def test_link_issues_lands_on_a_pull_request_when_main_keeps_refusing(
     assert result["pr"]["number"] == 9
     assert result["pr"]["url"] == "https://github.com/owner/repo/pull/9"
     assert result["pr"]["branch"].startswith("lachesis/req-001-user-auth-")
+    assert result["pr"]["created_at"] == "2026-09-14T10:00:00Z"
 
     requests = httpx_mock.get_requests()
     writes = [json.loads(r.content) for r in requests if r.method == "PUT"]
