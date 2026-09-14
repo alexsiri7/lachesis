@@ -2710,6 +2710,33 @@ async def test_get_requirement_reads_the_open_fallback_pull_request(
     }
 
 
+async def test_get_requirement_reads_main_while_a_deletion_pull_request_is_open(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A fallback PR that removes the file does not make the requirement unreadable."""
+    deletion_branch = "lachesis/req-001-user-auth-20260914T100000Z"
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": deletion_branch},
+                "html_url": "https://github.com/owner/repo/pull/9",
+                "number": 9,
+            }
+        ]
+    )
+    httpx_mock.add_response(json=[{"name": "002-other.md", "path": "requirements/002-other.md"}])
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+
+    result = await get_requirement("owner/repo", "001")
+
+    assert result == {"content": _SAMPLE_MD, "pr": None}
+    requests = httpx_mock.get_requests()
+    assert f"ref={deletion_branch.replace('/', '%2F')}" in str(requests[1].url)
+    assert "ref=" not in str(requests[2].url)
+    assert "ref=" not in str(requests[3].url)
+
+
 async def test_a_conflict_on_main_that_clears_never_opens_a_pull_request(
     httpx_mock: HTTPXMock,
 ) -> None:

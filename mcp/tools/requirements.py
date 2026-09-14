@@ -83,13 +83,19 @@ async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, dict[s
     Returns ``(path, content, sha, pr)``.  *pr* is ``None`` for the default branch,
     otherwise the open pull request the file was read from.  An open
     ``lachesis/req-{id}-`` pull request wins even when the default branch also has
-    the file: that is where the requirement's pending edits live.  Raises
-    :class:`FileNotFoundError` if not found.
+    the file: that is where the requirement's pending edits live.  A pull request
+    without the file is a pending deletion, and the default branch still answers
+    for the requirement until it merges.  Raises :class:`FileNotFoundError` if not
+    found.
     """
     pr = await github.find_open_pr(repo, f"lachesis/req-{id}-")
     branch = pr["branch"] if pr else None
     files = await github.list_files(repo, "requirements", branch=branch)
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
+    if not matching and pr is not None:
+        pr, branch = None, None
+        files = await github.list_files(repo, "requirements")
+        matching = [f for f in files if f["name"].startswith(f"{id}-")]
     if not matching:
         raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
     path = matching[0]["path"]
