@@ -136,9 +136,10 @@ Returns all requirements for a given repo.
 **Input**: `repo` (string, e.g. `alexuser/filmduel`)
 **Output**: Array of requirement summaries (id, title, status, github_issue).
 Each item carries a `pr` field: `{number, state, merged, url, branch, created_at}` for a
-requirement whose file still sits on an open PR branch, `null` once the file is on the default
-branch. Such an item warns `awaiting merge of PR #N` instead of `no linked issues`, so a
-requirement waiting on a merge is distinguishable from one nobody has filed issues for.
+requirement read from an open Lachesis PR — the one its file has not yet landed from, or the one
+carrying its pending edit — and `null` when it was read from the default branch. Such an item
+warns `awaiting merge of PR #N` instead of `no linked issues`, so a requirement waiting on a
+merge is distinguishable from one nobody has filed issues for.
 Each item also carries a `derived` block read from its linked issues and their PRs:
 `status` (idea, in-progress, done, or null), `source` (`issues` when the status was derived,
 `unlinked` when the requirement links no issues, `unavailable` when GitHub could not be read —
@@ -153,8 +154,9 @@ Returns the full content of a single requirement file, with the pull request it 
 
 **Input**: `repo`, `id`
 **Output**: `{content, pr}` — `content` is the full markdown, `pr` is `{number, state, merged,
-url, branch, created_at}` when the file was read from an open PR branch and `null` when it was
-read from the default branch.
+url, branch, created_at}` when the file was read from an open Lachesis PR — the one it has not
+yet landed from, or the one carrying its pending edit — and `null` when it was read from the
+default branch.
 
 ---
 
@@ -170,7 +172,7 @@ Creates a new requirement markdown file in the repo.
 Updates fields in an existing requirement file (title, why, what, status).
 
 **Input**: `repo`, `id`, `fields` (partial update)
-**Output**: Updated file content
+**Output**: `{content, pr}` — the updated file, and the open pull request it awaits merge on (`null` once it is on the default branch)
 
 ---
 
@@ -178,7 +180,7 @@ Updates fields in an existing requirement file (title, why, what, status).
 Removes a requirement file from the repo. Refuses if status is `done`.
 
 **Input**: `repo`, `id`
-**Output**: Confirmation, or error if status is `done`
+**Output**: `{deleted, pr}` — the deleted path and the open pull request the deletion awaits merge on (`null` once it reached the default branch), or error if status is `done`
 
 ---
 
@@ -187,7 +189,7 @@ Writes a list of GitHub issue numbers and titles into the requirement's Issues s
 Sets the first issue as `github_issue` in the frontmatter (the top-level tracker).
 
 **Input**: `repo`, `id`, `issues` (array of `{number, title}`)
-**Output**: Updated requirement file
+**Output**: `{content, pr}` — the updated file, and the open pull request it awaits merge on (`null` once it is on the default branch)
 
 ---
 

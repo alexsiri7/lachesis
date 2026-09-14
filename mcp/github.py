@@ -162,7 +162,7 @@ async def create_branch(repo: str, branch_name: str, sha: str) -> None:
 async def create_pull_request(
     repo: str, title: str, body: str, head: str, base: str
 ) -> dict[str, Any]:
-    """Create a pull request and return ``{number, url}``."""
+    """Create a pull request and return ``{number, url, node_id, created_at}``."""
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/pulls",
@@ -178,7 +178,12 @@ async def create_pull_request(
         )
     resp.raise_for_status()
     data = resp.json()
-    return {"number": data["number"], "url": data["html_url"], "node_id": data["node_id"]}
+    return {
+        "number": data["number"],
+        "url": data["html_url"],
+        "node_id": data["node_id"],
+        "created_at": data.get("created_at"),
+    }
 
 
 async def get_pull_request(repo: str, pr_number: int) -> dict[str, Any] | None:

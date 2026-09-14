@@ -91,9 +91,10 @@ mcp.tool(
         "the recorded one), `last_activity` (when those issues or PRs last "
         "moved, not when the file was edited), `linked_issues`, and `signals` "
         "for work that stalled without looking stalled. "
-        "`pr` describes the open pull request the requirement file still sits on "
-        "(`number`, `state`, `merged`, `url`, `branch`, `created_at`), and is null once the file "
-        "is on the default branch; such an entry warns `awaiting merge of PR #N` "
+        "`pr` describes the open pull request the requirement was read from — the one "
+        "its file has not yet landed from, or the one carrying its pending edit "
+        "(`number`, `state`, `merged`, `url`, `branch`, `created_at`) — and is null when "
+        "it was read from the default branch; such an entry warns `awaiting merge of PR #N` "
         "rather than `no linked issues`, since merging it is what unblocks the rest."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
@@ -103,7 +104,8 @@ mcp.tool(
     description=(
         "Return `{content, pr}` for a single requirement file. `content` is the full "
         "markdown including frontmatter; `pr` describes the open pull request the file "
-        "still sits on, and is null when it is on the default branch."
+        "was read from — the one it has not yet landed from, or the one carrying its "
+        "pending edit — and is null when it was read from the default branch."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_requirement)
@@ -127,14 +129,18 @@ mcp.tool(
         "superseded. Setting it to 'cancelled' requires `reason` — why the work "
         "was dropped. Setting it to 'superseded' requires `superseded_by` as "
         '{"id": "030", "repo": "owner/repo"}, where `repo` defaults to the '
-        "requirement's own repo."
+        "requirement's own repo. Returns `{content, pr}` like `get_requirement`: "
+        "`pr` is the open pull request the update awaits merge on — opened by Lachesis "
+        "when the default branch is protected — and null once it is on the default branch."
     ),
 )(req_tools.update_requirement)
 
 mcp.tool(
     description=(
         "Delete a requirement. Refuses if status is 'done' — "
-        "a done requirement represents implemented code."
+        "a done requirement represents implemented code. Returns `{deleted, pr}`: "
+        "`pr` is the open pull request the deletion awaits merge on, null when it "
+        "reached the default branch."
     ),
 )(req_tools.delete_requirement)
 
@@ -142,7 +148,9 @@ mcp.tool(
     description=(
         "Attach GitHub issue numbers and titles to a requirement's Issues section, "
         "completing the requirement → issue link. "
-        "Automatically advances status from 'draft' to 'idea' when issues are first linked."
+        "Automatically advances status from 'draft' to 'idea' when issues are first linked. "
+        "Returns `{content, pr}` like `get_requirement`: `pr` is the open pull request "
+        "the link awaits merge on, null once it is on the default branch."
     ),
 )(req_tools.link_issues)
 
@@ -213,10 +221,11 @@ mcp.tool(
     " A requirement counts as stalled after `stale_after_days` of silence"
     " (default 14, echoed back in the summary) unless an open blocker is itself"
     " still moving. summary.groups gives the count per group."
-    " Each listed requirement carries `pr`: the open pull request its file still sits"
-    " on (`number`, `state`, `merged`, `url`, `branch`, `created_at`), null once the file is"
-    " on the default branch; such an entry warns `awaiting merge of PR #N` rather than"
-    " `no linked issues`.",
+    " Each listed requirement carries `pr`: the open pull request it was read from — the"
+    " one its file has not yet landed from, or the one carrying its pending edit"
+    " (`number`, `state`, `merged`, `url`, `branch`, `created_at`) — null when it was read"
+    " from the default branch; such an entry warns `awaiting merge of PR #N` rather than"
+    " `no linked issues`, and is grouped under `awaiting_merge`.",
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_dashboard)
 

@@ -78,25 +78,26 @@ async def _resolve_repo(repo: str) -> str:
 
 
 async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, dict[str, Any] | None]:
-    """Locate a requirement file on the default branch or an open PR branch.
+    """Locate a requirement file on its open Lachesis PR branch, else on the default branch.
 
     Returns ``(path, content, sha, pr)``.  *pr* is ``None`` for the default branch,
-    otherwise the open pull request the file was read from.  Raises
-    :class:`FileNotFoundError` if not found.
+    otherwise the open pull request the file was read from.  An open
+    ``lachesis/req-{id}-`` pull request wins even when the default branch also has
+    the file: that is where the requirement's pending edits live.  A pull request
+    without the file is a pending deletion, and the default branch still answers
+    for the requirement until it merges.  Raises :class:`FileNotFoundError` if not
+    found.
     """
-    files = await github.list_files(repo, "requirements")
+    pr = await github.find_open_pr(repo, f"lachesis/req-{id}-")
+    branch = pr["branch"] if pr else None
+    files = await github.list_files(repo, "requirements", branch=branch)
     matching = [f for f in files if f["name"].startswith(f"{id}-")]
-    pr: dict[str, Any] | None = None
-    branch: str | None = None
-    if not matching:
-        pr = await github.find_open_pr(repo, f"lachesis/req-{id}-")
-        if pr is None:
-            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
-        branch = pr["branch"]
-        files = await github.list_files(repo, "requirements", branch=branch)
+    if not matching and pr is not None:
+        pr, branch = None, None
+        files = await github.list_files(repo, "requirements")
         matching = [f for f in files if f["name"].startswith(f"{id}-")]
-        if not matching:
-            raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
+    if not matching:
+        raise FileNotFoundError(f"Requirement {id!r} not found in {repo!r}")
     path = matching[0]["path"]
     content, sha = await github.get_file(repo, path, branch=branch)
     return path, content, sha, pr
@@ -105,32 +106,180 @@ async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, dict[s
 _MAX_WRITE_ATTEMPTS = 3
 
 
+class _Written[T](NamedTuple):
+    """What a write produced, and the open pull request it landed on.
+
+    *pr* is ``None`` when the write reached the default branch.
+    """
+
+    result: T
+    pr: dict[str, Any] | None
+
+
 async def _write_requirement[T](
-    repo: str, id: str, write: Callable[[str, str, str, str | None], Awaitable[T]]
-) -> T:
+    repo: str,
+    id: str,
+    change: str,
+    write: Callable[[str, str, str, str | None], Awaitable[T]],
+) -> _Written[T]:
     """Locate requirement *id* and hand ``(path, content, sha, branch)`` to *write*.
 
     The Contents API answers a write carrying a sha that is no longer the file's
     current one with 409, and documents re-reading as the recovery.  Anything that
     invalidates the sha between the read and the write therefore costs a fresh
     locate and another attempt rather than the caller's whole tool call.
+
+    The same 409 is also GitHub's answer to a direct commit on a protected default
+    branch, which no re-read can clear.  A default-branch write that is still
+    conflicting on the last attempt is landed on a fresh branch and a pull request
+    instead, as ``create_requirement`` already does for a protected ``main``.
+    *change* names the edit in that pull request's title.
+
+    A pull request already open for the requirement at that point is one the
+    locate could not write to — a pending deletion, whose branch no longer has
+    the file — or one opened since.  Either way the write is refused rather than
+    landed on a second pull request racing the first.
     """
     for attempt in range(1, _MAX_WRITE_ATTEMPTS + 1):
         path, content, sha, pr = await _locate_requirement(repo, id)
         branch = pr["branch"] if pr else None
         try:
-            return await write(path, content, sha, branch)
+            return _Written(await write(path, content, sha, branch), pr)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 409 or attempt == _MAX_WRITE_ATTEMPTS:
+            if exc.response.status_code != 409:
                 raise
+            if attempt < _MAX_WRITE_ATTEMPTS:
+                logger.warning(
+                    "requirement write conflicted repo=%s id=%s attempt=%d/%d",
+                    repo,
+                    id,
+                    attempt,
+                    _MAX_WRITE_ATTEMPTS,
+                )
+                continue
+            if pr is not None:
+                raise RuntimeError(
+                    f"Could not write {path} in {repo!r}: GitHub reported a conflict on "
+                    f"{_MAX_WRITE_ATTEMPTS} consecutive attempts, each against a freshly "
+                    f"read version of the file on branch {branch!r}. Something else is "
+                    "changing that file concurrently; retry once it settles."
+                ) from exc
+            open_pr = await github.find_open_pr(repo, f"lachesis/req-{id}-")
+            if open_pr is not None:
+                raise RuntimeError(
+                    f"Could not write {path} in {repo!r}: the default branch refuses direct "
+                    f"writes and pull request #{open_pr['pr_number']} ({open_pr['pr_url']}) "
+                    "is already open for this requirement. Merge or close it, then retry."
+                ) from exc
             logger.warning(
-                "requirement write conflicted repo=%s id=%s attempt=%d/%d",
+                "requirement write on the default branch still conflicts after %d attempts "
+                "repo=%s id=%s; landing it on a pull request",
+                _MAX_WRITE_ATTEMPTS,
                 repo,
                 id,
-                attempt,
-                _MAX_WRITE_ATTEMPTS,
             )
+            return await _write_via_pull_request(repo, id, path, content, change, write)
     raise AssertionError("unreachable: the last attempt either returns or raises")
+
+
+async def _write_via_pull_request[T](
+    repo: str,
+    id: str,
+    path: str,
+    content: str,
+    change: str,
+    write: Callable[[str, str, str, str | None], Awaitable[T]],
+) -> _Written[T]:
+    """Apply *write* to *path* on a new branch off ``main`` and open a pull request for it.
+
+    The branch name carries a timestamp so that it never collides with the branch a
+    previous pull request for this requirement left behind.
+    """
+    stem = path.removeprefix("requirements/").removesuffix(".md")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    branch = f"lachesis/req-{stem}-{stamp}"
+    title = frontmatter.loads(content).get("title", "")
+
+    async def commit() -> T:
+        branch_content, branch_sha = await github.get_file(repo, path, branch=branch)
+        return await write(path, branch_content, branch_sha, branch)
+
+    result, pr = await _open_pull_request(
+        repo,
+        branch,
+        title=f"[Lachesis] {change}",
+        body=(
+            f"This pull request was automatically created by Lachesis.\n\n"
+            f"**Requirement:** {id} — {title}\n"
+            f"**File:** `{path}`\n\n"
+            f"Review and merge to apply this change to `main`."
+        ),
+        commit=commit,
+    )
+    return _Written(
+        result,
+        {
+            "branch": branch,
+            "pr_number": pr["number"],
+            "pr_url": pr["url"],
+            "created_at": pr["created_at"],
+        },
+    )
+
+
+async def _open_pull_request[T](
+    repo: str, branch: str, *, title: str, body: str, commit: Callable[[], Awaitable[T]]
+) -> tuple[T, dict[str, Any]]:
+    """Create *branch* off ``main``, run *commit* on it, and open a pull request for it.
+
+    Returns ``(commit result, pull request)``.  Automerge is enabled best-effort: the
+    change has already landed on the branch, so a failure there is logged and the
+    pull request is returned for a manual merge.
+    """
+    sha = await github.get_branch_sha(repo, "main")
+    await github.create_branch(repo, branch, sha)
+    try:
+        result = await commit()
+        pr = await github.create_pull_request(
+            repo, title=title, body=body, head=branch, base="main"
+        )
+    except Exception:
+        logger.warning(
+            "pull request fallback failed mid-flight repo=%s branch=%s; branch may be orphaned",
+            repo,
+            branch,
+        )
+        raise
+    try:
+        repo_settings = await github.get_repo_settings(repo)
+        if repo_settings["allow_auto_merge"]:
+            if repo_settings["allow_squash_merge"]:
+                merge_method = "SQUASH"
+            elif repo_settings["allow_merge_commit"]:
+                merge_method = "MERGE"
+            else:
+                merge_method = "REBASE"
+            await github.enable_automerge(pr["node_id"], merge_method)
+            if not repo_settings["delete_branch_on_merge"]:
+                logger.info(
+                    "automerge enabled but delete_branch_on_merge is disabled on repo=%s "
+                    "— branch will not auto-delete",
+                    repo,
+                )
+        else:
+            logger.info(
+                "automerge not available on repo=%s (allow_auto_merge=False) "
+                "— user must merge manually",
+                repo,
+            )
+    except Exception as exc:
+        logger.warning(
+            "enable_automerge failed repo=%s pr=%s error=%r; pr_url returned for manual merge",
+            repo,
+            pr["number"],
+            exc,
+        )
+    return result, pr
 
 
 def _inactive_fields(post: frontmatter.Post) -> dict[str, Any]:
@@ -169,6 +318,60 @@ def _entry_warning(pr: dict[str, Any] | None, numbers: list[int]) -> str | None:
     if pr is not None:
         return f"awaiting merge of PR #{pr['number']}"
     return None if numbers else "no linked issues"
+
+
+_Copies = dict[str, tuple[str, dict[str, Any] | None]]
+"""The authoritative copy of each requirement file, keyed by path.
+
+The value is ``(content, pr)`` — *pr* the open Lachesis pull request the copy was
+read from, ``None`` for the default branch.
+"""
+
+
+async def _read_default_branch(repo: str, files: list[dict[str, Any]]) -> _Copies:
+    """Read every requirement file the default branch lists, in listing order."""
+    copies: _Copies = {}
+    for f in files:
+        if not f["name"].endswith(".md"):
+            continue
+        content, _ = await github.get_file(repo, f["path"])
+        copies[f["path"]] = (content, None)
+    return copies
+
+
+def _is_pending_edit(branch: str, name: str) -> bool:
+    """Whether a Lachesis pull request branch carries the pending edit of file *name*.
+
+    Every fallback producer names its branch ``lachesis/req-{id}-...`` after the
+    ``{id}-...md`` file it edits — the same prefix :func:`_locate_requirement`
+    resolves by.  A branch carrying some other requirement's file unchanged from
+    the default branch is not that requirement's pending edit.
+    """
+    req_id = branch.removeprefix("lachesis/req-").split("-", 1)[0]
+    return name.startswith(f"{req_id}-")
+
+
+async def _read_pull_request_branch(repo: str, pr_info: dict[str, Any], copies: _Copies) -> None:
+    """Add the requirement files an open Lachesis pull request carries to *copies*.
+
+    The pull request's own pending edit replaces the default branch's copy of that
+    file, keeping its position; a file that is not yet on the default branch is
+    appended.  A file the branch merely carries along from the default branch is
+    not read again: the default branch already served it.  Nor is one an earlier
+    pull request in the list supplied: the first listed is the one
+    :func:`github.find_open_pr`, and so :func:`_locate_requirement`, resolves.
+    """
+    branch = pr_info["branch"]
+    pr_files = await github.list_files(repo, "requirements", branch=branch)
+    for f in pr_files:
+        if not f["name"].endswith(".md"):
+            continue
+        if f["path"] in copies:
+            _, served_by = copies[f["path"]]
+            if served_by is not None or not _is_pending_edit(branch, f["name"]):
+                continue
+        content, _ = await github.get_file(repo, f["path"], branch=branch)
+        copies[f["path"]] = (content, pr_info)
 
 
 _Pending = list[tuple[dict[str, Any], list[int], bool]]
@@ -222,38 +425,13 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
     Each entry also carries a ``derived`` block: the status its linked issues and
     their pull requests actually show, whether that diverges from the recorded
     one, when those issues last moved, and the individual silent-failure signals.
+
+    A requirement is read from its open Lachesis pull request when it has one, as
+    :func:`get_requirement` reads it, and from the default branch otherwise.
     """
     repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
-    seen_paths = {f["path"] for f in files}
-    results: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    pending: _Pending = []
-    landing_candidates: list[landing.Candidate] = []
-
-    for f in files:
-        if not f["name"].endswith(".md"):
-            continue
-        content, _ = await github.get_file(repo, f["path"])
-        post = frontmatter.loads(content)
-        req_id = post["id"]
-        seen_ids.add(req_id)
-        req_status = canonical_status(post.get("status", ""))
-        if not include_inactive and req_status in INACTIVE_STATUSES:
-            continue
-        numbers = linked_issue_numbers(post)
-        entry = {
-            "id": req_id,
-            "title": post["title"],
-            "status": req_status,
-            "github_issue": post.get("github_issue"),
-            "pr": None,
-            "warning": _entry_warning(None, numbers),
-            **_inactive_fields(post),
-        }
-        results.append(entry)
-        pending.append((entry, numbers, False))
-        landing_candidates.append(landing.Candidate(f["path"], content, entry))
+    copies = await _read_default_branch(repo, files)
 
     try:
         lachesis_prs = await github.list_lachesis_prs(repo)
@@ -265,38 +443,37 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
             exc,
         )
         lachesis_prs = []
-    for pr_info in lachesis_prs:
-        branch = pr_info["branch"]
+    for open_pr in lachesis_prs:
+        await _read_pull_request_branch(repo, open_pr, copies)
+
+    results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    pending: _Pending = []
+    landing_candidates: list[landing.Candidate] = []
+    for path, (content, pr_info) in copies.items():
+        post = frontmatter.loads(content)
+        req_id = post["id"]
+        if pr_info is not None and req_id in seen_ids:
+            continue
+        seen_ids.add(req_id)
+        req_status = canonical_status(post.get("status", ""))
+        if not include_inactive and req_status in INACTIVE_STATUSES:
+            continue
+        numbers = linked_issue_numbers(post)
         pr = _pr_field(pr_info)
-        pr_files = await github.list_files(repo, "requirements", branch=branch)
-        for f in pr_files:
-            if not f["name"].endswith(".md"):
-                continue
-            if f["path"] in seen_paths:
-                # The default branch already served this file; the id check
-                # below would discard it, after a request per open pull request.
-                continue
-            content, _ = await github.get_file(repo, f["path"], branch=branch)
-            post = frontmatter.loads(content)
-            req_id = post["id"]
-            if req_id in seen_ids:
-                continue
-            seen_ids.add(req_id)
-            req_status = canonical_status(post.get("status", ""))
-            if not include_inactive and req_status in INACTIVE_STATUSES:
-                continue
-            numbers = linked_issue_numbers(post)
-            entry = {
-                "id": req_id,
-                "title": post["title"],
-                "status": req_status,
-                "github_issue": post.get("github_issue"),
-                "pr": pr,
-                "warning": _entry_warning(pr, numbers),
-                **_inactive_fields(post),
-            }
-            results.append(entry)
-            pending.append((entry, numbers, True))
+        entry = {
+            "id": req_id,
+            "title": post["title"],
+            "status": req_status,
+            "github_issue": post.get("github_issue"),
+            "pr": pr,
+            "warning": _entry_warning(pr, numbers),
+            **_inactive_fields(post),
+        }
+        results.append(entry)
+        pending.append((entry, numbers, pr is not None))
+        if pr is None:
+            landing_candidates.append(landing.Candidate(path, content, entry))
 
     await _attach_derived(repo, pending)
     await landing.notify_landed(repo, landing_candidates)
@@ -399,65 +576,25 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
             "create_requirement: 409 on main for repo=%s, falling back to branch+PR",
             repo,
         )
-        sha = await github.get_branch_sha(repo, "main")
-        await github.create_branch(repo, branch_name, sha)
-        try:
+
+        async def commit() -> None:
             await github.create_file(
                 repo, path, content, f"feat: add requirement {id_str}", branch=branch_name
             )
-            pr = await github.create_pull_request(
-                repo,
-                title=f"[Lachesis] Add requirement {id_str}: {title}",
-                body=(
-                    f"This pull request was automatically created by Lachesis.\n\n"
-                    f"**Requirement:** {id_str} — {title}\n"
-                    f"**File:** `{path}`\n\n"
-                    f"Review and merge to add this requirement to `main`."
-                ),
-                head=branch_name,
-                base="main",
-            )
-        except Exception:
-            logger.warning(
-                "create_requirement: fallback failed mid-flight repo=%s branch=%s; "
-                "branch may be orphaned",
-                repo,
-                branch_name,
-            )
-            raise
+
+        _, pr = await _open_pull_request(
+            repo,
+            branch_name,
+            title=f"[Lachesis] Add requirement {id_str}: {title}",
+            body=(
+                f"This pull request was automatically created by Lachesis.\n\n"
+                f"**Requirement:** {id_str} — {title}\n"
+                f"**File:** `{path}`\n\n"
+                f"Review and merge to add this requirement to `main`."
+            ),
+            commit=commit,
+        )
         pr_url = pr["url"]
-        # Attempt to enable automerge — best-effort; PR creation already succeeded,
-        # so any automerge failure is swallowed and the pr_url is returned for manual merge.
-        try:
-            repo_settings = await github.get_repo_settings(repo)
-            if repo_settings["allow_auto_merge"]:
-                if repo_settings["allow_squash_merge"]:
-                    merge_method = "SQUASH"
-                elif repo_settings["allow_merge_commit"]:
-                    merge_method = "MERGE"
-                else:
-                    merge_method = "REBASE"
-                await github.enable_automerge(pr["node_id"], merge_method)
-                if not repo_settings["delete_branch_on_merge"]:
-                    logger.info(
-                        "create_requirement: automerge enabled but delete_branch_on_merge "
-                        "is disabled on repo=%s — branch will not auto-delete",
-                        repo,
-                    )
-            else:
-                logger.info(
-                    "create_requirement: automerge not available on repo=%s "
-                    "(allow_auto_merge=False) — user must merge manually",
-                    repo,
-                )
-        except Exception as exc:
-            logger.warning(
-                "create_requirement: enable_automerge failed repo=%s pr=%s error=%r; "
-                "pr_url returned for manual merge",
-                repo,
-                pr["number"],
-                exc,
-            )
     result: dict[str, Any] = {"id": id_str, "path": path}
     if pr_url is not None:
         result["pr_url"] = pr_url
@@ -502,12 +639,16 @@ async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str]:
     return {"repo": resolved, "id": req_id}
 
 
-async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
+async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> dict[str, Any]:
     """Update fields (title, why, what, status, reason, superseded_by) in a requirement.
 
     Setting ``status`` to ``cancelled`` requires a ``reason``; setting it to
     ``superseded`` requires ``superseded_by`` as ``{"id": ..., "repo": ...}``,
     where ``repo`` defaults to the requirement's own repo.
+
+    Returns ``{"content", "pr"}`` in the shape of :func:`get_requirement`: the
+    updated file, and the open pull request the update awaits merge on, or ``None``
+    when it landed on the default branch.
     """
     repo = await _resolve_repo(repo)
 
@@ -562,14 +703,19 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> str:
         )
         return cast(str, updated_content)
 
-    return await _write_requirement(repo, id, write)
+    written = await _write_requirement(repo, id, f"Update requirement {id}", write)
+    return {"content": written.result, "pr": _pr_field(written.pr)}
 
 
 async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
-    """Delete a requirement. Refuses if status is 'done'."""
+    """Delete a requirement. Refuses if status is 'done'.
+
+    Returns ``{"deleted": path, "pr"}`` — *pr* is the open pull request the deletion
+    awaits merge on, or ``None`` when it landed on the default branch.
+    """
     repo = await _resolve_repo(repo)
 
-    async def write(path: str, content: str, sha: str, branch: str | None) -> dict[str, Any]:
+    async def write(path: str, content: str, sha: str, branch: str | None) -> str:
         post = frontmatter.loads(content)
         if canonical_status(post.get("status")) == "done":
             raise ValueError(
@@ -578,13 +724,19 @@ async def delete_requirement(repo: str, id: str) -> dict[str, Any]:
             )
 
         await github.delete_file(repo, path, sha, f"chore: delete requirement {id}", branch=branch)
-        return {"deleted": path}
+        return path
 
-    return await _write_requirement(repo, id, write)
+    written = await _write_requirement(repo, id, f"Delete requirement {id}", write)
+    return {"deleted": written.result, "pr": _pr_field(written.pr)}
 
 
-async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
-    """Write GitHub issue numbers into the requirement's Issues section."""
+async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> dict[str, Any]:
+    """Write GitHub issue numbers into the requirement's Issues section.
+
+    Returns ``{"content", "pr"}`` in the shape of :func:`get_requirement`: the
+    updated file, and the open pull request the link awaits merge on, or ``None``
+    when it landed on the default branch.
+    """
     repo = await _resolve_repo(repo)
 
     async def write(path: str, content: str, sha: str, branch: str | None) -> str:
@@ -626,7 +778,8 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> str:
         )
         return cast(str, updated_content)
 
-    return await _write_requirement(repo, id, write)
+    written = await _write_requirement(repo, id, f"Link issues to requirement {id}", write)
+    return {"content": written.result, "pr": _pr_field(written.pr)}
 
 
 async def _apply_backlog_overrides(
@@ -1112,9 +1265,9 @@ async def get_dashboard(
     ``summary.incomplete_repos`` names the repos whose open-pull-request fetch
     failed, and is empty when every repo was read in full.  While it is non-empty
     every count in ``summary`` is a floor rather than a total — ``total`` and
-    ``by_status`` included, since both are tallied as the pull request branches
-    are walked — so a zero there means "none found" only for the repos absent
-    from that list.
+    ``by_status`` included, since a pull request branch that was not walked
+    contributes nothing to them — so a zero there means "none found" only for the
+    repos absent from that list.
 
     ``summary.unavailable_count`` counts the returned requirements whose linked
     issues could not be read, and ``unavailable_repos`` names where they are,
@@ -1160,82 +1313,12 @@ async def get_dashboard(
         listed = False
         try:
             files = await github.list_files(repo_name, "requirements")
-            seen_paths = {f["path"] for f in files}
-            requirements: list[dict[str, Any]] = []
-            repo_candidates: list[groups.Candidate] = []
-            seen_ids: set[str] = set()
-            pending: _Pending = []
-            landing_candidates: list[landing.Candidate] = []
-            for f in files:
-                if not f["name"].endswith(".md"):
-                    continue
-                content, _ = await github.get_file(repo_name, f["path"])
-                post = frontmatter.loads(content)
-                req_id = post["id"]
-                seen_ids.add(req_id)
-                req_status = canonical_status(post.get("status", ""))
-                status_counts[req_status] = status_counts.get(req_status, 0) + 1
-                if status is not None and req_status != status:
-                    continue
-                numbers = linked_issue_numbers(post)
-                entry = {
-                    "id": req_id,
-                    "title": post["title"],
-                    "status": req_status,
-                    "github_issue": post.get("github_issue"),
-                    "pr": None,
-                    "warning": _entry_warning(None, numbers),
-                    **_inactive_fields(post),
-                }
-                repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
-                if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
-                    continue
-                requirements.append(entry)
-                pending.append((entry, numbers, False))
-                landing_candidates.append(landing.Candidate(f["path"], content, entry))
+            copies = await _read_default_branch(repo_name, files)
 
             try:
                 lachesis_prs = await github.list_lachesis_prs(repo_name)
-                for pr_info in lachesis_prs:
-                    branch = pr_info["branch"]
-                    pr = _pr_field(pr_info)
-                    pr_files = await github.list_files(repo_name, "requirements", branch=branch)
-                    for f in pr_files:
-                        if not f["name"].endswith(".md"):
-                            continue
-                        if f["path"] in seen_paths:
-                            # The default branch already served this file; the id check
-                            # below would discard it, after a request per open pull request.
-                            continue
-                        content, _ = await github.get_file(repo_name, f["path"], branch=branch)
-                        post = frontmatter.loads(content)
-                        req_id = post["id"]
-                        if req_id in seen_ids:
-                            continue
-                        seen_ids.add(req_id)
-                        req_status = canonical_status(post.get("status", ""))
-                        status_counts[req_status] = status_counts.get(req_status, 0) + 1
-                        if status is not None and req_status != status:
-                            continue
-                        numbers = linked_issue_numbers(post)
-                        entry = {
-                            "id": req_id,
-                            "title": post["title"],
-                            "status": req_status,
-                            "github_issue": post.get("github_issue"),
-                            "pr": pr,
-                            "warning": _entry_warning(pr, numbers),
-                            **_inactive_fields(post),
-                        }
-                        repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
-                        if (
-                            status is None
-                            and not include_inactive
-                            and req_status in INACTIVE_STATUSES
-                        ):
-                            continue
-                        requirements.append(entry)
-                        pending.append((entry, numbers, True))
+                for open_pr in lachesis_prs:
+                    await _read_pull_request_branch(repo_name, open_pr, copies)
             except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
                 # Falls through rather than reaching the outer handler: what this repo's
                 # default branch already yielded is real, and every count below it is a
@@ -1244,6 +1327,40 @@ async def get_dashboard(
                     "get_dashboard: PR-branch pass failed repo=%s error=%r", repo_name, exc
                 )
                 incomplete_repos.append(repo_name)
+
+            requirements: list[dict[str, Any]] = []
+            repo_candidates: list[groups.Candidate] = []
+            seen_ids: set[str] = set()
+            pending: _Pending = []
+            landing_candidates: list[landing.Candidate] = []
+            for path, (content, pr_info) in copies.items():
+                post = frontmatter.loads(content)
+                req_id = post["id"]
+                if pr_info is not None and req_id in seen_ids:
+                    continue
+                seen_ids.add(req_id)
+                req_status = canonical_status(post.get("status", ""))
+                status_counts[req_status] = status_counts.get(req_status, 0) + 1
+                if status is not None and req_status != status:
+                    continue
+                numbers = linked_issue_numbers(post)
+                pr = _pr_field(pr_info)
+                entry = {
+                    "id": req_id,
+                    "title": post["title"],
+                    "status": req_status,
+                    "github_issue": post.get("github_issue"),
+                    "pr": pr,
+                    "warning": _entry_warning(pr, numbers),
+                    **_inactive_fields(post),
+                }
+                repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
+                if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
+                    continue
+                requirements.append(entry)
+                pending.append((entry, numbers, pr is not None))
+                if pr is None:
+                    landing_candidates.append(landing.Candidate(path, content, entry))
 
             await _attach_derived(repo_name, pending)
             aggregated.append({"repo": repo_name, "requirements": requirements})
