@@ -308,6 +308,56 @@ def _entry_warning(pr: dict[str, Any] | None, numbers: list[int]) -> str | None:
     return None if numbers else "no linked issues"
 
 
+_Copies = dict[str, tuple[str, dict[str, Any] | None]]
+"""The authoritative copy of each requirement file, keyed by path.
+
+The value is ``(content, pr)`` — *pr* the open Lachesis pull request the copy was
+read from, ``None`` for the default branch.
+"""
+
+
+async def _read_default_branch(repo: str, files: list[dict[str, Any]]) -> _Copies:
+    """Read every requirement file the default branch lists, in listing order."""
+    copies: _Copies = {}
+    for f in files:
+        if not f["name"].endswith(".md"):
+            continue
+        content, _ = await github.get_file(repo, f["path"])
+        copies[f["path"]] = (content, None)
+    return copies
+
+
+def _is_pending_edit(branch: str, name: str) -> bool:
+    """Whether a Lachesis pull request branch carries the pending edit of file *name*.
+
+    Every fallback producer names its branch ``lachesis/req-{id}-...`` after the
+    ``{id}-...md`` file it edits — the same prefix :func:`_locate_requirement`
+    resolves by.  A branch carrying some other requirement's file unchanged from
+    the default branch is not that requirement's pending edit.
+    """
+    req_id = branch.removeprefix("lachesis/req-").split("-", 1)[0]
+    return name.startswith(f"{req_id}-")
+
+
+async def _read_pull_request_branch(repo: str, pr_info: dict[str, Any], copies: _Copies) -> None:
+    """Add the requirement files an open Lachesis pull request carries to *copies*.
+
+    The pull request's own pending edit replaces the default branch's copy of that
+    file, keeping its position; a file that is not yet on the default branch is
+    appended.  A file the branch merely carries along from the default branch is
+    not read again: the default branch already served it.
+    """
+    branch = pr_info["branch"]
+    pr_files = await github.list_files(repo, "requirements", branch=branch)
+    for f in pr_files:
+        if not f["name"].endswith(".md"):
+            continue
+        if f["path"] in copies and not _is_pending_edit(branch, f["name"]):
+            continue
+        content, _ = await github.get_file(repo, f["path"], branch=branch)
+        copies[f["path"]] = (content, pr_info)
+
+
 _Pending = list[tuple[dict[str, Any], list[int], bool]]
 
 
@@ -359,38 +409,13 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
     Each entry also carries a ``derived`` block: the status its linked issues and
     their pull requests actually show, whether that diverges from the recorded
     one, when those issues last moved, and the individual silent-failure signals.
+
+    A requirement is read from its open Lachesis pull request when it has one, as
+    :func:`get_requirement` reads it, and from the default branch otherwise.
     """
     repo = await _resolve_repo(repo)
     files = await github.list_files(repo, "requirements")
-    seen_paths = {f["path"] for f in files}
-    results: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    pending: _Pending = []
-    landing_candidates: list[landing.Candidate] = []
-
-    for f in files:
-        if not f["name"].endswith(".md"):
-            continue
-        content, _ = await github.get_file(repo, f["path"])
-        post = frontmatter.loads(content)
-        req_id = post["id"]
-        seen_ids.add(req_id)
-        req_status = canonical_status(post.get("status", ""))
-        if not include_inactive and req_status in INACTIVE_STATUSES:
-            continue
-        numbers = linked_issue_numbers(post)
-        entry = {
-            "id": req_id,
-            "title": post["title"],
-            "status": req_status,
-            "github_issue": post.get("github_issue"),
-            "pr": None,
-            "warning": _entry_warning(None, numbers),
-            **_inactive_fields(post),
-        }
-        results.append(entry)
-        pending.append((entry, numbers, False))
-        landing_candidates.append(landing.Candidate(f["path"], content, entry))
+    copies = await _read_default_branch(repo, files)
 
     try:
         lachesis_prs = await github.list_lachesis_prs(repo)
@@ -402,38 +427,37 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
             exc,
         )
         lachesis_prs = []
-    for pr_info in lachesis_prs:
-        branch = pr_info["branch"]
+    for open_pr in lachesis_prs:
+        await _read_pull_request_branch(repo, open_pr, copies)
+
+    results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    pending: _Pending = []
+    landing_candidates: list[landing.Candidate] = []
+    for path, (content, pr_info) in copies.items():
+        post = frontmatter.loads(content)
+        req_id = post["id"]
+        if pr_info is not None and req_id in seen_ids:
+            continue
+        seen_ids.add(req_id)
+        req_status = canonical_status(post.get("status", ""))
+        if not include_inactive and req_status in INACTIVE_STATUSES:
+            continue
+        numbers = linked_issue_numbers(post)
         pr = _pr_field(pr_info)
-        pr_files = await github.list_files(repo, "requirements", branch=branch)
-        for f in pr_files:
-            if not f["name"].endswith(".md"):
-                continue
-            if f["path"] in seen_paths:
-                # The default branch already served this file; the id check
-                # below would discard it, after a request per open pull request.
-                continue
-            content, _ = await github.get_file(repo, f["path"], branch=branch)
-            post = frontmatter.loads(content)
-            req_id = post["id"]
-            if req_id in seen_ids:
-                continue
-            seen_ids.add(req_id)
-            req_status = canonical_status(post.get("status", ""))
-            if not include_inactive and req_status in INACTIVE_STATUSES:
-                continue
-            numbers = linked_issue_numbers(post)
-            entry = {
-                "id": req_id,
-                "title": post["title"],
-                "status": req_status,
-                "github_issue": post.get("github_issue"),
-                "pr": pr,
-                "warning": _entry_warning(pr, numbers),
-                **_inactive_fields(post),
-            }
-            results.append(entry)
-            pending.append((entry, numbers, True))
+        entry = {
+            "id": req_id,
+            "title": post["title"],
+            "status": req_status,
+            "github_issue": post.get("github_issue"),
+            "pr": pr,
+            "warning": _entry_warning(pr, numbers),
+            **_inactive_fields(post),
+        }
+        results.append(entry)
+        pending.append((entry, numbers, pr is not None))
+        if pr is None:
+            landing_candidates.append(landing.Candidate(path, content, entry))
 
     await _attach_derived(repo, pending)
     await landing.notify_landed(repo, landing_candidates)
@@ -1225,9 +1249,9 @@ async def get_dashboard(
     ``summary.incomplete_repos`` names the repos whose open-pull-request fetch
     failed, and is empty when every repo was read in full.  While it is non-empty
     every count in ``summary`` is a floor rather than a total — ``total`` and
-    ``by_status`` included, since both are tallied as the pull request branches
-    are walked — so a zero there means "none found" only for the repos absent
-    from that list.
+    ``by_status`` included, since a pull request branch that was not walked
+    contributes nothing to them — so a zero there means "none found" only for the
+    repos absent from that list.
 
     ``summary.unavailable_count`` counts the returned requirements whose linked
     issues could not be read, and ``unavailable_repos`` names where they are,
@@ -1273,82 +1297,12 @@ async def get_dashboard(
         listed = False
         try:
             files = await github.list_files(repo_name, "requirements")
-            seen_paths = {f["path"] for f in files}
-            requirements: list[dict[str, Any]] = []
-            repo_candidates: list[groups.Candidate] = []
-            seen_ids: set[str] = set()
-            pending: _Pending = []
-            landing_candidates: list[landing.Candidate] = []
-            for f in files:
-                if not f["name"].endswith(".md"):
-                    continue
-                content, _ = await github.get_file(repo_name, f["path"])
-                post = frontmatter.loads(content)
-                req_id = post["id"]
-                seen_ids.add(req_id)
-                req_status = canonical_status(post.get("status", ""))
-                status_counts[req_status] = status_counts.get(req_status, 0) + 1
-                if status is not None and req_status != status:
-                    continue
-                numbers = linked_issue_numbers(post)
-                entry = {
-                    "id": req_id,
-                    "title": post["title"],
-                    "status": req_status,
-                    "github_issue": post.get("github_issue"),
-                    "pr": None,
-                    "warning": _entry_warning(None, numbers),
-                    **_inactive_fields(post),
-                }
-                repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
-                if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
-                    continue
-                requirements.append(entry)
-                pending.append((entry, numbers, False))
-                landing_candidates.append(landing.Candidate(f["path"], content, entry))
+            copies = await _read_default_branch(repo_name, files)
 
             try:
                 lachesis_prs = await github.list_lachesis_prs(repo_name)
-                for pr_info in lachesis_prs:
-                    branch = pr_info["branch"]
-                    pr = _pr_field(pr_info)
-                    pr_files = await github.list_files(repo_name, "requirements", branch=branch)
-                    for f in pr_files:
-                        if not f["name"].endswith(".md"):
-                            continue
-                        if f["path"] in seen_paths:
-                            # The default branch already served this file; the id check
-                            # below would discard it, after a request per open pull request.
-                            continue
-                        content, _ = await github.get_file(repo_name, f["path"], branch=branch)
-                        post = frontmatter.loads(content)
-                        req_id = post["id"]
-                        if req_id in seen_ids:
-                            continue
-                        seen_ids.add(req_id)
-                        req_status = canonical_status(post.get("status", ""))
-                        status_counts[req_status] = status_counts.get(req_status, 0) + 1
-                        if status is not None and req_status != status:
-                            continue
-                        numbers = linked_issue_numbers(post)
-                        entry = {
-                            "id": req_id,
-                            "title": post["title"],
-                            "status": req_status,
-                            "github_issue": post.get("github_issue"),
-                            "pr": pr,
-                            "warning": _entry_warning(pr, numbers),
-                            **_inactive_fields(post),
-                        }
-                        repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
-                        if (
-                            status is None
-                            and not include_inactive
-                            and req_status in INACTIVE_STATUSES
-                        ):
-                            continue
-                        requirements.append(entry)
-                        pending.append((entry, numbers, True))
+                for open_pr in lachesis_prs:
+                    await _read_pull_request_branch(repo_name, open_pr, copies)
             except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
                 # Falls through rather than reaching the outer handler: what this repo's
                 # default branch already yielded is real, and every count below it is a
@@ -1357,6 +1311,40 @@ async def get_dashboard(
                     "get_dashboard: PR-branch pass failed repo=%s error=%r", repo_name, exc
                 )
                 incomplete_repos.append(repo_name)
+
+            requirements: list[dict[str, Any]] = []
+            repo_candidates: list[groups.Candidate] = []
+            seen_ids: set[str] = set()
+            pending: _Pending = []
+            landing_candidates: list[landing.Candidate] = []
+            for path, (content, pr_info) in copies.items():
+                post = frontmatter.loads(content)
+                req_id = post["id"]
+                if pr_info is not None and req_id in seen_ids:
+                    continue
+                seen_ids.add(req_id)
+                req_status = canonical_status(post.get("status", ""))
+                status_counts[req_status] = status_counts.get(req_status, 0) + 1
+                if status is not None and req_status != status:
+                    continue
+                numbers = linked_issue_numbers(post)
+                pr = _pr_field(pr_info)
+                entry = {
+                    "id": req_id,
+                    "title": post["title"],
+                    "status": req_status,
+                    "github_issue": post.get("github_issue"),
+                    "pr": pr,
+                    "warning": _entry_warning(pr, numbers),
+                    **_inactive_fields(post),
+                }
+                repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
+                if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
+                    continue
+                requirements.append(entry)
+                pending.append((entry, numbers, pr is not None))
+                if pr is None:
+                    landing_candidates.append(landing.Candidate(path, content, entry))
 
             await _attach_derived(repo_name, pending)
             aggregated.append({"repo": repo_name, "requirements": requirements})

@@ -2130,23 +2130,50 @@ Do it.
     assert result[1]["derived"]["signals"]["unlinked"] == "awaiting_pr"
 
 
-async def test_list_requirements_deduplicates_pr_and_main(httpx_mock: HTTPXMock) -> None:
-    """If the same requirement ID exists on main and a PR branch, main wins (no PR)."""
-    pr_branch = "lachesis/req-001-user-auth"
-    # 1. main → returns 001
+async def test_list_requirements_reports_a_requirements_own_pending_edit(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A requirement's own open PR replaces main's copy: that is where its pending edit lives.
+
+    Main still serves the pre-edit file until the PR merges, so the listing would
+    otherwise disagree with what ``get_requirement`` reads for the same id.
+    """
+    pr_branch = "lachesis/req-001-user-auth-20260914T100000Z"
+    pr_url_3 = "https://github.com/owner/repo/pull/3"
+    renamed_md = _SAMPLE_MD.replace('title: "User authentication"', 'title: "Sign-in"')
+    # 1. main → returns 001 under its old title
     httpx_mock.add_response(json=_LIST_RESP)
     httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
-    # 2. list_lachesis_prs → PR exists for same req
-    pr_url_3 = "https://github.com/owner/repo/pull/3"
-    httpx_mock.add_response(json=[{"head": {"ref": pr_branch}, "html_url": pr_url_3, "number": 3}])
-    # 3. list_files on PR branch → also has 001, whose path is skipped without a fetch
+    # 2. list_lachesis_prs → 001's own pending edit
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": pr_branch},
+                "html_url": pr_url_3,
+                "number": 3,
+                "created_at": "2026-09-14T10:00:00Z",
+            }
+        ]
+    )
+    # 3. list_files on PR branch → the same path, read again from the branch
     httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(renamed_md, "branchsha"))
 
     result = await list_requirements("owner/repo")
 
     assert len(result) == 1
     assert result[0]["id"] == "001"
-    assert result[0]["pr"] is None
+    assert result[0]["title"] == "Sign-in"
+    assert result[0]["pr"] == {
+        "number": 3,
+        "state": "open",
+        "merged": False,
+        "url": pr_url_3,
+        "branch": pr_branch,
+        "created_at": "2026-09-14T10:00:00Z",
+    }
+    assert result[0]["warning"] == "awaiting merge of PR #3"
+    assert f"ref={pr_branch.replace('/', '%2F')}" in str(httpx_mock.get_requests()[4].url)
 
 
 async def test_list_requirements_no_prs_returns_main_only(httpx_mock: HTTPXMock) -> None:
@@ -4093,6 +4120,40 @@ async def test_get_dashboard_groups_a_pr_branch_requirement_as_awaiting_merge(
     assert result["summary"]["incomplete_repos"] == []
 
 
+async def test_get_dashboard_groups_a_pending_edit_of_a_landed_requirement_as_awaiting_merge(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """An edit awaiting merge on the requirement's own PR is grouped by that PR, not main's copy.
+
+    Grouping keys off the copy the pull request carries: the cancellation it holds
+    drops the requirement, where main's still-planned copy would have reported it
+    as never linked.
+    """
+    pr_branch = "lachesis/req-001-user-auth-20260914T100000Z"
+    cancelled_md = _SAMPLE_MD.replace('status: "planned"', 'status: "cancelled"\nreason: "Moot"')
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(
+            json=[{"head": {"ref": pr_branch}, "html_url": "https://x/pull/7", "number": 7}]
+        )
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(cancelled_md, "branchsha"))
+        result = await get_dashboard(include_inactive=True)
+
+    reqs = result["repos"][0]["requirements"]
+    assert [(req["id"], req["status"], req["pr"]["number"]) for req in reqs] == [
+        ("001", "cancelled", 7)
+    ]
+    assert result["summary"]["total"] == 1
+    assert result["summary"]["by_status"] == {"cancelled": 1}
+    assert [entry["id"] for entry in result["groups"]["dropped"]] == ["001"]
+    assert result["groups"]["never_linked"] == []
+
+
 async def test_get_dashboard_awaiting_merge_leads_with_the_oldest_pr(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
@@ -4420,7 +4481,7 @@ async def test_get_dashboard_calls_an_unclassifiable_repo_failure_transient(
     """A file without an id fails no HTTP check, so only the catch-all can name it.
 
     It fails on the second file, which also pins how far the counts are a floor:
-    ``total`` keeps what was read before the failure, the listings keep none of it.
+    ``total`` keeps what was tallied before the failure, the listings keep none of it.
     """
     with patch(
         "tools.requirements.db.list_repos",
@@ -4431,6 +4492,7 @@ async def test_get_dashboard_calls_an_unclassifiable_repo_failure_transient(
         httpx_mock.add_response(
             json=_make_second_file_response(_SAMPLE_MD.replace('id: "001"\n', ""), "sha2")
         )
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → the files are parsed after it
         result = await get_dashboard()
 
     assert result["summary"]["failed_repos"] == [{"repo": "owner/repo", "cause": "transient"}]
