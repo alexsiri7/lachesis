@@ -127,14 +127,18 @@ mcp.tool(
         "superseded. Setting it to 'cancelled' requires `reason` — why the work "
         "was dropped. Setting it to 'superseded' requires `superseded_by` as "
         '{"id": "030", "repo": "owner/repo"}, where `repo` defaults to the '
-        "requirement's own repo."
+        "requirement's own repo. Returns `{content, pr}` like `get_requirement`: "
+        "`pr` is the open pull request the update awaits merge on — opened by Lachesis "
+        "when the default branch is protected — and null once it is on the default branch."
     ),
 )(req_tools.update_requirement)
 
 mcp.tool(
     description=(
         "Delete a requirement. Refuses if status is 'done' — "
-        "a done requirement represents implemented code."
+        "a done requirement represents implemented code. Returns `{deleted, pr}`: "
+        "`pr` is the open pull request the deletion awaits merge on, null when it "
+        "reached the default branch."
     ),
 )(req_tools.delete_requirement)
 
@@ -142,7 +146,9 @@ mcp.tool(
     description=(
         "Attach GitHub issue numbers and titles to a requirement's Issues section, "
         "completing the requirement → issue link. "
-        "Automatically advances status from 'draft' to 'idea' when issues are first linked."
+        "Automatically advances status from 'draft' to 'idea' when issues are first linked. "
+        "Returns `{content, pr}` like `get_requirement`: `pr` is the open pull request "
+        "the link awaits merge on, null once it is on the default branch."
     ),
 )(req_tools.link_issues)
 

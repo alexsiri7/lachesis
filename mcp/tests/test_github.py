@@ -430,6 +430,7 @@ async def test_create_pull_request_returns_number_and_url(httpx_mock: HTTPXMock)
             "number": 7,
             "html_url": "https://github.com/owner/repo/pull/7",
             "node_id": "PR_abc123",
+            "created_at": "2026-09-14T10:00:00Z",
         },
     )
     result = await create_pull_request(
@@ -439,6 +440,7 @@ async def test_create_pull_request_returns_number_and_url(httpx_mock: HTTPXMock)
         "number": 7,
         "url": "https://github.com/owner/repo/pull/7",
         "node_id": "PR_abc123",
+        "created_at": "2026-09-14T10:00:00Z",
     }
 
 

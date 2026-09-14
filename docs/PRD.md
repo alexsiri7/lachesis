@@ -170,7 +170,7 @@ Creates a new requirement markdown file in the repo.
 Updates fields in an existing requirement file (title, why, what, status).
 
 **Input**: `repo`, `id`, `fields` (partial update)
-**Output**: Updated file content
+**Output**: `{content, pr}` — the updated file, and the open pull request it awaits merge on (`null` once it is on the default branch)
 
 ---
 
@@ -178,7 +178,7 @@ Updates fields in an existing requirement file (title, why, what, status).
 Removes a requirement file from the repo. Refuses if status is `done`.
 
 **Input**: `repo`, `id`
-**Output**: Confirmation, or error if status is `done`
+**Output**: `{deleted, pr}` — the deleted path and the open pull request the deletion awaits merge on (`null` once it reached the default branch), or error if status is `done`
 
 ---
 
@@ -187,7 +187,7 @@ Writes a list of GitHub issue numbers and titles into the requirement's Issues s
 Sets the first issue as `github_issue` in the frontmatter (the top-level tracker).
 
 **Input**: `repo`, `id`, `issues` (array of `{number, title}`)
-**Output**: Updated requirement file
+**Output**: `{content, pr}` — the updated file, and the open pull request it awaits merge on (`null` once it is on the default branch)
 
 ---
 
