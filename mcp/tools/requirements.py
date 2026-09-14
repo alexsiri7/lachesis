@@ -357,15 +357,19 @@ async def _read_pull_request_branch(repo: str, pr_info: dict[str, Any], copies: 
     The pull request's own pending edit replaces the default branch's copy of that
     file, keeping its position; a file that is not yet on the default branch is
     appended.  A file the branch merely carries along from the default branch is
-    not read again: the default branch already served it.
+    not read again: the default branch already served it.  Nor is one an earlier
+    pull request in the list supplied: the first listed is the one
+    :func:`github.find_open_pr`, and so :func:`_locate_requirement`, resolves.
     """
     branch = pr_info["branch"]
     pr_files = await github.list_files(repo, "requirements", branch=branch)
     for f in pr_files:
         if not f["name"].endswith(".md"):
             continue
-        if f["path"] in copies and not _is_pending_edit(branch, f["name"]):
-            continue
+        if f["path"] in copies:
+            _, served_by = copies[f["path"]]
+            if served_by is not None or not _is_pending_edit(branch, f["name"]):
+                continue
         content, _ = await github.get_file(repo, f["path"], branch=branch)
         copies[f["path"]] = (content, pr_info)
 
