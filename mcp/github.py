@@ -191,7 +191,7 @@ async def get_pull_request(repo: str, pr_number: int) -> dict[str, Any] | None:
 
     Returned keys: ``number``, ``title``, ``url``, ``state`` (``"open"``/``"closed"``),
     ``merged``, ``merged_at``, ``mergeable``, ``mergeable_state``, ``head_ref``,
-    ``base_ref``, ``draft``.
+    ``base_ref``, ``draft``, ``labels`` (list of names).
 
     ``mergeable`` and ``mergeable_state`` are null until GitHub finishes computing
     mergeability in the background, so a null there means "not known yet", not "blocked".
@@ -225,6 +225,7 @@ async def get_pull_request(repo: str, pr_number: int) -> dict[str, Any] | None:
         "head_ref": data["head"]["ref"],
         "base_ref": data["base"]["ref"],
         "draft": data["draft"],
+        "labels": [lb["name"] for lb in data.get("labels", [])],
     }
 
 
@@ -513,6 +514,24 @@ async def update_issue(
         "title": data["title"],
         "url": data["html_url"],
     }
+
+
+async def add_labels(repo: str, issue_number: int, labels: list[str]) -> None:
+    """Add *labels* to an issue or pull request, keeping the labels it already has."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/labels",
+            headers=_headers(),
+            json={"labels": labels},
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.add_labels failed repo=%s issue=%s status=%s",
+            repo,
+            issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
 
 
 async def add_to_project(project_id: str, issue_node_id: str) -> None:

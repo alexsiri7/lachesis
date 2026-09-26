@@ -1434,7 +1434,7 @@ async def get_pull_request(repo: str, pr_number: int) -> dict[str, Any]:
     """Return the current state of a pull request.
 
     Returns ``{"found": True, ...}`` with number, title, url, state, merged, merged_at,
-    mergeable, mergeable_state, head_ref, base_ref and draft, or ``{"found": False}``
+    mergeable, mergeable_state, head_ref, base_ref, draft and labels, or ``{"found": False}``
     when the pull request does not exist.
     """
     repo = await _resolve_repo(repo)

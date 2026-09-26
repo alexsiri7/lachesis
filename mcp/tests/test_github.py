@@ -13,6 +13,7 @@ from pytest_httpx import HTTPXMock
 from github import (
     _headers,
     add_issue_dependency,
+    add_labels,
     add_to_project,
     create_branch,
     create_file,
@@ -344,6 +345,18 @@ async def test_add_issue_dependency_raises_on_error(httpx_mock: HTTPXMock) -> No
 
 
 # ---------------------------------------------------------------------------
+# add_labels
+# ---------------------------------------------------------------------------
+
+
+async def test_add_labels_posts_names_to_issue_labels(httpx_mock: HTTPXMock) -> None:
+    url = "https://api.github.com/repos/owner/repo/issues/7/labels"
+    httpx_mock.add_response(method="POST", url=url, json=[{"name": "spec-change"}])
+    await add_labels("owner/repo", 7, ["spec-change"])
+    assert json.loads(httpx_mock.get_requests()[0].content) == {"labels": ["spec-change"]}
+
+
+# ---------------------------------------------------------------------------
 # add_to_project
 # ---------------------------------------------------------------------------
 
@@ -559,6 +572,7 @@ _PULL_JSON = {
     "head": {"ref": "feature/thing"},
     "base": {"ref": "main"},
     "draft": False,
+    "labels": [{"name": "spec-change"}],
 }
 
 
@@ -580,6 +594,7 @@ async def test_get_pull_request_returns_all_fields(httpx_mock: HTTPXMock) -> Non
         "head_ref": "feature/thing",
         "base_ref": "main",
         "draft": False,
+        "labels": ["spec-change"],
     }
 
 
