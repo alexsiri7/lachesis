@@ -377,6 +377,18 @@ def _spec_change_entry(
     return entry
 
 
+def spec_change_status(change: dict[str, Any]) -> str:
+    """The status a spec change is counted under: its derived status, or why it has none.
+
+    ``none`` is a spec change no issue names; ``unreadable`` one whose issues could
+    not be read.
+    """
+    derived = change["derived"]
+    if derived["status"] is not None:
+        return str(derived["status"])
+    return "unreadable" if derived["source"] == "unavailable" else "none"
+
+
 async def read_spec_progress(repo: str) -> SpecProgress:
     """Derive every spec change in *repo* and count its open spec gaps by capability.
 

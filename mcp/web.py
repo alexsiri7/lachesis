@@ -23,7 +23,7 @@ import github
 from oauth import create_jwt, exchange_google_code
 from settings import settings
 from status import canonical_status
-from tools.specs import read_spec_progress, uses_specs
+from tools.specs import read_spec_progress, spec_change_status, uses_specs
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +91,6 @@ def _get_web_user_status(
     if settings.allowed_email and email != settings.allowed_email:
         return ("missing", None)
     return ("ok", cast(dict[str, Any], payload))
-
-
-def _spec_change_status(change: dict[str, Any]) -> str:
-    if change["dropped"]:
-        return "dropped"
-    return change["derived"]["status"] or "no issues"
 
 
 def _google_auth_url(redirect_uri: str, state: str) -> str:
@@ -196,15 +190,17 @@ async def web_index(request: Request) -> Response:
             logger.warning("web_index: failed to load repo=%s: %s", repo_name, exc)
 
         spec_changes: list[dict[str, Any]] = []
+        spec_gaps: dict[str, int] = {}
         try:
             if await uses_specs(repo_name):
                 progress = await read_spec_progress(repo_name)
+                spec_gaps = progress.spec_gaps
                 spec_changes = [
                     {
                         "number": change["spec_change"],
                         "title": change["title"],
                         "url": change["url"],
-                        "status": _spec_change_status(change),
+                        "status": "dropped" if change["dropped"] else spec_change_status(change),
                         "issue_count": len(change["derived"]["linked_issues"]),
                     }
                     for change in progress.spec_changes
@@ -213,7 +209,12 @@ async def web_index(request: Request) -> Response:
             logger.warning("web_index: failed to load spec changes repo=%s: %s", repo_name, exc)
 
         repos_data.append(
-            {"name": repo_name, "requirements": requirements, "spec_changes": spec_changes}
+            {
+                "name": repo_name,
+                "requirements": requirements,
+                "spec_changes": spec_changes,
+                "spec_gaps": spec_gaps,
+            }
         )
 
     return _render(

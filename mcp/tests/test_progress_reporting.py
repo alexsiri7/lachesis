@@ -419,6 +419,32 @@ async def test_every_page_of_issues_is_read(httpx_mock: HTTPXMock) -> None:
     assert pages == ["1", "2"]
 
 
+async def test_a_spec_change_whose_issues_cannot_be_read_is_unreadable(
+    httpx_mock: HTTPXMock, signed_in: None
+) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
+    ):
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(
+            json=[
+                _issue_item(21, body=_reference(20)),
+                _spec_change_item(20, merged_at=_stamp(3), repo="owner/specs"),
+            ]
+        )
+        httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+
+        result = await get_dashboard()
+
+    assert _group_of(result["groups"], spec_change=20) == "unreadable"
+    assert result["summary"]["spec_changes_by_status"] == {"unreadable": 1}
+    assert result["summary"]["unavailable_repos"] == [
+        {"repo": "owner/specs", "count": 1, "causes": ["transient"]}
+    ]
+
+
 async def test_list_spec_changes_is_refused_without_specs(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url="https://api.github.com/repos/owner/repo/contents/openspec/specs",
@@ -608,7 +634,8 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
         "derived": built,
     }
     monkeypatch.setattr(
-        "web.read_spec_progress", AsyncMock(return_value=SpecProgress([change], {}))
+        "web.read_spec_progress",
+        AsyncMock(return_value=SpecProgress([change], {"backlog": 3})),
     )
     token = jose_jwt.encode(
         {"sub": "google-sub", "email": "user@example.com", "lachesis_uid": "uid", "exp": 2**31},
@@ -627,3 +654,5 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     assert "Progress reporting on spec changes" in resp.text
     assert "done (1)" in resp.text
     assert "3 issues" in resp.text
+    assert "Open spec gaps" in resp.text
+    assert "3 open" in resp.text
