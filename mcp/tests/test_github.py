@@ -31,8 +31,10 @@ from github import (
     get_repo_settings,
     list_blocked_by_numbers,
     list_files,
+    list_labelled_prs,
     list_lachesis_prs,
     list_open_issues,
+    list_pull_request_files,
     update_file,
     update_issue,
 )
@@ -883,6 +885,20 @@ async def test_list_lachesis_prs_raises_on_http_error(httpx_mock: HTTPXMock) -> 
     httpx_mock.add_response(status_code=403, json={"message": "Forbidden"})
     with pytest.raises(httpx.HTTPStatusError):
         await list_lachesis_prs("owner/repo")
+
+
+async def test_list_labelled_prs_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    """A failed lookup must not read as "no PRs carry this label"."""
+    httpx_mock.add_response(status_code=500)
+    with pytest.raises(httpx.HTTPStatusError):
+        await list_labelled_prs("owner/repo", "spec-change")
+
+
+async def test_list_pull_request_files_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    """A failed lookup must not read as "this PR changes no files"."""
+    httpx_mock.add_response(status_code=500)
+    with pytest.raises(httpx.HTTPStatusError):
+        await list_pull_request_files("owner/repo", 7)
 
 
 # ---------------------------------------------------------------------------
