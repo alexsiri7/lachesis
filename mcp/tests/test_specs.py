@@ -303,6 +303,35 @@ def test_landed_specs_are_found() -> None:
             _BACKLOG_SPEC.replace("#### Scenario: Moving", "### Scenario: Moving"),
             "requirement 'Issues are ordered' has no '#### Scenario:' heading",
         ),
+        (
+            _BACKLOG_SPEC.replace("# Backlog\n", "").replace(
+                "- THEN the order changes", "- THEN the order changes\n```\n# Backlog\n```"
+            ),
+            "missing a '# Title' heading",
+        ),
+        (
+            _BACKLOG_SPEC.replace("## Purpose", "## Aim").replace(
+                "- THEN the order changes", "- THEN the order changes\n```\n## Purpose\n```"
+            ),
+            "missing a '## Purpose' section",
+        ),
+        (
+            _BACKLOG_SPEC.replace("## Requirements", "~~~\n## Requirements\n~~~"),
+            "missing a '## Requirements' section",
+        ),
+        (
+            _BACKLOG_SPEC.replace(
+                "The system SHALL keep issues in order.",
+                "Issues are kept in order, as in:\n\n```\nThe system SHALL keep order.\n```",
+            ),
+            "requirement 'Issues are ordered' must say SHALL or MUST",
+        ),
+        (
+            _BACKLOG_SPEC.replace(
+                "#### Scenario: Moving an issue", "````md\n#### Scenario: Moving an issue\n```"
+            ).replace("- THEN the order changes", "- THEN the order changes\n````"),
+            "requirement 'Issues are ordered' has no '#### Scenario:' heading",
+        ),
     ],
 )
 def test_format_check_rejects(spec: str, problem: str) -> None:
@@ -441,6 +470,11 @@ async def test_requirement_without_a_scenario(httpx_mock: HTTPXMock) -> None:
     assert "issues: missing a '## Requirements' section" in message
 
 
+async def test_propose_spec_change_rejects_empty_capabilities(httpx_mock: HTTPXMock) -> None:
+    with pytest.raises(ValueError, match="at least one capability"):
+        await propose_spec_change(_REPO, "T", "Why", {})
+
+
 async def test_propose_spec_change_rejects_invalid_capability_names(httpx_mock: HTTPXMock) -> None:
     with pytest.raises(ValueError, match=r"Invalid capability name '\.\./secrets'"):
         await propose_spec_change(_REPO, "T", "Why", {"../secrets": None})
@@ -523,6 +557,16 @@ async def test_update_spec_change_replaces_the_why(httpx_mock: HTTPXMock) -> Non
 
     [patch] = _requests(httpx_mock, "PATCH")
     assert json.loads(patch.content) == {"body": "A better reason."}
+
+
+async def test_update_spec_change_reports_a_pull_request_gone_before_the_why_lands(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_open_spec_change(httpx_mock)
+    httpx_mock.add_response(method="PATCH", url=f"{_API}/issues/12", status_code=404)
+
+    with pytest.raises(FileNotFoundError, match="Pull request #12 not found"):
+        await update_spec_change(_REPO, 12, why="A better reason.")
 
 
 async def test_update_spec_change_checks_format_before_writing(httpx_mock: HTTPXMock) -> None:

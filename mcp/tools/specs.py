@@ -32,6 +32,7 @@ _REQUIREMENT_BLOCK = re.compile(
 _SUBHEADING = re.compile(r"^#### ", re.MULTILINE)
 _SCENARIO = re.compile(r"^#### Scenario:", re.MULTILINE)
 _NORMATIVE = re.compile(r"\b(?:SHALL|MUST)\b")
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
 
 
 async def uses_specs(repo: str) -> bool:
@@ -119,14 +120,34 @@ async def get_capability(repo: str, capability: str) -> dict[str, Any]:
     }
 
 
+def _outside_code_blocks(spec: str) -> str:
+    """Return *spec* with every fenced code block's lines blanked out.
+
+    An unclosed fence runs to the end of the document, as in CommonMark.
+    """
+    lines = spec.split("\n")
+    fence = ""
+    for i, line in enumerate(lines):
+        if fence:
+            if line.strip().startswith(fence) and not line.strip().strip(fence[0]):
+                fence = ""
+            lines[i] = ""
+        elif opening := _FENCE.match(line):
+            fence = opening.group(1)
+            lines[i] = ""
+    return "\n".join(lines)
+
+
 def spec_problems(capability: str, spec: str) -> list[str]:
     """Return every format problem in *spec*, each naming *capability* and any requirement.
 
     Mirrors the rules ``openspec validate --strict`` enforces for a title, the Purpose
     and Requirements sections, and each requirement's SHALL/MUST statement and scenarios.
     A requirement's statement is its text before its first ``####`` heading: OpenSpec
-    counts neither the requirement heading nor its scenarios.
+    counts neither the requirement heading nor its scenarios.  Fenced code blocks are
+    ignored, so an example inside one cannot stand in for a missing element.
     """
+    spec = _outside_code_blocks(spec)
     problems: list[str] = []
     title = _TITLE.search(spec)
     if title is None:
@@ -288,5 +309,6 @@ async def update_spec_change(
     for name, spec in (capabilities or {}).items():
         await _write_capability(repo, pull["head_ref"], name, spec, f"spec: {pull['title']}")
     if why is not None:
-        await github.update_issue(repo, pr_number, {"body": why})
+        if await github.update_issue(repo, pr_number, {"body": why}) is None:
+            raise FileNotFoundError(f"Pull request #{pr_number} not found in {repo!r}")
     return {"repo": repo, "number": pr_number, "url": pull["url"]}
