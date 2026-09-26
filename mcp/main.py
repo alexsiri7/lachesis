@@ -390,8 +390,11 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Return the standard Lachesis workflow. Call this at the start of a session "
-        "to learn the correct order: create_requirement → create_github_issues → link_issues."
+        "Return the standard Lachesis workflow. Call this at the start of a session. "
+        "With `repo`, returns the workflow that applies there: for a repository that uses "
+        "specs, list_capabilities → propose_spec_change → create_github_issues naming the "
+        "spec change; otherwise create_requirement → create_github_issues → link_issues. "
+        "Without `repo`, returns both and how to tell which applies."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_initial_instructions)

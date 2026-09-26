@@ -123,10 +123,10 @@ Status is set manually or by Claude based on GitHub issue state — Lachesis doe
 ## MCP Tools
 
 ### `get_initial_instructions`
-Returns the standard Lachesis workflow. Call this at the start of a new session to orient Claude before capturing requirements.
+Returns the standard Lachesis workflow. Call this at the start of a new session to orient Claude before capturing work.
 
-**Input**: _(none)_
-**Output**: String — the standard workflow steps (create_requirement → create_github_issues → link_issues)
+**Input**: `repo` (optional)
+**Output**: String — for a repo that uses specs, the spec-change workflow (list_capabilities / get_capability → propose_spec_change → create_github_issues naming the spec change, with no linking step; spec gaps filed with `spec_gap: true`); for any other repo, the requirement-file workflow (create_requirement → create_github_issues → link_issues); with no repo, both and how to tell which applies. Every variant also covers parking, ordering, interrupting and `next_issue`.
 
 ---
 
@@ -161,7 +161,7 @@ default branch.
 ---
 
 ### `create_requirement`
-Creates a new requirement markdown file in the repo.
+Creates a new requirement markdown file in the repo. Refused in a repo that uses specs, pointing the caller to `propose_spec_change`.
 
 **Input**: `repo`, `title`, `why`, `what`
 **Output**: Created file path and auto-assigned id
@@ -169,7 +169,7 @@ Creates a new requirement markdown file in the repo.
 ---
 
 ### `update_requirement`
-Updates fields in an existing requirement file (title, why, what, status).
+Updates fields in an existing requirement file (title, why, what, status, reason, superseded_by). `superseded_by` is another requirement, `{"id", "repo"}`, or a spec change, `{"spec_change": <pr number>, "repo"}`; `repo` defaults to the requirement's own.
 
 **Input**: `repo`, `id`, `fields` (partial update)
 **Output**: `{content, pr}` — the updated file, and the open pull request it awaits merge on (`null` once it is on the default branch)

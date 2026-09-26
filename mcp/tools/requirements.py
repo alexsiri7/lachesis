@@ -25,17 +25,40 @@ from .repos import _require_user_id, normalize_repo
 
 logger = logging.getLogger(__name__)
 
-_INSTRUCTIONS = """\
-Lachesis workflow — follow these steps in order:
+_HOW_TO_TELL = """\
+Lachesis has two workflows. A repository uses specs when its default branch contains
+openspec/specs/ — list_capabilities reports uses_specs for it — and then follows the
+spec-change workflow; any other repository follows the requirement-file workflow.
+Call get_initial_instructions with repo to get only the workflow that applies there.
+"""
+
+_SPEC_WORKFLOW = """\
+Spec-change workflow, for a repository that uses specs — follow these steps in order:
+
+1. list_capabilities / get_capability — read the capabilities the work touches, and the
+   open spec changes already editing them.
+2. propose_spec_change — open a spec change editing those capabilities, with the why as
+   its description. update_spec_change edits it until it merges.
+3. create_github_issues — each issue names its capability, the spec change it implements
+   (spec_change: PR number) and optionally the requirement within the capability. There
+   is no linking step: an issue states what it implements when it is created.
+
+Work that brings the code in line with the spec as it already stands is a spec gap: create
+its issue with its capability and spec_gap: true instead of a spec change.
+create_requirement is refused in a repository that uses specs.
+"""
+
+_REQUIREMENT_WORKFLOW = """\
+Requirement-file workflow, for a repository without specs — follow these steps in order:
 
 1. create_requirement — capture intent (title, why, what). Requirement starts as 'draft'.
 2. create_github_issues — break it into implementation tasks. Pass issues with title and body.
-   In a repo that uses specs, each issue also names its capability and either the spec
-   change it implements (spec_change: PR number) or spec_gap: true.
 3. link_issues — attach the issue numbers to the requirement. Status advances to 'idea'.
 
 A requirement without linked issues is a draft. Archon will not act on drafts.
+"""
 
+_BACKLOG = """\
 New issues are ready and last in the backlog, eligible for autonomous pickup as
 soon as they are created. Call set_backlog_flags with ready=False to park an issue
 that is knowingly unfinished, and ready=True to unpark it. Use move_issue to order
@@ -45,9 +68,22 @@ ready, unblocked issue, or explains why there is none.
 """
 
 
-async def get_initial_instructions() -> str:
-    """Return the standard Lachesis workflow for new Claude sessions."""
-    return _INSTRUCTIONS
+async def get_initial_instructions(repo: str | None = None) -> str:
+    """Return the Lachesis workflow for new Claude sessions.
+
+    With *repo*, only the workflow that applies there; without, both and how to
+    tell which applies.
+    """
+    # specs imports this module, so it cannot be imported at the top.
+    from .specs import uses_specs
+
+    if repo is None:
+        workflows = [_HOW_TO_TELL, _SPEC_WORKFLOW, _REQUIREMENT_WORKFLOW]
+    elif await uses_specs(await _resolve_repo(repo)):
+        workflows = [_SPEC_WORKFLOW]
+    else:
+        workflows = [_REQUIREMENT_WORKFLOW]
+    return "\n".join([*workflows, _BACKLOG])
 
 
 async def _resolve_repo(repo: str) -> str:

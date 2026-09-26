@@ -11,7 +11,8 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from tools.requirements import create_requirement
+import main
+from tools.requirements import create_requirement, get_initial_instructions
 from tools.specs import (
     get_capability,
     list_capabilities,
@@ -658,3 +659,64 @@ async def test_update_spec_change_writes_repeatedly_with_each_current_version(
         await update_spec_change(_REPO, 12, capabilities={"backlog": _BACKLOG_SPEC})
 
     assert [_written(r)["sha"] for r in _requests(httpx_mock, "PUT")] == ["v1", "v2", "v3"]
+
+
+# ---------------------------------------------------------------------------
+# Agent guidance
+# ---------------------------------------------------------------------------
+
+_BACKLOG_TOOLS = ("set_backlog_flags", "move_issue", "next_issue")
+
+
+async def test_session_start_in_a_spec_repository(httpx_mock: HTTPXMock) -> None:
+    _mock_spec_repo(httpx_mock)
+
+    guidance = await get_initial_instructions(_REPO)
+
+    assert "Spec-change workflow" in guidance
+    assert "Requirement-file workflow" not in guidance
+    assert "link_issues" not in guidance
+    for step in ("list_capabilities", "propose_spec_change", "create_github_issues"):
+        assert step in guidance
+    assert "spec_gap: true" in guidance
+    assert all(tool in guidance for tool in _BACKLOG_TOOLS)
+
+
+async def test_session_start_in_a_repository_without_specs(httpx_mock: HTTPXMock) -> None:
+    _mock_not_spec_repo(httpx_mock)
+
+    guidance = await get_initial_instructions(_REPO)
+
+    assert "Requirement-file workflow" in guidance
+    assert "Spec-change workflow" not in guidance
+    assert "propose_spec_change" not in guidance
+    for step in ("create_requirement", "create_github_issues", "link_issues"):
+        assert step in guidance
+    assert "draft" in guidance
+    assert all(tool in guidance for tool in _BACKLOG_TOOLS)
+
+
+async def test_session_start_without_a_repository() -> None:
+    guidance = await get_initial_instructions()
+
+    assert "Spec-change workflow" in guidance
+    assert "Requirement-file workflow" in guidance
+    assert "openspec/specs/" in guidance
+    assert all(tool in guidance for tool in _BACKLOG_TOOLS)
+
+
+# Issue fields the guidance names alongside the tools.
+_GUIDANCE_FIELDS = {"spec_change", "spec_gap", "uses_specs"}
+
+
+@pytest.mark.parametrize("specs", [True, False, None])
+async def test_behaviour_changes(httpx_mock: HTTPXMock, specs: bool | None) -> None:
+    """Every tool the guidance tells an agent to call is one the server offers."""
+    if specs is not None:
+        (_mock_spec_repo if specs else _mock_not_spec_repo)(httpx_mock)
+    guidance = await get_initial_instructions(_REPO if specs is not None else None)
+
+    named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", guidance)) - _GUIDANCE_FIELDS
+    registered = {tool.name for tool in await main.mcp.list_tools()}
+    assert named
+    assert named <= registered
