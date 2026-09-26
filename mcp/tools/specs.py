@@ -6,13 +6,26 @@ import asyncio
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
 import github
+from derive import (
+    ActivityFailure,
+    IssueFacts,
+    SpecChangeState,
+    derive_spec_change,
+    spec_change_dropped,
+)
+from spec_reference import parse_reference
 
-from .requirements import _MAX_WRITE_ATTEMPTS, _open_pull_request, _resolve_repo
+from .requirements import (
+    _MAX_WRITE_ATTEMPTS,
+    SPEC_GAP_LABEL,
+    _open_pull_request,
+    _resolve_repo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -317,3 +330,116 @@ async def update_spec_change(
         if await github.update_issue(repo, pr_number, {"body": why}) is None:
             raise FileNotFoundError(f"Pull request #{pr_number} not found in {repo!r}")
     return {"repo": repo, "number": pr_number, "url": pull["url"]}
+
+
+class SpecProgress(NamedTuple):
+    """A spec repository's spec changes, each derived, and its open spec gaps by capability."""
+
+    spec_changes: list[dict[str, Any]]
+    spec_gaps: dict[str, int]
+
+
+def _spec_change_entry(
+    pull: github.IssueSummary,
+    numbers: list[int],
+    facts: dict[int, IssueFacts],
+    failure: ActivityFailure | None,
+) -> dict[str, Any]:
+    state: SpecChangeState = "merged" if pull["merged"] else pull["state"]
+    pr = (
+        {
+            "number": pull["number"],
+            "state": "open",
+            "merged": False,
+            "url": pull["url"],
+            "created_at": pull["created_at"],
+        }
+        if state == "open"
+        else None
+    )
+    reason = spec_change_dropped(state, numbers, facts)
+    if pr is not None:
+        warning: str | None = f"awaiting merge of PR #{pull['number']}"
+    else:
+        warning = None if numbers or reason else "no issues name this spec change"
+    entry: dict[str, Any] = {
+        "spec_change": pull["number"],
+        "title": pull["title"],
+        "url": pull["url"],
+        "state": state,
+        "pr": pr,
+        "warning": warning,
+        "dropped": reason is not None,
+        "derived": derive_spec_change(state, pull["updated_at"], numbers, facts, failure=failure),
+    }
+    if reason is not None:
+        entry["reason"] = reason
+    return entry
+
+
+async def read_spec_progress(repo: str) -> SpecProgress:
+    """Derive every spec change in *repo* and count its open spec gaps by capability.
+
+    One listing of the repository's issues and pull requests supplies the pull
+    requests labelled ``spec-change``, the issues whose reference block names
+    each one, and the open issues labelled ``spec-gap``; the named issues' facts
+    then come in one batch.  A spec-gap issue without a reference block names no
+    capability and is not counted.  Nothing is written.
+    """
+    items = await github.list_all_issues(repo)
+    naming: dict[int, list[int]] = {}
+    spec_gaps: dict[str, int] = {}
+    for item in items:
+        if item["is_pull_request"]:
+            continue
+        ref = parse_reference(item["body"])
+        if ref is None:
+            continue
+        if ref.spec_change is not None:
+            naming.setdefault(ref.spec_change, []).append(item["number"])
+        elif item["state"] == "open" and SPEC_GAP_LABEL in item["labels"]:
+            spec_gaps[ref.capability] = spec_gaps.get(ref.capability, 0) + 1
+
+    pulls = sorted(
+        (item for item in items if item["is_pull_request"] and SPEC_CHANGE_LABEL in item["labels"]),
+        key=lambda item: item["number"],
+    )
+    numbers = sorted({n for pull in pulls for n in naming.get(pull["number"], [])})
+    facts: dict[int, IssueFacts] = {}
+    failure: ActivityFailure | None = None
+    try:
+        activity = await github.get_issue_activity(repo, numbers)
+        facts, failure = activity["facts"], activity["failure"]
+    except Exception as exc:
+        logger.warning(
+            "failed to fetch issue activity for repo=%s error=%r; spec changes not derived",
+            repo,
+            exc,
+        )
+        failure = "transient"
+    return SpecProgress(
+        [
+            _spec_change_entry(pull, sorted(naming.get(pull["number"], [])), facts, failure)
+            for pull in pulls
+        ],
+        dict(sorted(spec_gaps.items())),
+    )
+
+
+async def list_spec_changes(repo: str, include_inactive: bool = False) -> list[dict[str, Any]]:
+    """Return every spec change in *repo* with its ``derived`` block, oldest first.
+
+    Each entry carries ``spec_change`` (its pull request number), ``title``, ``url``,
+    ``state`` (``open``, ``merged`` or ``closed``), ``pr`` (the open pull request the
+    change awaits, ``None`` once it has merged or closed), ``warning``, ``dropped``
+    and, when dropped, its ``reason``.  Its issues are those whose reference block
+    names it.  Dropped spec changes are excluded unless ``include_inactive`` is true.
+    """
+    repo = await _resolve_repo(repo)
+    if not await uses_specs(repo):
+        raise ValueError(
+            _not_using_specs(repo)["message"]
+            + " Its work is tracked in requirement files: use list_requirements."
+        )
+    progress = await read_spec_progress(repo)
+    return [entry for entry in progress.spec_changes if include_inactive or not entry["dropped"]]

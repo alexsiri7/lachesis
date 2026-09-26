@@ -271,6 +271,69 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
     )
 
 
+class IssueSummary(TypedDict):
+    """One issue or pull request as the /issues listing reports it."""
+
+    number: int
+    title: str
+    url: str
+    body: str
+    state: Literal["open", "closed"]
+    labels: list[str]
+    is_pull_request: bool
+    merged: bool
+    created_at: str | None
+    updated_at: str | None
+
+
+_ISSUES_PAGE_SIZE = 100
+
+
+async def list_all_issues(repo: str) -> list[IssueSummary]:
+    """Return every issue and pull request in *repo*, open or closed, following every page.
+
+    One listing answers questions about a whole repository that would otherwise cost a
+    request per issue.  ``merged`` is only ever true for a pull request.
+    """
+    items: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        page = 1
+        while True:
+            resp = await http.get(
+                f"{_BASE_URL}/repos/{repo}/issues",
+                headers=_headers(),
+                params={"state": "all", "per_page": _ISSUES_PAGE_SIZE, "page": page},
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "github.list_all_issues failed repo=%s page=%s status=%s",
+                    repo,
+                    page,
+                    resp.status_code,
+                )
+                resp.raise_for_status()
+            batch = resp.json()
+            items.extend(batch)
+            if len(batch) < _ISSUES_PAGE_SIZE:
+                break
+            page += 1
+    return [
+        {
+            "number": item["number"],
+            "title": item["title"],
+            "url": item["html_url"],
+            "body": item.get("body") or "",
+            "state": item["state"],
+            "labels": [lb["name"] for lb in item.get("labels", [])],
+            "is_pull_request": "pull_request" in item,
+            "merged": bool((item.get("pull_request") or {}).get("merged_at")),
+            "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
+        }
+        for item in items
+    ]
+
+
 async def find_open_pr(repo: str, head_prefix: str) -> dict[str, Any] | None:
     """Return the first open PR whose head branch starts with *head_prefix*.
 

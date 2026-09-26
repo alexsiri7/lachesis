@@ -205,6 +205,13 @@ mcp.tool(
     " `unlinked`, or `unavailable`, so read a null status as 'no work started'"
     " only under `unlinked` — `diverged`, `last_activity`, signals);"
     " `status` filters on the recorded value."
+    " In a repository that uses specs each repo entry also lists `spec_changes`, shaped"
+    " as list_spec_changes returns them and grouped alongside requirement files (group"
+    " entries carry `spec_change` and `url` in place of `id`, `status` and `github_issue`);"
+    " `status` filters them on their derived status, and they are counted in"
+    " summary.spec_changes_by_status (`none` when no issue names one) rather than"
+    " by_status, while summary.total counts both. summary.spec_gaps maps each such"
+    " repository to its open spec-gap issues counted by capability."
     " `groups` partitions every requirement read into exactly one of dropped,"
     " awaiting_merge, landed, needs_attention, unreadable, never_linked, stalled,"
     " diverged and in_flight, tested in that order, with every group present even"
@@ -216,10 +223,11 @@ mcp.tool(
     " oldest PR first; summary.awaiting_merge_count repeats its size. That count and"
     " unlinked_count overlap without either containing the other, and are counted over"
     " different sets (whole corpus vs. returned listings), so never sum them."
-    " summary.incomplete_repos names the repos whose open-PR fetch failed; while it is"
+    " summary.incomplete_repos names the repos whose open-PR fetch failed, or whose spec"
+    " changes and spec gaps could not be read; while it is"
     " non-empty every summary count is a floor rather than a total — total and by_status"
     " included — so read a zero as 'none found' only for the repos absent from it."
-    " summary.unavailable_count counts the listed requirements whose linked issues could"
+    " summary.unavailable_count counts the listed units whose issues could"
     " not be read and summary.unavailable_repos names where, one {repo, count, causes}"
     " entry per repo; unlike incomplete_repos this leaves no count short, since those"
     " requirements were found and counted and only their derived block is unknown."
@@ -228,7 +236,8 @@ mcp.tool(
     " entry each (rate_limited, inaccessible or transient), empty when every repo"
     " contributed. Such a repo reached neither the listings nor the grouping, so"
     " unlinked_count and every groups count miss it entirely, while total and by_status"
-    " may still carry the requirements read before it failed."
+    " may still carry the requirements read before it failed. summary.lower_bound is"
+    " true whenever incomplete_repos or failed_repos is non-empty."
     " A requirement counts as stalled after `stale_after_days` of silence"
     " (default 14, echoed back in the summary) unless an open blocker is itself"
     " still moving. summary.groups gives the count per group."
@@ -345,6 +354,21 @@ mcp.tool(
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(spec_tools.get_capability)
+
+mcp.tool(
+    description=(
+        "List a spec repository's spec changes — its pull requests labelled spec-change — "
+        "oldest first, each with a `derived` block shaped like list_requirements': status "
+        "read from the issues whose reference block names the change and their PRs, never "
+        "diverged, since a spec change records no status. Each entry carries `spec_change` "
+        "(the PR number), `title`, `url`, `state` (open, merged or closed), `pr` (the open "
+        "PR the change awaits, null once merged or closed), `warning`, and `dropped` with a "
+        "`reason` when its PR closed unmerged or every issue naming it closed without a "
+        "merged PR. Dropped spec changes are left out unless `include_inactive=True`. "
+        "Refused in a repository that does not use specs; use list_requirements there."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(spec_tools.list_spec_changes)
 
 mcp.tool(
     description=(

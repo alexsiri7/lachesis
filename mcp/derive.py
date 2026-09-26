@@ -3,7 +3,8 @@
 The ``status`` field in a requirement file is hand-maintained, so it drifts from
 what actually happened to the work.  These helpers compute a second status from
 the issues and their pull requests, so a listing can report both and say when
-they disagree.
+they disagree.  A spec change records no status, so for one the derived status
+is the only one there is.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ DerivationSource = Literal["issues", "unlinked", "unavailable"]
 UnlinkedKind = Literal["awaiting_pr", "never_linked"]
 ActivityFailure = Literal["rate_limited", "inaccessible", "transient"]
 UnavailableCause = Literal["rate_limited", "inaccessible", "transient", "issue_missing"]
+SpecChangeState = Literal["open", "merged", "closed"]
 
 PROGRESS_RANK: dict[str, int] = {
     "draft": 0,
@@ -226,7 +228,7 @@ def _empty_signals() -> Signals:
 
 
 def derive(
-    recorded_status: str,
+    recorded_status: str | None,
     numbers: list[int],
     facts: dict[int, IssueFacts],
     *,
@@ -245,7 +247,9 @@ def derive(
     Only ``idea``, ``in-progress`` and ``done`` are ever derived.  ``draft`` and
     ``planned`` are author bookkeeping with no work-side signature, and
     ``cancelled`` / ``superseded`` are author intent that an observation must
-    never contradict — those are reported as diverging from nothing.
+    never contradict — those are reported as diverging from nothing.  A
+    *recorded_status* of ``None`` is work that records no status, which diverges
+    from nothing either.
     """
     signals = _empty_signals()
     if not numbers:
@@ -278,7 +282,7 @@ def derive(
             "signals": signals,
         }
 
-    recorded = canonical_status(recorded_status)
+    recorded = None if recorded_status is None else canonical_status(recorded_status)
     closed = [issue for issue in issues if issue["state"] == "CLOSED"]
     status: DerivedStatus
     if len(closed) == len(issues):
@@ -315,3 +319,42 @@ def derive(
         "blocked_by": _blocking_issues(issues),
         "signals": signals,
     }
+
+
+def derive_spec_change(
+    state: SpecChangeState,
+    updated_at: str | None,
+    numbers: list[int],
+    facts: dict[int, IssueFacts],
+    *,
+    failure: ActivityFailure | None = None,
+) -> Derived:
+    """Derive a spec change's status from the issues in *numbers*, those naming it.
+
+    A spec change records no status of its own, so it never diverges.  Its pull
+    request is part of the work: while open it is what the change awaits, and its
+    own movement counts towards ``last_activity``.
+    """
+    derived = derive(None, numbers, facts, on_pr_branch=state == "open", failure=failure)
+    stamps = [stamp for stamp in (derived["last_activity"], updated_at) if stamp]
+    derived["last_activity"] = max(stamps) if stamps else None
+    return derived
+
+
+def spec_change_dropped(
+    state: SpecChangeState, numbers: list[int], facts: dict[int, IssueFacts]
+) -> str | None:
+    """Say why a spec change was dropped, or ``None`` when it was not.
+
+    Every issue has to have been read before all of them can be called abandoned.
+    """
+    if state == "closed":
+        return "its pull request closed without merging"
+    issues = [facts[number] for number in numbers if number in facts]
+    if (
+        issues
+        and len(issues) == len(numbers)
+        and all(issue["state"] == "CLOSED" and not _landed(issue) for issue in issues)
+    ):
+        return "every issue naming it closed without a merged pull request"
+    return None

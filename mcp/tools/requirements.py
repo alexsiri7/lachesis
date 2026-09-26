@@ -1373,6 +1373,17 @@ async def get_dashboard(
     :func:`list_requirements`; the ``status`` filter still selects on the
     recorded status.
 
+    A repository that uses specs also lists its spec changes under
+    ``spec_changes``, each as :func:`tools.specs.list_spec_changes` returns it.  A
+    spec change records no status, so the ``status`` filter selects it on its
+    derived status, and it is counted in ``summary.spec_changes_by_status`` under
+    that status (``none`` when it has no issues) rather than in ``by_status``.
+    Dropped spec changes are left out of the listings like cancelled requirements.
+    ``summary.spec_gaps`` maps each such repository to its open spec-gap issues
+    counted by capability.  Spec changes are grouped alongside requirement files,
+    each group entry carrying ``spec_change`` and ``url`` where a requirement's
+    carries ``id``, ``status`` and ``github_issue``.
+
     ``groups`` answers what shipped, what was dropped and what went quiet without
     a second call.  Every requirement read lands in exactly one of ``dropped``,
     ``awaiting_merge``, ``landed``, ``needs_attention``, ``unreadable``,
@@ -1395,18 +1406,20 @@ async def get_dashboard(
     A requirement counts as stalled after ``stale_after_days`` of silence unless
     an open blocker is itself still moving, which explains it.
 
-    With a ``status`` filter the group counts sum to the matching requirements
-    while ``summary.total`` keeps counting the whole corpus, as it always has.
+    With a ``status`` filter the group counts sum to the matching units of work
+    while ``summary.total`` keeps counting the whole corpus, requirement files and
+    spec changes both, as it always has.
 
     ``summary.incomplete_repos`` names the repos whose open-pull-request fetch
-    failed, and is empty when every repo was read in full.  While it is non-empty
+    failed, or whose spec changes and spec gaps could not be read, and is empty
+    when every repo was read in full.  While it is non-empty
     every count in ``summary`` is a floor rather than a total — ``total`` and
     ``by_status`` included, since a pull request branch that was not walked
     contributes nothing to them — so a zero there means "none found" only for the
     repos absent from that list.
 
-    ``summary.unavailable_count`` counts the returned requirements whose linked
-    issues could not be read, and ``unavailable_repos`` names where they are,
+    ``summary.unavailable_count`` counts the returned requirements and spec
+    changes whose issues could not be read, and ``unavailable_repos`` names where they are,
     ``{"repo", "count", "causes"}`` per repo with the distinct causes seen.  It
     is a different failure from ``incomplete_repos``: those requirements were
     found and counted, so only their ``derived`` block is unknown, not the totals.
@@ -1423,6 +1436,9 @@ async def get_dashboard(
     and ``by_status`` may still carry the requirements read before it failed.  A repo
     that was listed and then hit a failure afterwards stays out of this list — its
     listing is intact — and is reported in the logs only.
+
+    ``summary.lower_bound`` is true while either ``incomplete_repos`` or
+    ``failed_repos`` is non-empty, saying in one field that the counts are floors.
     """
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(_invalid_status_message(status))
@@ -1437,10 +1453,14 @@ async def get_dashboard(
             "or a token that predates the lachesis_uid claim."
         )
 
+    from .specs import read_spec_progress, uses_specs
+
     repos = db.list_repos(user_id)
     aggregated: list[dict[str, Any]] = []
     all_candidates: list[groups.Candidate] = []
     status_counts: dict[str, int] = {}
+    spec_change_counts: dict[str, int] = {}
+    spec_gaps: dict[str, dict[str, int]] = {}
     incomplete_repos: list[str] = []
     failed_repos: list[dict[str, Any]] = []
 
@@ -1499,7 +1519,12 @@ async def get_dashboard(
                     landing_candidates.append(landing.Candidate(path, content, entry))
 
             await _attach_derived(repo_name, pending)
-            aggregated.append({"repo": repo_name, "requirements": requirements})
+            repo_entry: dict[str, Any] = {
+                "repo": repo_name,
+                "requirements": requirements,
+                "spec_changes": [],
+            }
+            aggregated.append(repo_entry)
             listed = True
             all_candidates.extend(repo_candidates)
             # After the append, so a raise here could not cost the repo its listing
@@ -1515,8 +1540,35 @@ async def get_dashboard(
                 failed_repos.append(
                     {"repo": repo_name, "cause": github.failure_from_exception(exc)}
                 )
+        if not listed:
+            continue
 
-    total = sum(status_counts.values())
+        try:
+            if not await uses_specs(repo_name):
+                continue
+            progress = await read_spec_progress(repo_name)
+        except Exception as exc:
+            logger.warning(
+                "get_dashboard: failed to read spec changes from %s error=%r", repo_name, exc
+            )
+            if repo_name not in incomplete_repos:
+                incomplete_repos.append(repo_name)
+            continue
+        spec_gaps[repo_name] = progress.spec_gaps
+        for entry in progress.spec_changes:
+            spec_status = entry["derived"]["status"]
+            key = spec_status or "none"
+            spec_change_counts[key] = spec_change_counts.get(key, 0) + 1
+            if status is not None and spec_status != status:
+                continue
+            all_candidates.append(
+                groups.Candidate(repo_name, entry, entry["derived"]["linked_issues"])
+            )
+            if status is None and not include_inactive and entry["dropped"]:
+                continue
+            repo_entry["spec_changes"].append(entry)
+
+    total = sum(status_counts.values()) + sum(spec_change_counts.values())
     unlinked_count = sum(
         1
         for repo_entry in aggregated
@@ -1524,11 +1576,11 @@ async def get_dashboard(
         if not req["derived"]["linked_issues"]
     )
     unavailable: dict[str, list[str]] = {}
-    for repo_entry in aggregated:
-        for req in repo_entry["requirements"]:
-            if req["derived"]["source"] == "unavailable":
-                unavailable.setdefault(repo_entry["repo"], []).append(
-                    req["derived"]["unavailable_cause"]
+    for listing in aggregated:
+        for unit in (*listing["requirements"], *listing["spec_changes"]):
+            if unit["derived"]["source"] == "unavailable":
+                unavailable.setdefault(listing["repo"], []).append(
+                    unit["derived"]["unavailable_cause"]
                 )
     grouped = groups.group_requirements(
         all_candidates, now=datetime.now(UTC), stale_after_days=stale_after_days
@@ -1539,6 +1591,8 @@ async def get_dashboard(
         "summary": {
             "total": total,
             "by_status": status_counts,
+            "spec_changes_by_status": spec_change_counts,
+            "spec_gaps": spec_gaps,
             "unlinked_count": unlinked_count,
             "unavailable_count": sum(len(causes) for causes in unavailable.values()),
             "unavailable_repos": [
@@ -1549,6 +1603,7 @@ async def get_dashboard(
             "groups": {name: len(grouped[name]) for name in groups.GROUP_NAMES},
             "incomplete_repos": sorted(incomplete_repos),
             "failed_repos": sorted(failed_repos, key=lambda entry: entry["repo"]),
+            "lower_bound": bool(incomplete_repos or failed_repos),
             "stale_after_days": stale_after_days,
         },
     }
