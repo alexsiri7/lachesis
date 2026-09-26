@@ -1,8 +1,8 @@
 ---
 created: '2026-09-26'
-github_issue: null
+github_issue: 147
 id: '030'
-status: draft
+status: idea
 title: 'Specs are the requirements: adopt OpenSpec-format specs and spec changes'
 updated: '2026-09-26'
 ---
@@ -25,4 +25,10 @@ Repositories without specs keep the requirement-file workflow unchanged, so Anni
 
 ## Issues
 
-_None yet._
+- #147 — Add Lachesis's OpenSpec specification and validate it in CI
+- #148 — Detect repositories that use specs, and add tools to read specs
+- #149 — Spec changes: propose and edit spec changes as pull requests, with format checking
+- #150 — Issues state what they implement: spec-change references and spec gaps
+- #151 — Switch spec repositories to the spec workflow and supersede Lachesis's old requirements
+- #152 — Progress reporting on spec changes, with spec gaps per capability
+- #153 — Landing notifications for spec changes
