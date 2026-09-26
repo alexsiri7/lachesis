@@ -1,7 +1,8 @@
-"""Decide which requirements have just landed and announce them once.
+"""Decide which units of work have just landed and announce them once.
 
-Evaluated as a side effect of the requirement read paths rather than from an
-event source: a read is what brings the repo's issue and pull request facts into
+A unit of work is a requirement file, or a spec change in a repository that uses
+specs.  Evaluated as a side effect of the read paths that list them rather than
+from an event source: a read is what brings the repo's issue and pull request facts into
 memory, and Archon — which merges the work — is a heavy caller of those reads.
 Nothing is consumed by a read that does not happen, so a quiet period only
 delays a notification, never cancels it.
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, NamedTuple
 
@@ -30,6 +32,7 @@ Verdict = Literal["merged", "deployed", "failed"]
 _SUMMARY_MAX_CHARS = 200
 _EMPHASIS = re.compile(r"[*_]+")
 _BOLD_ONLY = re.compile(r"^\*\*[^*]+\*\*$")
+_FIRST_SENTENCE = re.compile(r".+?[.!?](?=\s|$)")
 
 
 class Candidate(NamedTuple):
@@ -39,9 +42,57 @@ class Candidate(NamedTuple):
     content: str
     entry: dict[str, Any]
 
+    @property
+    def kind(self) -> str:
+        return "requirement"
+
+    @property
+    def key(self) -> str:
+        return str(self.entry.get("id"))
+
+    @property
+    def withdrawn(self) -> bool:
+        return canonical_status(self.entry.get("status", "")) in INACTIVE_STATUSES
+
+    def summary(self) -> str:
+        return summarize_what(self.content, str(self.entry.get("title", "")))
+
+    def link(self, repo: str) -> str:
+        return f"https://github.com/{repo}/blob/HEAD/{self.path}"
+
+
+class SpecChangeCandidate(NamedTuple):
+    """One spec change, with the description of the pull request that proposes it."""
+
+    description: str
+    entry: dict[str, Any]
+
+    @property
+    def kind(self) -> str:
+        return "spec change"
+
+    @property
+    def key(self) -> str:
+        # Shares the notification ledger with requirement ids, which are plain
+        # numbers such as "026", so a spec change's number is kept apart from them.
+        return f"spec:{self.entry['spec_change']}"
+
+    @property
+    def withdrawn(self) -> bool:
+        return bool(self.entry.get("dropped"))
+
+    def summary(self) -> str:
+        return summarize_description(self.description, str(self.entry.get("title", "")))
+
+    def link(self, repo: str) -> str:
+        return str(self.entry["url"])
+
+
+Landable = Candidate | SpecChangeCandidate
+
 
 class Notification(NamedTuple):
-    """The composed announcement for one landed requirement."""
+    """The composed announcement for one landed unit of work."""
 
     title: str
     body: str
@@ -69,14 +120,41 @@ def summarize_what(content: str, title: str) -> str:
         line = raw.strip()
         if not line or line.startswith("#") or _BOLD_ONLY.match(line):
             continue
-        line = _EMPHASIS.sub("", line)
-        line = " ".join(line.split())
-        if not line:
-            continue
-        if len(line) <= _SUMMARY_MAX_CHARS:
-            return line
-        return line[:_SUMMARY_MAX_CHARS].rsplit(" ", 1)[0] + "..."
+        line = _plain(line)
+        if line:
+            return _clip(line)
     return title
+
+
+def summarize_description(description: str, title: str) -> str:
+    """Return the first sentence of a pull request description, falling back to *title*.
+
+    The sentence is read from the first paragraph of prose, so a heading or a bold
+    lead-in above it is skipped, as in :func:`summarize_what`.
+    """
+    paragraph: list[str] = []
+    for raw in (description or "").replace("\r\n", "\n").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or _BOLD_ONLY.match(line):
+            if paragraph:
+                break
+            continue
+        paragraph.append(line)
+    text = _plain(" ".join(paragraph))
+    if not text:
+        return title
+    sentence = _FIRST_SENTENCE.match(text)
+    return _clip(sentence.group(0) if sentence else text)
+
+
+def _plain(line: str) -> str:
+    return " ".join(_EMPHASIS.sub("", line).split())
+
+
+def _clip(line: str) -> str:
+    if len(line) <= _SUMMARY_MAX_CHARS:
+        return line
+    return line[:_SUMMARY_MAX_CHARS].rsplit(" ", 1)[0] + "..."
 
 
 def _as_datetime(value: Any) -> datetime | None:
@@ -98,15 +176,15 @@ def _as_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _landed_after(candidate: Candidate, epoch: datetime) -> bool:
-    """Whether this requirement finished after the account asked to hear about it.
+def _landed_after(candidate: Landable, epoch: datetime) -> bool:
+    """Whether this unit of work finished after the account asked to hear about it.
 
-    An inactive requirement is never announced however its issues resolved: a
-    cancelled requirement whose work happened to merge is not a capability the
-    author is being invited to go and use, and announcing it would spend the one
-    notification it will ever be owed.
+    A withdrawn unit — a cancelled or superseded requirement, a dropped spec
+    change — is never announced however its issues resolved: work that happened
+    to merge is not a capability the author is being invited to go and use, and
+    announcing it would spend the one notification it will ever be owed.
     """
-    if canonical_status(candidate.entry.get("status", "")) in INACTIVE_STATUSES:
+    if candidate.withdrawn:
         return False
     derived = candidate.entry.get("derived") or {}
     if derived.get("status") != "done":
@@ -116,9 +194,9 @@ def _landed_after(candidate: Candidate, epoch: datetime) -> bool:
 
 
 async def _verdict(
-    repo: str, signal: str, candidate: Candidate
+    repo: str, signal: str, candidate: Landable
 ) -> tuple[Verdict, str | None] | None:
-    """Return ``(state, url)`` for a landed requirement, or ``None`` to decide later.
+    """Return ``(state, url)`` for a landed unit of work, or ``None`` to decide later.
 
     ``None`` leaves the notification owed: no claim is taken, so a deployment
     that has not finished is reconsidered on the next read.
@@ -131,7 +209,7 @@ async def _verdict(
         logger.info(
             "landing: %s %s landed without a merge commit; announcing the merge",
             repo,
-            candidate.entry.get("id"),
+            candidate.key,
         )
         return "merged", None
 
@@ -143,19 +221,19 @@ async def _verdict(
     return "deployed", deployment["url"]
 
 
-def _message(repo: str, candidate: Candidate, state: Verdict, url: str | None) -> Notification:
+def _message(repo: str, candidate: Landable, state: Verdict, url: str | None) -> Notification:
     """Compose the announcement for one verdict.
 
     A failed deployment is the only verdict that asks the author to do something
     now, so it alone is raised above the ntfy default priority: a landing they
     are merely invited to go and use must not arrive with the same urgency.
     """
-    req_title = str(candidate.entry.get("title", ""))
-    summary = summarize_what(candidate.content, req_title)
+    title = str(candidate.entry.get("title", ""))
+    summary = candidate.summary()
     if state == "failed":
         return Notification(
-            f"Failed to deploy: {req_title} ({repo})",
-            f"{summary}\n\nThe deployment carrying this requirement failed.",
+            f"Failed to deploy: {title} ({repo})",
+            f"{summary}\n\nThe deployment carrying this {candidate.kind} failed.",
             url or f"https://github.com/{repo}/deployments",
             ["rotating_light"],
             "high",
@@ -166,15 +244,15 @@ def _message(repo: str, candidate: Candidate, state: Verdict, url: str | None) -
         else "Merged to the default branch — deployment is not reported for this repo."
     )
     return Notification(
-        f"{req_title} ({repo})",
+        f"{title} ({repo})",
         f"{summary}\n\n{closing}",
-        f"https://github.com/{repo}/blob/HEAD/{candidate.path}",
+        candidate.link(repo),
         ["rocket"],
         None,
     )
 
 
-async def notify_landed(repo: str, candidates: list[Candidate]) -> None:
+async def notify_landed(repo: str, candidates: Sequence[Landable]) -> None:
     """Announce every candidate that has just landed. Never raises."""
     try:
         user_id = current_db_user_id.get()
@@ -198,7 +276,7 @@ async def notify_landed(repo: str, candidates: list[Candidate]) -> None:
             return
 
         already = db.notified_requirement_ids(user_id, repo)
-        landed = [c for c in landed if str(c.entry.get("id")) not in already]
+        landed = [c for c in landed if c.key not in already]
         if not landed:
             return
 
@@ -212,7 +290,7 @@ async def notify_landed(repo: str, candidates: list[Candidate]) -> None:
             await notify.notify_requirement(
                 user_id,
                 repo=repo,
-                requirement_id=str(candidate.entry.get("id")),
+                requirement_id=candidate.key,
                 title=note.title,
                 body=note.body,
                 click=note.click,

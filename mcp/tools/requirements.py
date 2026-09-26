@@ -1573,6 +1573,7 @@ async def get_dashboard(
             if status is None and not include_inactive and entry["dropped"]:
                 continue
             repo_entry["spec_changes"].append(entry)
+        await landing.notify_landed(repo_name, progress.landing_candidates)
 
     total = sum(status_counts.values()) + sum(spec_change_counts.values())
     unlinked_count = sum(

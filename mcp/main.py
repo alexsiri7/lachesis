@@ -178,9 +178,10 @@ mcp.tool(
 mcp.tool(
     description=(
         "Register a repo so Lachesis tracks it. landing_signal decides when its "
-        "requirements count as landed in production: 'deployment' announces one only "
-        "once a successful production deployment carries its final merge, 'merge' (the "
-        "default) treats the merge itself as the signal and says so in the notification. "
+        "requirements and spec changes count as landed in production: 'deployment' "
+        "announces one only once a successful production deployment carries its final "
+        "merge, 'merge' (the default) treats the merge itself as the signal and says so "
+        "in the notification. "
         "Omit the argument to leave an already-configured value alone."
     ),
 )(repo_tools.register_repo)

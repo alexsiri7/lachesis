@@ -35,7 +35,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   db.py            SQLAlchemy persistence layer (user identity, repo registry)
   web.py           Web dashboard route handlers and Jinja2 setup
   notify.py        Best-effort ntfy delivery (never raises into a caller)
-  landing.py       Detects landed requirements on read and fires their notification
+  landing.py       Detects landed requirements and spec changes on read and fires their notification
   spec_reference.py Writes and parses the spec reference block at the end of an issue body
   tools/
     __init__.py
