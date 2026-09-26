@@ -118,7 +118,7 @@ def summarize_what(content: str, title: str) -> str:
     """
     for raw in _extract_section(content, "What").splitlines():
         line = raw.strip()
-        if not line or line.startswith("#") or _BOLD_ONLY.match(line):
+        if _is_boilerplate(line):
             continue
         line = _plain(line)
         if line:
@@ -135,7 +135,7 @@ def summarize_description(description: str, title: str) -> str:
     paragraph: list[str] = []
     for raw in (description or "").replace("\r\n", "\n").splitlines():
         line = raw.strip()
-        if not line or line.startswith("#") or _BOLD_ONLY.match(line):
+        if _is_boilerplate(line):
             if paragraph:
                 break
             continue
@@ -145,6 +145,10 @@ def summarize_description(description: str, title: str) -> str:
         return title
     sentence = _FIRST_SENTENCE.match(text)
     return _clip(sentence.group(0) if sentence else text)
+
+
+def _is_boilerplate(line: str) -> bool:
+    return not line or line.startswith("#") or bool(_BOLD_ONLY.match(line))
 
 
 def _plain(line: str) -> str:
