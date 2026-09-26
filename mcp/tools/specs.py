@@ -11,6 +11,7 @@ from typing import Any, NamedTuple
 import httpx
 
 import github
+import landing
 from derive import (
     ActivityFailure,
     IssueFacts,
@@ -333,10 +334,14 @@ async def update_spec_change(
 
 
 class SpecProgress(NamedTuple):
-    """A spec repository's spec changes, each derived, and its open spec gaps by capability."""
+    """A spec repository's spec changes, each derived, and its open spec gaps by capability.
 
-    spec_changes: list[dict[str, Any]]
+    ``landing_candidates`` pairs every spec change's entry with its pull request's
+    description, which the entry itself does not carry.
+    """
+
     spec_gaps: dict[str, int]
+    landing_candidates: list[landing.SpecChangeCandidate]
 
 
 def _spec_change_entry(
@@ -433,11 +438,14 @@ async def read_spec_progress(repo: str) -> SpecProgress:
         )
         failure = "transient"
     return SpecProgress(
+        dict(sorted(spec_gaps.items())),
         [
-            _spec_change_entry(pull, sorted(naming.get(pull["number"], [])), facts, failure)
+            landing.SpecChangeCandidate(
+                pull["body"],
+                _spec_change_entry(pull, sorted(naming.get(pull["number"], [])), facts, failure),
+            )
             for pull in pulls
         ],
-        dict(sorted(spec_gaps.items())),
     )
 
 
@@ -457,4 +465,9 @@ async def list_spec_changes(repo: str, include_inactive: bool = False) -> list[d
             + " Its work is tracked in requirement files: use list_requirements."
         )
     progress = await read_spec_progress(repo)
-    return [entry for entry in progress.spec_changes if include_inactive or not entry["dropped"]]
+    await landing.notify_landed(repo, progress.landing_candidates)
+    return [
+        candidate.entry
+        for candidate in progress.landing_candidates
+        if include_inactive or not candidate.entry["dropped"]
+    ]

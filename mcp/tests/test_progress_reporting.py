@@ -18,6 +18,7 @@ from pytest_httpx import HTTPXMock
 from auth import current_db_user_id
 from derive import IssueFacts, derive, derive_spec_change
 from groups import Candidate, group_requirements
+from landing import SpecChangeCandidate
 from tools.requirements import get_dashboard
 from tools.specs import list_spec_changes, read_spec_progress
 
@@ -463,6 +464,51 @@ async def test_a_spec_change_whose_issues_cannot_be_read_is_unreadable(
     ]
 
 
+async def test_list_spec_changes_offers_every_spec_change_for_landing(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_uses_specs(httpx_mock)
+    pull = _spec_change_item(152, merged_at=_stamp(5))
+    pull["body"] = "Spec changes notify when they land."
+    httpx_mock.add_response(json=[_issue_item(201, body=_reference(152), state="closed"), pull])
+    _mock_issue_activity(httpx_mock, _issue_node(201, state="CLOSED", merged_pr=301))
+
+    with patch("tools.specs.landing.notify_landed", new_callable=AsyncMock) as notify_landed:
+        [change] = await list_spec_changes("owner/repo")
+
+    repo, candidates = notify_landed.await_args.args
+    assert repo == "owner/repo"
+    assert [(c.description, c.entry) for c in candidates] == [
+        ("Spec changes notify when they land.", change)
+    ]
+
+
+async def test_get_dashboard_offers_spec_changes_for_landing(
+    httpx_mock: HTTPXMock, signed_in: None
+) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
+        patch("tools.requirements.landing.notify_landed", new_callable=AsyncMock) as notify_landed,
+    ):
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(
+            json=[
+                _issue_item(21, body=_reference(20)),
+                _spec_change_item(20, merged_at=_stamp(3), repo="owner/specs"),
+            ]
+        )
+        _mock_issue_activity(httpx_mock, _issue_node(21, state="CLOSED", merged_pr=31))
+
+        result = await get_dashboard()
+
+    assert [c["spec_change"] for c in result["repos"][0]["spec_changes"]] == [20]
+    repo, candidates = notify_landed.await_args.args
+    assert repo == "owner/specs"
+    assert [c.entry["spec_change"] for c in candidates] == [20]
+
+
 async def test_list_spec_changes_is_refused_without_specs(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url="https://api.github.com/repos/owner/repo/contents/openspec/specs",
@@ -685,7 +731,7 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     }
     monkeypatch.setattr(
         "web.read_spec_progress",
-        AsyncMock(return_value=SpecProgress([change], {"backlog": 3})),
+        AsyncMock(return_value=SpecProgress({"backlog": 3}, [SpecChangeCandidate("", change)])),
     )
     token = jose_jwt.encode(
         {"sub": "google-sub", "email": "user@example.com", "lachesis_uid": "uid", "exp": 2**31},

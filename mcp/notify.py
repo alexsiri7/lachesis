@@ -100,7 +100,7 @@ async def notify_requirement(
     tags: Sequence[str] = (),
     priority: Priority | None = None,
 ) -> bool:
-    """Notify once for a requirement. Returns whether this call delivered it.
+    """Notify once for a unit of work. Returns whether this call delivered it.
 
     The claim is taken before delivery is attempted, so a requirement whose
     notification could not be delivered is dropped rather than retried on the
