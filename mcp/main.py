@@ -117,7 +117,9 @@ mcp.tool(
         "`why` = the motivation or problem; `what` = the desired outcome, "
         "written in terms of user-visible behaviour — never implementation steps. "
         "New requirements start as 'draft' — call `create_github_issues` then "
-        "`link_issues` to make it actionable and advance to 'idea'."
+        "`link_issues` to make it actionable and advance to 'idea'. "
+        "Refused in a repository that uses specs (its default branch contains "
+        "openspec/specs/) — propose a spec change with `propose_spec_change` instead."
     ),
 )(req_tools.create_requirement)
 

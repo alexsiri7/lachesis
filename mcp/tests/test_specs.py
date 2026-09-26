@@ -11,6 +11,7 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
+from tools.requirements import create_requirement
 from tools.specs import (
     get_capability,
     list_capabilities,
@@ -480,6 +481,15 @@ async def test_requirement_without_a_scenario(httpx_mock: HTTPXMock) -> None:
     assert "backlog: requirement 'Issues are ordered' has no '#### Scenario:' heading" in message
     assert "issues: missing a '## Purpose' section" in message
     assert "issues: missing a '## Requirements' section" in message
+
+
+async def test_old_workflow_in_a_spec_repository(httpx_mock: HTTPXMock) -> None:
+    _mock_spec_repo(httpx_mock)
+
+    with pytest.raises(ValueError, match="propose_spec_change"):
+        await create_requirement(_REPO, "Park issues", "Why", "What")
+
+    assert [r.method for r in httpx_mock.get_requests()] == ["GET"]
 
 
 async def test_propose_spec_change_rejects_empty_capabilities(httpx_mock: HTTPXMock) -> None:

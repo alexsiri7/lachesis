@@ -502,8 +502,18 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     protection on ``main``, the file is committed to a new branch and a pull
     request is opened automatically; in that case the dict also contains
     ``"pr_url": str`` with the URL of the created PR.
+
+    Refused in a repository that uses specs, where work starts as a spec change.
     """
+    # specs imports this module, so it cannot be imported at the top.
+    from .specs import uses_specs
+
     repo = await _resolve_repo(repo)
+    if await uses_specs(repo):
+        raise ValueError(
+            f"{repo} uses specs, so it takes no new requirement files. "
+            "Propose a spec change with propose_spec_change instead."
+        )
     # 1. Fetch main-branch requirements (used for ID assignment and slug collision detection)
     files = await github.list_files(repo, "requirements")
 
