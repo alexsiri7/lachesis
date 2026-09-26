@@ -683,7 +683,7 @@ async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str | 
     ):
         raise ValueError(
             "'superseded_by' must be a mapping with either 'id' (a requirement) or "
-            "'spec_change' (a pull request number), and optional 'repo'"
+            f"'spec_change' (a pull request number), and optional 'repo', got {value!r}"
         )
     target_repo = value.get("repo")
     resolved = await _resolve_repo(target_repo) if target_repo else repo
