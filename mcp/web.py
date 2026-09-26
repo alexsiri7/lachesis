@@ -23,6 +23,7 @@ import github
 from oauth import create_jwt, exchange_google_code
 from settings import settings
 from status import canonical_status
+from tools.specs import read_spec_progress, spec_change_status, uses_specs
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +189,33 @@ async def web_index(request: Request) -> Response:
         except Exception as exc:
             logger.warning("web_index: failed to load repo=%s: %s", repo_name, exc)
 
-        repos_data.append({"name": repo_name, "requirements": requirements})
+        spec_changes: list[dict[str, Any]] = []
+        spec_gaps: dict[str, int] = {}
+        try:
+            if await uses_specs(repo_name):
+                progress = await read_spec_progress(repo_name)
+                spec_gaps = progress.spec_gaps
+                spec_changes = [
+                    {
+                        "number": change["spec_change"],
+                        "title": change["title"],
+                        "url": change["url"],
+                        "status": "dropped" if change["dropped"] else spec_change_status(change),
+                        "issue_count": len(change["derived"]["linked_issues"]),
+                    }
+                    for change in progress.spec_changes
+                ]
+        except Exception as exc:
+            logger.warning("web_index: failed to load spec changes repo=%s: %s", repo_name, exc)
+
+        repos_data.append(
+            {
+                "name": repo_name,
+                "requirements": requirements,
+                "spec_changes": spec_changes,
+                "spec_gaps": spec_gaps,
+            }
+        )
 
     return _render(
         "dashboard.html",

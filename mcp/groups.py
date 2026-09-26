@@ -1,4 +1,4 @@
-"""Partition an already-derived requirement corpus into the dashboard's groups.
+"""Partition already-derived requirement files and spec changes into the dashboard's groups.
 
 The dashboard's readers ask what shipped, what was dropped and what went quiet.
 Every fact needed is on a requirement's ``derived`` block already; what is
@@ -40,7 +40,11 @@ NEEDS_ATTENTION_KINDS = (
 
 
 class Candidate(NamedTuple):
-    """One requirement the dashboard read, with the repo it was read from."""
+    """One unit of work the dashboard read, with the repo it was read from.
+
+    The unit is a spec change when *entry* carries ``spec_change``, its pull
+    request number, and a requirement file otherwise.
+    """
 
     repo: str
     entry: dict[str, Any]
@@ -101,21 +105,33 @@ def _base_fields(
     candidate: Candidate, derived: dict[str, Any], days_quiet: int | None
 ) -> dict[str, Any]:
     entry = candidate.entry
+    identity: dict[str, Any] = (
+        {"spec_change": entry["spec_change"], "url": entry["url"]}
+        if "spec_change" in entry
+        else {
+            "id": entry["id"],
+            "status": entry["status"],
+            "github_issue": entry.get("github_issue"),
+        }
+    )
     return {
         "repo": candidate.repo,
-        "id": entry["id"],
+        **identity,
         "title": entry["title"],
-        "status": entry["status"],
         "derived_status": derived.get("status"),
         "last_activity": derived.get("last_activity"),
         "days_quiet": days_quiet,
-        "github_issue": entry.get("github_issue"),
         "linked_issues": candidate.linked_issues,
     }
 
 
+def _identity(entry: dict[str, Any]) -> tuple[str, str, int]:
+    """Order by repo, then spec changes by number ahead of requirement files by id."""
+    return (entry["repo"], entry.get("id", ""), entry.get("spec_change", 0))
+
+
 def _by_repo_and_id(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(entries, key=lambda entry: (entry["repo"], entry["id"]))
+    return sorted(entries, key=_identity)
 
 
 def _sorted_by(
@@ -135,7 +151,7 @@ def _sorted_by(
     """
     known = [entry for entry in entries if key_fn(entry) is not None]
     unknown = [entry for entry in entries if key_fn(entry) is None]
-    known.sort(key=lambda entry: (entry["repo"], entry["id"]))
+    known.sort(key=_identity)
     known.sort(key=key_fn, reverse=reverse)
     return known + _by_repo_and_id(unknown)
 
@@ -166,6 +182,9 @@ def group_requirements(
     work not started or not seen, so they stay out of ``needs_attention``, which
     lists only work that was acted upon and then went wrong.
 
+    A spec change records no intent of its own, so it is dropped only when its
+    entry says it was, and it is never diverged.
+
     Every group is present, empty when nothing matched.
     """
     grouped: dict[str, list[dict[str, Any]]] = {name: [] for name in GROUP_NAMES}
@@ -181,7 +200,7 @@ def group_requirements(
             entry["unavailable_cause"] = derived["unavailable_cause"]
 
         kinds = _needs_attention_kinds(derived)
-        if candidate.entry["status"] in INACTIVE_STATUSES:
+        if candidate.entry.get("dropped") or candidate.entry.get("status") in INACTIVE_STATUSES:
             for key in ("reason", "superseded_by"):
                 if candidate.entry.get(key):
                     entry[key] = candidate.entry[key]

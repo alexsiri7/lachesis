@@ -116,6 +116,27 @@ def test_cancelled_requirement_is_dropped_with_its_reason() -> None:
     assert grouped["dropped"][0]["derived_status"] is None
 
 
+def test_a_spec_change_sorts_ahead_of_a_requirement_file_in_the_same_repo() -> None:
+    spec_change = Candidate(
+        "owner/repo",
+        {
+            "spec_change": 160,
+            "title": "Spec change 160",
+            "url": "https://github.com/owner/repo/pull/160",
+            "dropped": True,
+            "derived": _derived(),
+        },
+        [42],
+    )
+
+    grouped = _grouped(_candidate("002", status="cancelled"), spec_change)
+
+    assert [entry.get("spec_change", entry.get("id")) for entry in grouped["dropped"]] == [
+        160,
+        "002",
+    ]
+
+
 def test_superseded_requirement_is_dropped_with_its_replacement() -> None:
     """A superseded requirement points at what replaced it."""
     replacement = {"repo": "owner/repo", "id": "030"}
