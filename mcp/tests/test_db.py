@@ -249,3 +249,18 @@ def test_claim_notification_false_when_already_claimed() -> None:
 
     sql = str(mock.begin.return_value.execute.call_args[0][0])
     assert "DO NOTHING" in sql
+
+
+def test_engine_pool_is_small_for_the_shared_database():
+    """The shared Postgres has ~40 usable connections: cap this process at 3 + 2."""
+    with (
+        patch.object(db.settings, "database_url", "postgresql://u:p@localhost:5432/db"),
+        patch("db.create_engine") as create_engine,
+    ):
+        db._engine()
+    kwargs = create_engine.call_args.kwargs
+    assert kwargs["pool_size"] == 3
+    assert kwargs["max_overflow"] == 2
+    assert kwargs["pool_pre_ping"] is True
+    # No schema pinning: the role's search_path resolves the tables.
+    assert "connect_args" not in kwargs
