@@ -243,7 +243,7 @@ mcp.tool(
     description=(
         "Return the current state of a pull request: number, title, url, state "
         "(open/closed), merged, merged_at, mergeable, mergeable_state, head_ref, "
-        "base_ref and draft. Works for any pull request in the repo, not only ones "
+        "base_ref, draft and labels. Works for any pull request in the repo, not only ones "
         "Lachesis opened. `merged` distinguishes merged from closed-unmerged, which "
         "`state` alone does not; a `mergeable_state` of `unstable` means checks are "
         "pending, not that the pull request is blocked. Returns found=false instead "
@@ -335,6 +335,30 @@ mcp.tool(
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(spec_tools.get_capability)
+
+mcp.tool(
+    description=(
+        "Propose a spec change: open one pull request labelled spec-change that edits "
+        "capabilities under openspec/specs/, with `why` as its description. `capabilities` "
+        "maps a capability name to its complete new spec.md content, or to null to remove "
+        "that capability. Every capability is format-checked first — a title, a Purpose "
+        "section, a Requirements section, and every requirement stating SHALL or MUST with "
+        "at least one #### Scenario — and the change is refused listing every problem. "
+        "Refused in a repository that does not use specs. Returns the pull request number "
+        "and url; the number identifies the spec change from then on."
+    ),
+)(spec_tools.propose_spec_change)
+
+mcp.tool(
+    description=(
+        "Edit an open spec change by pull request number. `capabilities` replaces the "
+        "content of each named capability on the pull request's branch, adds a capability "
+        "not yet in it, or removes one mapped to null; capabilities not named are left as "
+        "they are. `why`, when given, replaces the description. Content is format-checked "
+        "as in propose_spec_change. Refused once the pull request has merged or closed — "
+        "propose a new spec change instead."
+    ),
+)(spec_tools.update_spec_change)
 
 mcp.tool(
     description=(
