@@ -26,7 +26,7 @@ logger = logging.getLogger("alembic.env")
 if not settings.database_url:
     logger.warning("DATABASE_URL not set — skipping migration")
     sys.exit(0)
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_url)
 
 # add your model's MetaData object here
 # for 'autogenerate' support

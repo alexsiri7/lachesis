@@ -146,6 +146,23 @@ def test_engine_raises_if_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
         db._engine()
 
 
+@pytest.mark.parametrize("scheme", ["postgresql", "postgres"])
+def test_engine_uses_installed_psycopg2_driver_for_driverless_url(
+    monkeypatch: pytest.MonkeyPatch, scheme: str
+) -> None:
+    """Builds a real engine (no connection) so a missing DBAPI import fails here, not on deploy."""
+    monkeypatch.setattr("db.settings.database_url", f"{scheme}://u:p@localhost:5432/db")
+    engine = db._engine()
+    assert engine.dialect.driver == "psycopg2"
+    assert engine.url.database == "db"
+
+
+def test_sqlalchemy_database_url_keeps_explicit_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    url = "postgresql+psycopg://u:p@localhost:5432/db"
+    monkeypatch.setattr("db.settings.database_url", url)
+    assert db.settings.sqlalchemy_database_url == url
+
+
 def test_list_backlog_returns_rows() -> None:
     rows = [{"issue_number": 5, "position": 0, "ready": True, "interrupt": False}]
     mock = _mock_engine(rows)

@@ -38,7 +38,7 @@ def _engine() -> Engine:
     """Return the process-lifetime SQLAlchemy engine (created once via lru_cache)."""
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL not configured")
-    return create_engine(settings.database_url, pool_pre_ping=True)
+    return create_engine(settings.sqlalchemy_database_url, pool_pre_ping=True)
 
 
 # ---------------------------------------------------------------------------

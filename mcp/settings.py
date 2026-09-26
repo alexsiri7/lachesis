@@ -23,5 +23,14 @@ class Settings(BaseSettings):
 
     sentry_dsn: str = ""
 
+    @property
+    def sqlalchemy_database_url(self) -> str:
+        # SQLAlchemy picks the driver for a driver-less postgres URL itself, and
+        # 2.1 switched that default from psycopg2 to psycopg (v3), which isn't installed.
+        for scheme in ("postgresql://", "postgres://"):
+            if self.database_url.startswith(scheme):
+                return "postgresql+psycopg2://" + self.database_url.removeprefix(scheme)
+        return self.database_url
+
 
 settings = Settings()
