@@ -323,6 +323,42 @@ async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
     return result
 
 
+async def list_labelled_prs(repo: str, label: str) -> list[dict[str, Any]]:
+    """Return ``[{"number": int, "title": str, "url": str}, ...]`` for open PRs labelled *label*."""
+    return [
+        {"number": pr["number"], "title": pr["title"], "url": pr["html_url"]}
+        for pr in await _list_open_prs(repo)
+        if any(lb["name"] == label for lb in pr.get("labels", []))
+    ]
+
+
+async def list_pull_request_files(repo: str, pr_number: int) -> list[str]:
+    """Return the paths of the files changed by *pr_number* (up to 100).
+
+    A renamed file contributes both its old and new path.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/pulls/{pr_number}/files",
+            headers=_headers(),
+            params={"per_page": 100},
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.list_pull_request_files failed repo=%s pr=%s status=%s",
+            repo,
+            pr_number,
+            resp.status_code,
+        )
+        resp.raise_for_status()
+    paths: list[str] = []
+    for f in resp.json():
+        paths.append(f["filename"])
+        if "previous_filename" in f:
+            paths.append(f["previous_filename"])
+    return paths
+
+
 async def update_file(
     repo: str, path: str, content: str, sha: str, message: str, *, branch: str | None = None
 ) -> dict[str, Any]:

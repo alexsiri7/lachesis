@@ -28,6 +28,7 @@ from settings import settings
 from tools import notifications as notify_tools
 from tools import repos as repo_tools
 from tools import requirements as req_tools
+from tools import specs as spec_tools
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +316,25 @@ mcp.tool(
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.next_issue)
+
+mcp.tool(
+    description=(
+        "List the capabilities in a repository's spec (openspec/specs/ on its default "
+        "branch): each one's name, purpose and number of requirements. For a repository "
+        "that does not use specs, returns uses_specs=false with a message saying so."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(spec_tools.list_capabilities)
+
+mcp.tool(
+    description=(
+        "Return one capability's full spec as it stands on the repository's default "
+        "branch, plus `spec_changes`: the open pull requests labelled spec-change that "
+        "touch its file (number, title, url). For a repository that does not use specs, "
+        "returns uses_specs=false with a message saying so."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(spec_tools.get_capability)
 
 mcp.tool(
     description=(
