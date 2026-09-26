@@ -106,7 +106,7 @@ async def test_audit_finding(httpx_mock: HTTPXMock) -> None:
         "\n\n---\nSpec gap: yes\nCapability: backlog\n"
         "Requirement: The system says what to work on next"
     )
-    assert json.loads(httpx_mock.get_request(url=_LABELS_URL).content) == {"name": "spec-gap"}
+    assert json.loads(httpx_mock.get_request(url=_LABELS_URL).content)["name"] == "spec-gap"
 
 
 async def test_no_reference(httpx_mock: HTTPXMock) -> None:
@@ -146,6 +146,11 @@ async def test_no_reference(httpx_mock: HTTPXMock) -> None:
         ({"spec_change": True, "capability": "backlog"}, "spec_change as a pull request number"),
         ({"spec_gap": "yes", "capability": "backlog"}, "spec_gap as true or false"),
         ({"spec_gap": True, "capability": "backlog", "requirement": 3}, "requirement as a string"),
+        ({"spec_gap": True, "capability": "back\nlog"}, "capability on one line"),
+        (
+            {"spec_gap": True, "capability": "backlog", "requirement": "a\r\nb"},
+            "requirement on one line",
+        ),
     ],
 )
 async def test_incomplete_reference_is_refused(
@@ -157,6 +162,33 @@ async def test_incomplete_reference_is_refused(
         await create_github_issues(_REPO, [{"title": "T", "body": "b", **issue}])
 
     assert _created_issues(httpx_mock) == []
+
+
+async def test_referenced_issues_still_wire_dependencies(httpx_mock: HTTPXMock) -> None:
+    _mock_spec_repo(httpx_mock)
+    _mock_created(httpx_mock, 1)
+    _mock_created(httpx_mock, 2)
+    dependency_url = f"{_ISSUES_URL}/2/dependencies/blocked_by"
+    httpx_mock.add_response(method="POST", url=dependency_url, json={})
+
+    result = await create_github_issues(
+        _REPO,
+        [
+            {"title": "A", "body": "a", "spec_change": 152, "capability": "backlog"},
+            {
+                "title": "B",
+                "body": "b",
+                "spec_change": 152,
+                "capability": "backlog",
+                "blocked_by": [1],
+            },
+        ],
+    )
+
+    assert result[1]["blocked_by"] == [1]
+    assert json.loads(httpx_mock.get_request(url=dependency_url).content) == {"issue_id": 1001}
+    for issue in _created_issues(httpx_mock):
+        assert issue["body"].endswith("\n\n---\nSpec change: #152\nCapability: backlog")
 
 
 async def test_repository_without_specs_ignores_reference_fields(httpx_mock: HTTPXMock) -> None:
@@ -191,7 +223,7 @@ async def test_ensure_label_tolerates_an_existing_label(httpx_mock: HTTPXMock) -
         json={"message": "Validation Failed", "errors": [{"code": "already_exists"}]},
     )
 
-    await github.ensure_label(_REPO, "spec-gap")
+    await github.ensure_label(_REPO, "spec-gap", "d93f0b")
 
 
 async def test_ensure_label_raises_on_other_failures(httpx_mock: HTTPXMock) -> None:
@@ -203,7 +235,7 @@ async def test_ensure_label_raises_on_other_failures(httpx_mock: HTTPXMock) -> N
     )
 
     with pytest.raises(httpx.HTTPStatusError):
-        await github.ensure_label(_REPO, "spec-gap")
+        await github.ensure_label(_REPO, "spec-gap", "d93f0b")
 
 
 async def test_failed_label_creation_creates_no_issues(httpx_mock: HTTPXMock) -> None:

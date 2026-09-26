@@ -534,13 +534,16 @@ async def add_labels(repo: str, issue_number: int, labels: list[str]) -> None:
     resp.raise_for_status()
 
 
-async def ensure_label(repo: str, name: str) -> None:
-    """Create the label *name* in *repo* unless it already exists."""
+async def ensure_label(repo: str, name: str, color: str) -> None:
+    """Create the label *name* in *repo* unless it already exists.
+
+    *color* is a hex code without the leading ``#``.
+    """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/labels",
             headers=_headers(),
-            json={"name": name},
+            json={"name": name, "color": color},
         )
     if resp.status_code == 422 and any(
         error.get("code") == "already_exists" for error in resp.json().get("errors", [])

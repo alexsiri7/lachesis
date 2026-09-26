@@ -835,6 +835,7 @@ async def _apply_backlog_overrides(
 
 
 SPEC_GAP_LABEL = "spec-gap"
+_SPEC_GAP_COLOR = "d93f0b"
 
 
 def _spec_reference_problems(issue: dict[str, Any]) -> list[str]:
@@ -852,10 +853,18 @@ def _spec_reference_problems(issue: dict[str, Any]) -> list[str]:
     capability = issue.get("capability")
     if not isinstance(capability, str) or not capability.strip():
         problems.append("capability")
+    elif _is_multiline(capability):
+        problems.append("capability on one line")
     requirement = issue.get("requirement")
     if requirement is not None and not isinstance(requirement, str):
         problems.append("requirement as a string")
+    elif requirement is not None and _is_multiline(requirement):
+        problems.append("requirement on one line")
     return problems
+
+
+def _is_multiline(value: str) -> bool:
+    return "\n" in value or "\r" in value
 
 
 def _spec_references(issues: list[dict[str, Any]]) -> list[SpecReference]:
@@ -904,7 +913,7 @@ async def create_github_issues(
     if issues and await uses_specs(repo):
         references = list(_spec_references(issues))
         if any(ref.spec_change is None for ref in references if ref):
-            await github.ensure_label(repo, SPEC_GAP_LABEL)
+            await github.ensure_label(repo, SPEC_GAP_LABEL, _SPEC_GAP_COLOR)
 
     # Phase 1: Create all issues, build number→id map
     results: list[dict[str, Any]] = []
