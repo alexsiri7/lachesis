@@ -650,11 +650,11 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     return result
 
 
-def _invalid_status_message(value: object) -> str:
+def _invalid_status_message(value: object, accepted: frozenset[str] = VALID_STATUSES) -> str:
     """Explain a rejected status, naming the canonical spelling when there is one."""
     hint = canonical_status(value)
-    correction = f" — use {hint!r}" if hint in VALID_STATUSES else ""
-    return f"Invalid status {value!r}{correction}. Must be one of {sorted(VALID_STATUSES)}"
+    correction = f" — use {hint!r}" if hint in accepted else ""
+    return f"Invalid status {value!r}{correction}. Must be one of {sorted(accepted)}"
 
 
 def _validate_lifecycle_fields(
@@ -1448,8 +1448,9 @@ async def get_dashboard(
         uses_specs,
     )
 
-    if status is not None and status not in VALID_STATUSES | SPEC_CHANGE_ONLY_STATUSES:
-        raise ValueError(_invalid_status_message(status))
+    accepted_statuses = VALID_STATUSES | SPEC_CHANGE_ONLY_STATUSES
+    if status is not None and status not in accepted_statuses:
+        raise ValueError(_invalid_status_message(status, accepted_statuses))
     if stale_after_days < 1:
         raise ValueError(f"stale_after_days must be at least 1, got {stale_after_days}")
 

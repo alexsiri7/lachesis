@@ -560,7 +560,7 @@ async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
     assert listed["owner/quiet"]["spec_changes"] == []
 
 
-@pytest.mark.parametrize(("status", "listed"), [("none", [158]), ("unreadable", [])])
+@pytest.mark.parametrize(("status", "listed"), [("none", [158]), ("unreadable", [20])])
 async def test_the_dashboard_filters_on_a_spec_change_only_status(
     httpx_mock: HTTPXMock, signed_in: None, status: str, listed: list[int]
 ) -> None:
@@ -571,13 +571,25 @@ async def test_the_dashboard_filters_on_a_spec_change_only_status(
         httpx_mock.add_response(json=[])  # no requirement files
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         httpx_mock.add_response(
-            json=[_spec_change_item(158, merged_at=_stamp(10), repo="owner/specs")]
+            json=[
+                _issue_item(21, body=_reference(20)),
+                _spec_change_item(20, merged_at=_stamp(3), repo="owner/specs"),
+                _spec_change_item(158, merged_at=_stamp(10), repo="owner/specs"),
+            ]
         )
+        httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
 
         result = await get_dashboard(status=status)
 
     [repo] = result["repos"]
     assert [change["spec_change"] for change in repo["spec_changes"]] == listed
+
+
+async def test_an_unknown_dashboard_status_names_the_spec_change_statuses_too(
+    signed_in: None,
+) -> None:
+    with pytest.raises(ValueError, match="'unreadable'"):
+        await get_dashboard(status="bogus")
 
 
 async def test_a_spec_repository_whose_spec_changes_cannot_be_read_is_incomplete(
