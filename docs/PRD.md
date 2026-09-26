@@ -245,6 +245,8 @@ Returns the current state of a pull request, for any pull request in the repo â€
 
 ### Capturing a new requirement
 
+In a repo that uses specs, like this one, `create_requirement` is refused: changes go through `propose_spec_change` instead. `get_initial_instructions` with the repo returns the steps that apply.
+
 1. Developer describes an idea to Claude mid-conversation
 2. Claude calls `list_requirements` to load existing requirements for that repo
 3. Claude checks for conflicts or overlap, asks any clarifying questions
