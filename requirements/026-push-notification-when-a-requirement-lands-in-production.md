@@ -2,9 +2,12 @@
 created: '2026-09-07'
 github_issue: 113
 id: '026'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Push notification when a requirement lands in production
-updated: '2026-09-07'
+updated: '2026-09-26'
 ---
 
 ## Why

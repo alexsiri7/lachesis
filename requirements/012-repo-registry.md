@@ -2,9 +2,12 @@
 created: '2026-05-14'
 github_issue: 25
 id: '012'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Repo registry
-updated: '2026-05-14'
+updated: '2026-09-26'
 ---
 
 ## Why

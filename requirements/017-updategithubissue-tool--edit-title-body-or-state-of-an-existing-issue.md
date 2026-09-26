@@ -2,9 +2,12 @@
 created: '2026-05-24'
 github_issue: 76
 id: '017'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: update_github_issue tool — edit title, body, or state of an existing issue
-updated: '2026-05-24'
+updated: '2026-09-26'
 ---
 
 ## Why

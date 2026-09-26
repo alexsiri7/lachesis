@@ -2,10 +2,13 @@
 created: '2026-09-07'
 github_issue: 115
 id: '027'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Requirement status derived from issue state, with cancelled and stalled made
   visible
-updated: '2026-09-07'
+updated: '2026-09-26'
 ---
 
 ## Why

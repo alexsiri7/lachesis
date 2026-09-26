@@ -2,9 +2,12 @@
 created: '2026-05-26'
 github_issue: 86
 id: '022'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Lachesis web UI — OAuth check and dashboard view
-updated: '2026-05-26'
+updated: '2026-09-26'
 ---
 
 ## Why

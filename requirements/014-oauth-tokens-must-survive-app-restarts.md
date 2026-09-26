@@ -2,9 +2,12 @@
 created: '2026-05-24'
 github_issue: 70
 id: '014'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: OAuth tokens must survive app restarts
-updated: '2026-05-24'
+updated: '2026-09-26'
 ---
 
 ## Why

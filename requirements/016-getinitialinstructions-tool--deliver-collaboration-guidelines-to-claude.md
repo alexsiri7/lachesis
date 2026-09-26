@@ -2,9 +2,12 @@
 created: '2026-05-24'
 github_issue: 74
 id: '016'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: get_initial_instructions tool — deliver collaboration guidelines to Claude
-updated: '2026-05-24'
+updated: '2026-09-26'
 ---
 
 ## Why

@@ -1,10 +1,13 @@
 ---
 id: "004"
 title: "Google OAuth / MCP OAuth 2.1 authentication"
-status: "done"
+status: "superseded"
+superseded_by:
+  repo: "alexsiri7/lachesis"
+  spec_change: 156
 github_issue: null
 created: "2026-05-12"
-updated: "2026-05-12"
+updated: "2026-09-26"
 ---
 
 ## Why

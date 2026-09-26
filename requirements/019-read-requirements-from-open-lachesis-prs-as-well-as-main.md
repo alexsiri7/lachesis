@@ -2,9 +2,12 @@
 created: '2026-05-24'
 github_issue: 80
 id: 019
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Read requirements from open Lachesis PRs as well as main
-updated: '2026-06-03'
+updated: '2026-09-26'
 ---
 
 ## Why

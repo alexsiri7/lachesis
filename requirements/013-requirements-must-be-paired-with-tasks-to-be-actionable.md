@@ -2,9 +2,12 @@
 created: '2026-05-15'
 github_issue: 42
 id: '013'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Requirements must be paired with tasks to be actionable
-updated: '2026-05-15'
+updated: '2026-09-26'
 ---
 
 ## Why
