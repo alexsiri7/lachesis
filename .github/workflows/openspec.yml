@@ -1,0 +1,19 @@
+name: OpenSpec
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Validate specs
+    runs-on: ubuntu-latest
+    env:
+      OPENSPEC_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: openspec validate
+        run: npx -y @fission-ai/openspec@latest validate --specs --strict
