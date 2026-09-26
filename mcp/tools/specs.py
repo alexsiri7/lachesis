@@ -377,6 +377,9 @@ def _spec_change_entry(
     return entry
 
 
+SPEC_CHANGE_ONLY_STATUSES: frozenset[str] = frozenset({"none", "unreadable"})
+
+
 def spec_change_status(change: dict[str, Any]) -> str:
     """The status a spec change is counted under: its derived status, or why it has none.
 

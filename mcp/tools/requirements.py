@@ -1441,7 +1441,14 @@ async def get_dashboard(
     ``summary.lower_bound`` is true while either ``incomplete_repos`` or
     ``failed_repos`` is non-empty, saying in one field that the counts are floors.
     """
-    if status is not None and status not in VALID_STATUSES:
+    from .specs import (
+        SPEC_CHANGE_ONLY_STATUSES,
+        read_spec_progress,
+        spec_change_status,
+        uses_specs,
+    )
+
+    if status is not None and status not in VALID_STATUSES | SPEC_CHANGE_ONLY_STATUSES:
         raise ValueError(_invalid_status_message(status))
     if stale_after_days < 1:
         raise ValueError(f"stale_after_days must be at least 1, got {stale_after_days}")
@@ -1453,8 +1460,6 @@ async def get_dashboard(
             "This may indicate a database connectivity issue (check server logs) "
             "or a token that predates the lachesis_uid claim."
         )
-
-    from .specs import read_spec_progress, spec_change_status, uses_specs
 
     repos = db.list_repos(user_id)
     aggregated: list[dict[str, Any]] = []
