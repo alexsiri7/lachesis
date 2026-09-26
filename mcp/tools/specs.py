@@ -32,7 +32,8 @@ _REQUIREMENT_BLOCK = re.compile(
 _SUBHEADING = re.compile(r"^#### ", re.MULTILINE)
 _SCENARIO = re.compile(r"^#### Scenario:", re.MULTILINE)
 _NORMATIVE = re.compile(r"\b(?:SHALL|MUST)\b")
-_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+_FENCE_OPENING = re.compile(r" {0,3}(?:(`{3,})[^`]*|(~{3,}).*)")
+_FENCE_CLOSING = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
 
 
 async def uses_specs(repo: str) -> bool:
@@ -123,17 +124,21 @@ async def get_capability(repo: str, capability: str) -> dict[str, Any]:
 def _outside_code_blocks(spec: str) -> str:
     """Return *spec* with every fenced code block's lines blanked out.
 
-    An unclosed fence runs to the end of the document, as in CommonMark.
+    Fences open and close by CommonMark's rules: at most three spaces of indentation, no
+    backtick in a backtick fence's info string, and a closing fence of the same character, at
+    least as long, followed only by spaces or tabs. An unclosed fence runs to the end of the
+    document.
     """
     lines = spec.split("\n")
     fence = ""
     for i, line in enumerate(lines):
         if fence:
-            if line.strip().startswith(fence) and not line.strip().strip(fence[0]):
+            closing = _FENCE_CLOSING.fullmatch(line)
+            if closing and closing.group(1).startswith(fence):
                 fence = ""
             lines[i] = ""
-        elif opening := _FENCE.match(line):
-            fence = opening.group(1)
+        elif opening := _FENCE_OPENING.fullmatch(line):
+            fence = opening.group(1) or opening.group(2)
             lines[i] = ""
     return "\n".join(lines)
 

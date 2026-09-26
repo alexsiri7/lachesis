@@ -332,6 +332,18 @@ def test_landed_specs_are_found() -> None:
             ).replace("- THEN the order changes", "- THEN the order changes\n````"),
             "requirement 'Issues are ordered' has no '#### Scenario:' heading",
         ),
+        (
+            _BACKLOG_SPEC.replace("## Purpose", "## Aim") + "\n```x```\n\n```\n## Purpose\n```\n",
+            "missing a '## Purpose' section",
+        ),
+        (
+            _BACKLOG_SPEC.replace("## Purpose", "## Aim") + "\n```\n    ```\n## Purpose\n```\n",
+            "missing a '## Purpose' section",
+        ),
+        (
+            _BACKLOG_SPEC.replace("## Purpose", "## Aim") + "\n```\n\t```\n## Purpose\n```\n",
+            "missing a '## Purpose' section",
+        ),
     ],
 )
 def test_format_check_rejects(spec: str, problem: str) -> None:
