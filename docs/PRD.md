@@ -196,7 +196,7 @@ Sets the first issue as `github_issue` in the frontmatter (the top-level tracker
 ### `create_github_issues`
 Creates one or more GitHub issues in the repo and returns their numbers and titles.
 
-**Input**: `repo`, `issues` (array of `{title, body, labels?}`)
+**Input**: `repo`, `issues` (array of `{title, body, labels?}`; in a repo that uses specs, each issue also needs `capability` and exactly one of `spec_change` (pull request number) or `spec_gap: true`, plus optional `requirement` — the whole call is refused, creating nothing, if any issue lacks these; each body gets a spec reference block appended, and spec-gap issues get the `spec-gap` label, created in the repo if missing)
 **Output**: Array of created `{number, title, url}`
 
 ---

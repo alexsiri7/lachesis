@@ -161,7 +161,14 @@ mcp.tool(
         "Issues are the task layer — they break down *how* a requirement's "
         "desired behaviour will be built. Issues are created ready and last in the "
         "backlog; pass `ready: false` on one to park it instead. Call `link_issues` "
-        "after to attach them to the requirement."
+        "after to attach them to the requirement. In a repo that uses specs, every issue "
+        "must say what it implements: `capability` (the capability name) and exactly one "
+        "of `spec_change` (the spec change's pull request number) or `spec_gap: true` "
+        "(work bringing the code in line with the spec as it stands, such as an audit "
+        "finding or a bug), plus an optional `requirement` within the capability. The "
+        "whole call is refused, creating nothing, if any issue lacks these. The reference "
+        "is appended to the issue body and spec gaps are labelled `spec-gap`. In repos "
+        "without specs these fields are ignored."
     ),
 )(req_tools.create_github_issues)
 
