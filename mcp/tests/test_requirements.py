@@ -440,6 +440,13 @@ async def test_delete_requirement_sends_correct_commit_message(
 _ISSUES_URL = "https://api.github.com/repos/owner/repo/issues"
 
 
+@pytest.fixture(autouse=True)
+def _repo_without_specs():
+    """Spec references are covered in test_issue_spec_references.py; here the repo has none."""
+    with patch("tools.specs.uses_specs", AsyncMock(return_value=False)):
+        yield
+
+
 async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
     """Single issue is created and result returned."""
     httpx_mock.add_response(

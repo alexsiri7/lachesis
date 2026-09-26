@@ -18,6 +18,7 @@ import groups
 import landing
 from auth import current_db_user_id
 from derive import ActivityFailure, IssueFacts, derive, linked_issue_numbers
+from spec_reference import SpecReference, append_reference
 from status import INACTIVE_STATUSES, VALID_STATUSES, canonical_status
 
 from .repos import _require_user_id, normalize_repo
@@ -29,6 +30,8 @@ Lachesis workflow — follow these steps in order:
 
 1. create_requirement — capture intent (title, why, what). Requirement starts as 'draft'.
 2. create_github_issues — break it into implementation tasks. Pass issues with title and body.
+   In a repo that uses specs, each issue also names its capability and either the spec
+   change it implements (spec_change: PR number) or spec_gap: true.
 3. link_issues — attach the issue numbers to the requirement. Status advances to 'idea'.
 
 A requirement without linked issues is a draft. Archon will not act on drafts.
@@ -831,6 +834,54 @@ async def _apply_backlog_overrides(
             )
 
 
+SPEC_GAP_LABEL = "spec-gap"
+
+
+def _spec_reference_problems(issue: dict[str, Any]) -> list[str]:
+    problems = []
+    spec_change = issue.get("spec_change")
+    spec_gap = issue.get("spec_gap", False)
+    if spec_change is not None and (
+        isinstance(spec_change, bool) or not isinstance(spec_change, int)
+    ):
+        problems.append("spec_change as a pull request number")
+    if not isinstance(spec_gap, bool):
+        problems.append("spec_gap as true or false")
+    if (spec_change is None) == (spec_gap is not True):
+        problems.append("exactly one of spec_change or spec_gap: true")
+    capability = issue.get("capability")
+    if not isinstance(capability, str) or not capability.strip():
+        problems.append("capability")
+    requirement = issue.get("requirement")
+    if requirement is not None and not isinstance(requirement, str):
+        problems.append("requirement as a string")
+    return problems
+
+
+def _spec_references(issues: list[dict[str, Any]]) -> list[SpecReference]:
+    """Read every issue's spec reference, refusing the whole batch if any is incomplete."""
+    missing = [
+        f"issue {index} ({issue.get('title')!r}) needs {', '.join(problems)}"
+        for index, issue in enumerate(issues, start=1)
+        if (problems := _spec_reference_problems(issue))
+    ]
+    if missing:
+        raise ValueError(
+            "This repository uses specs, so every issue must name the spec change it "
+            "implements (spec_change: pull request number) or be a spec gap "
+            "(spec_gap: true), and name its capability. No issues were created: "
+            + "; ".join(missing)
+        )
+    return [
+        SpecReference(
+            spec_change=issue.get("spec_change"),
+            capability=issue["capability"].strip(),
+            requirement=(issue.get("requirement") or "").strip() or None,
+        )
+        for issue in issues
+    ]
+
+
 async def create_github_issues(
     repo: str, issues: list[dict[str, Any]], project_id: str | None = None
 ) -> list[dict[str, Any]]:
@@ -839,18 +890,33 @@ async def create_github_issues(
     Each issue may carry ``ready`` (bool) and one of ``before`` / ``after`` (issue
     numbers) to override the defaults — ready, last in the backlog. Passing
     ``ready: false`` parks the issue, holding it back from autonomous pickup.
+
+    In a repository that uses specs, each issue must also carry ``capability`` and
+    exactly one of ``spec_change`` (pull request number) or ``spec_gap: true``, and
+    may carry ``requirement``; the reference is appended to its body and spec gaps
+    are labelled ``spec-gap``. Elsewhere these fields are ignored.
     """
+    # specs imports this module, so it cannot be imported at the top.
+    from .specs import uses_specs
+
     repo = await _resolve_repo(repo)
+    references: list[SpecReference | None] = [None] * len(issues)
+    if issues and await uses_specs(repo):
+        references = list(_spec_references(issues))
+        if any(ref.spec_change is None for ref in references if ref):
+            await github.ensure_label(repo, SPEC_GAP_LABEL)
+
     # Phase 1: Create all issues, build number→id map
     results: list[dict[str, Any]] = []
     number_to_id: dict[int, int] = {}
-    for issue in issues:
-        result = await github.create_issue(
-            repo,
-            issue["title"],
-            issue["body"],
-            issue.get("labels"),
-        )
+    for issue, reference in zip(issues, references, strict=True):
+        body = issue["body"]
+        labels = issue.get("labels")
+        if reference is not None:
+            body = append_reference(body, reference)
+            if reference.spec_change is None and SPEC_GAP_LABEL not in (labels or []):
+                labels = [*(labels or []), SPEC_GAP_LABEL]
+        result = await github.create_issue(repo, issue["title"], body, labels)
         node_id = result.pop("node_id")
         results.append(
             {

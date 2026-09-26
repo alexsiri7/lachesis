@@ -36,6 +36,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   web.py           Web dashboard route handlers and Jinja2 setup
   notify.py        Best-effort ntfy delivery (never raises into a caller)
   landing.py       Detects landed requirements on read and fires their notification
+  spec_reference.py Writes and parses the spec reference block at the end of an issue body
   tools/
     __init__.py
     notifications.py ntfy configuration and test-notification tools
