@@ -2,9 +2,12 @@
 created: '2026-05-26'
 github_issue: 85
 id: '021'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: get_github_issue — fetch the current state of a GitHub issue
-updated: '2026-05-26'
+updated: '2026-09-26'
 ---
 
 ## Why

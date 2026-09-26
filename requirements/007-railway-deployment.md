@@ -1,10 +1,13 @@
 ---
 id: "007"
 title: "Railway deployment with Cloudflare DNS"
-status: "done"
+status: "superseded"
+superseded_by:
+  repo: "alexsiri7/lachesis"
+  spec_change: 156
 github_issue: null
 created: "2026-05-12"
-updated: "2026-05-12"
+updated: "2026-09-26"
 ---
 
 ## Why

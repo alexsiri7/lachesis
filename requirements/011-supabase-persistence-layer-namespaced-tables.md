@@ -2,9 +2,12 @@
 created: '2026-05-14'
 github_issue: 24
 id: '011'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Supabase persistence layer (namespaced tables)
-updated: '2026-05-14'
+updated: '2026-09-26'
 ---
 
 ## Why

@@ -1,10 +1,13 @@
 ---
 id: "006"
 title: "ID and filename auto-assignment"
-status: "done"
+status: "superseded"
+superseded_by:
+  repo: "alexsiri7/lachesis"
+  spec_change: 156
 github_issue: 5
 created: "2026-05-12"
-updated: "2026-05-12"
+updated: "2026-09-26"
 ---
 
 ## Why

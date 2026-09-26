@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import re
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -3842,7 +3843,7 @@ Users need to save their rankings.
 """
 
 
-async def test_update_requirement_cancelled_requires_a_reason(httpx_mock: HTTPXMock) -> None:
+async def test_cancel_without_a_reason(httpx_mock: HTTPXMock) -> None:
     """Cancelling without saying why is rejected."""
     _mock_read_flow(httpx_mock)
 
@@ -3937,9 +3938,82 @@ async def test_update_requirement_rejects_a_malformed_target(httpx_mock: HTTPXMo
     """A replacement reference must be a mapping with an id."""
     _mock_read_flow(httpx_mock)
 
-    with pytest.raises(ValueError, match="superseded_by"):
+    with pytest.raises(ValueError, match=re.escape("got '030'")):
         await update_requirement(
             "owner/repo", "001", {"status": "superseded", "superseded_by": "030"}
+        )
+
+
+@pytest.mark.parametrize("raw_id", [None, "", "  "])
+async def test_update_requirement_rejects_a_target_without_an_id(
+    httpx_mock: HTTPXMock, raw_id: str | None
+) -> None:
+    """A requirement reference names the requirement it points at."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError, match=re.escape(f"'id', got {raw_id!r}")):
+        await update_requirement(
+            "owner/repo", "001", {"status": "superseded", "superseded_by": {"id": raw_id}}
+        )
+
+
+async def test_supersede_across_repositories(httpx_mock: HTTPXMock) -> None:
+    """The replacement is recorded, and the superseded requirement leaves default listings."""
+    _mock_full_flow(httpx_mock)
+    result = await update_requirement(
+        "owner/repo",
+        "001",
+        {"status": "superseded", "superseded_by": {"id": "030", "repo": "other/repo"}},
+    )
+    assert frontmatter.loads(result["content"])["superseded_by"] == {
+        "repo": "other/repo",
+        "id": "030",
+    }
+
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(result["content"], "sha2"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+    assert await list_requirements("owner/repo") == []
+
+
+async def test_superseded_by_a_spec(httpx_mock: HTTPXMock) -> None:
+    """A spec change, named by its pull request, can replace a requirement."""
+    _mock_full_flow(httpx_mock)
+    result = await update_requirement(
+        "owner/repo",
+        "001",
+        {"status": "superseded", "superseded_by": {"spec_change": 156, "repo": "owner/repo"}},
+    )
+    replacement = {"repo": "owner/repo", "spec_change": 156}
+    assert frontmatter.loads(result["content"])["superseded_by"] == replacement
+
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(result["content"], "sha2"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+    [listed] = await list_requirements("owner/repo", include_inactive=True)
+    assert listed["superseded_by"] == replacement
+
+
+@pytest.mark.parametrize(
+    ("target", "rejected"),
+    [
+        ({"id": "030", "spec_change": 156}, {"id": "030", "spec_change": 156}),
+        ({"spec_change": "156"}, "156"),
+        ({"spec_change": True}, True),
+        ({"spec_change": 0}, 0),
+    ],
+)
+async def test_update_requirement_rejects_a_malformed_spec_change_target(
+    httpx_mock: HTTPXMock, target: dict[str, object], rejected: object
+) -> None:
+    """A spec change is named by one positive pull request number, and never alongside an id."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError, match=re.escape(f"got {rejected!r}")):
+        await update_requirement(
+            "owner/repo", "001", {"status": "superseded", "superseded_by": target}
         )
 
 

@@ -2,9 +2,12 @@
 created: '2026-09-10'
 github_issue: 141
 id: 029
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Requirement files must stay writable after the first write
-updated: '2026-09-10'
+updated: '2026-09-26'
 ---
 
 ## Why

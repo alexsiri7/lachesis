@@ -25,17 +25,40 @@ from .repos import _require_user_id, normalize_repo
 
 logger = logging.getLogger(__name__)
 
-_INSTRUCTIONS = """\
-Lachesis workflow — follow these steps in order:
+_HOW_TO_TELL = """\
+Lachesis has two workflows. A repository uses specs when its default branch contains
+openspec/specs/ — list_capabilities reports uses_specs for it — and then follows the
+spec-change workflow; any other repository follows the requirement-file workflow.
+Call get_initial_instructions with repo to get only the workflow that applies there.
+"""
+
+_SPEC_WORKFLOW = """\
+Spec-change workflow, for a repository that uses specs — follow these steps in order:
+
+1. list_capabilities / get_capability — read the capabilities the work touches, and the
+   open spec changes already editing them.
+2. propose_spec_change — open a spec change editing those capabilities, with the why as
+   its description. update_spec_change edits it until it merges.
+3. create_github_issues — each issue names its capability, the spec change it implements
+   (spec_change: PR number) and optionally the requirement within the capability. There
+   is no linking step: an issue states what it implements when it is created.
+
+Work that brings the code in line with the spec as it already stands is a spec gap: create
+its issue with its capability and spec_gap: true instead of a spec change.
+create_requirement is refused in a repository that uses specs.
+"""
+
+_REQUIREMENT_WORKFLOW = """\
+Requirement-file workflow, for a repository without specs — follow these steps in order:
 
 1. create_requirement — capture intent (title, why, what). Requirement starts as 'draft'.
 2. create_github_issues — break it into implementation tasks. Pass issues with title and body.
-   In a repo that uses specs, each issue also names its capability and either the spec
-   change it implements (spec_change: PR number) or spec_gap: true.
 3. link_issues — attach the issue numbers to the requirement. Status advances to 'idea'.
 
 A requirement without linked issues is a draft. Archon will not act on drafts.
+"""
 
+_BACKLOG = """\
 New issues are ready and last in the backlog, eligible for autonomous pickup as
 soon as they are created. Call set_backlog_flags with ready=False to park an issue
 that is knowingly unfinished, and ready=True to unpark it. Use move_issue to order
@@ -45,9 +68,22 @@ ready, unblocked issue, or explains why there is none.
 """
 
 
-async def get_initial_instructions() -> str:
-    """Return the standard Lachesis workflow for new Claude sessions."""
-    return _INSTRUCTIONS
+async def get_initial_instructions(repo: str | None = None) -> str:
+    """Return the Lachesis workflow for new Claude sessions.
+
+    With *repo*, only the workflow that applies there; without, both and how to
+    tell which applies.
+    """
+    # specs imports this module, so it cannot be imported at the top.
+    from .specs import uses_specs
+
+    if repo is None:
+        workflows = [_HOW_TO_TELL, _SPEC_WORKFLOW, _REQUIREMENT_WORKFLOW]
+    elif await uses_specs(await _resolve_repo(repo)):
+        workflows = [_SPEC_WORKFLOW]
+    else:
+        workflows = [_REQUIREMENT_WORKFLOW]
+    return "\n".join([*workflows, _BACKLOG])
 
 
 async def _resolve_repo(repo: str) -> str:
@@ -502,8 +538,18 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
     protection on ``main``, the file is committed to a new branch and a pull
     request is opened automatically; in that case the dict also contains
     ``"pr_url": str`` with the URL of the created PR.
+
+    Refused in a repository that uses specs, where work starts as a spec change.
     """
+    # specs imports this module, so it cannot be imported at the top.
+    from .specs import uses_specs
+
     repo = await _resolve_repo(repo)
+    if await uses_specs(repo):
+        raise ValueError(
+            f"{repo} uses specs, so it takes no new requirement files. "
+            "Propose a spec change with propose_spec_change instead."
+        )
     # 1. Fetch main-branch requirements (used for ID assignment and slug collision detection)
     files = await github.list_files(repo, "requirements")
 
@@ -624,12 +670,28 @@ def _validate_lifecycle_fields(
             raise ValueError(f"status {owning_status!r} requires {field!r}")
 
 
-async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str]:
-    """Validate the replacement reference and fill in the repo it defaults to."""
-    if not isinstance(value, dict) or set(value) - {"id", "repo"}:
+async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str | int]:
+    """Validate the replacement reference and fill in the repo it defaults to.
+
+    The replacement is either a requirement, ``{"id", "repo"}``, or a spec change,
+    ``{"spec_change": <pr number>, "repo"}``.
+    """
+    if (
+        not isinstance(value, dict)
+        or len({"id", "spec_change"} & value.keys()) != 1
+        or value.keys() - {"id", "spec_change", "repo"}
+    ):
         raise ValueError(
-            f"'superseded_by' must be a mapping with keys 'id' and optional 'repo', got {value!r}"
+            "'superseded_by' must be a mapping with either 'id' (a requirement) or "
+            f"'spec_change' (a pull request number), and optional 'repo', got {value!r}"
         )
+    target_repo = value.get("repo")
+    resolved = await _resolve_repo(target_repo) if target_repo else repo
+    if "spec_change" in value:
+        number = value["spec_change"]
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise ValueError(f"'spec_change' must be a pull request number, got {number!r}")
+        return {"repo": resolved, "spec_change": number}
     raw_id = value.get("id")
     if isinstance(raw_id, int) and not isinstance(raw_id, bool):
         req_id = f"{raw_id:03d}"
@@ -637,8 +699,6 @@ async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str]:
         req_id = raw_id.strip()
     else:
         raise ValueError(f"'superseded_by' needs a non-empty 'id', got {raw_id!r}")
-    target_repo = value.get("repo")
-    resolved = await _resolve_repo(target_repo) if target_repo else repo
     return {"repo": resolved, "id": req_id}
 
 
@@ -646,8 +706,9 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> dict
     """Update fields (title, why, what, status, reason, superseded_by) in a requirement.
 
     Setting ``status`` to ``cancelled`` requires a ``reason``; setting it to
-    ``superseded`` requires ``superseded_by`` as ``{"id": ..., "repo": ...}``,
-    where ``repo`` defaults to the requirement's own repo.
+    ``superseded`` requires ``superseded_by``: another requirement as
+    ``{"id": ..., "repo": ...}`` or a spec change as ``{"spec_change": <pr number>,
+    "repo": ...}``, where ``repo`` defaults to the requirement's own repo.
 
     Returns ``{"content", "pr"}`` in the shape of :func:`get_requirement`: the
     updated file, and the open pull request the update awaits merge on, or ``None``

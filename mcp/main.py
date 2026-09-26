@@ -117,7 +117,9 @@ mcp.tool(
         "`why` = the motivation or problem; `what` = the desired outcome, "
         "written in terms of user-visible behaviour — never implementation steps. "
         "New requirements start as 'draft' — call `create_github_issues` then "
-        "`link_issues` to make it actionable and advance to 'idea'."
+        "`link_issues` to make it actionable and advance to 'idea'. "
+        "Refused in a repository that uses specs (its default branch contains "
+        "openspec/specs/) — propose a spec change with `propose_spec_change` instead."
     ),
 )(req_tools.create_requirement)
 
@@ -128,8 +130,9 @@ mcp.tool(
         "those belong in GitHub issues. "
         "`status` is one of draft, idea, planned, in-progress, done, cancelled, "
         "superseded. Setting it to 'cancelled' requires `reason` — why the work "
-        "was dropped. Setting it to 'superseded' requires `superseded_by` as "
-        '{"id": "030", "repo": "owner/repo"}, where `repo` defaults to the '
+        "was dropped. Setting it to 'superseded' requires `superseded_by`: another "
+        'requirement as {"id": "030", "repo": "owner/repo"}, or a spec change as '
+        '{"spec_change": 156, "repo": "owner/repo"}, where `repo` defaults to the '
         "requirement's own repo. Returns `{content, pr}` like `get_requirement`: "
         "`pr` is the open pull request the update awaits merge on — opened by Lachesis "
         "when the default branch is protected — and null once it is on the default branch."
@@ -387,8 +390,11 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Return the standard Lachesis workflow. Call this at the start of a session "
-        "to learn the correct order: create_requirement → create_github_issues → link_issues."
+        "Return the standard Lachesis workflow. Call this at the start of a session. "
+        "With `repo`, returns the workflow that applies there: for a repository that uses "
+        "specs, list_capabilities → propose_spec_change → create_github_issues naming the "
+        "spec change; otherwise create_requirement → create_github_issues → link_issues. "
+        "Without `repo`, returns both and how to tell which applies."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_initial_instructions)

@@ -2,10 +2,13 @@
 created: '2026-08-30'
 github_issue: 143
 id: '024'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: link_issues fails with 409 when the target requirement lives on an open PR
   branch
-updated: '2026-09-12'
+updated: '2026-09-26'
 ---
 
 ## Why

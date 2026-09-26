@@ -2,9 +2,12 @@
 created: '2026-09-07'
 github_issue: 110
 id: '025'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: 'Pull request visibility: PR state on requirements and a get_pull_request tool'
-updated: '2026-09-07'
+updated: '2026-09-26'
 ---
 
 ## Why

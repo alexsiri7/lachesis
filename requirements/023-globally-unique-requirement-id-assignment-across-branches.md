@@ -2,9 +2,12 @@
 created: '2026-06-03'
 github_issue: 89
 id: '023'
-status: idea
+status: superseded
+superseded_by:
+  repo: alexsiri7/lachesis
+  spec_change: 156
 title: Globally unique requirement ID assignment across branches
-updated: '2026-06-03'
+updated: '2026-09-26'
 ---
 
 ## Why
