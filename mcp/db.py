@@ -32,13 +32,26 @@ from settings import settings
 
 logger = logging.getLogger(__name__)
 
+# Connection budget on the shared database: at most POOL_SIZE + MAX_OVERFLOW.
+POOL_SIZE = 3
+MAX_OVERFLOW = 2
+
 
 @lru_cache(maxsize=1)
 def _engine() -> Engine:
     """Return the process-lifetime SQLAlchemy engine (created once via lru_cache)."""
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL not configured")
-    return create_engine(settings.sqlalchemy_database_url, pool_pre_ping=True)
+    # The database is a shared Supabase Postgres (~40 usable connections across
+    # every app on it), so keep this process's share small. No schema or
+    # search_path is set here: the login role's search_path (lachesis, extensions)
+    # resolves the unqualified table names below.
+    return create_engine(
+        settings.sqlalchemy_database_url,
+        pool_pre_ping=True,
+        pool_size=POOL_SIZE,
+        max_overflow=MAX_OVERFLOW,
+    )
 
 
 # ---------------------------------------------------------------------------
