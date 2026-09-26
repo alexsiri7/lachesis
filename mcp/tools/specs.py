@@ -336,11 +336,10 @@ async def update_spec_change(
 class SpecProgress(NamedTuple):
     """A spec repository's spec changes, each derived, and its open spec gaps by capability.
 
-    ``landing_candidates`` pairs every spec change with its pull request's
-    description, which the listing itself does not carry.
+    ``landing_candidates`` pairs every spec change's entry with its pull request's
+    description, which the entry itself does not carry.
     """
 
-    spec_changes: list[dict[str, Any]]
     spec_gaps: dict[str, int]
     landing_candidates: list[landing.SpecChangeCandidate]
 
@@ -438,17 +437,15 @@ async def read_spec_progress(repo: str) -> SpecProgress:
             exc,
         )
         failure = "transient"
-    candidates = [
-        landing.SpecChangeCandidate(
-            pull["body"],
-            _spec_change_entry(pull, sorted(naming.get(pull["number"], [])), facts, failure),
-        )
-        for pull in pulls
-    ]
     return SpecProgress(
-        [candidate.entry for candidate in candidates],
         dict(sorted(spec_gaps.items())),
-        candidates,
+        [
+            landing.SpecChangeCandidate(
+                pull["body"],
+                _spec_change_entry(pull, sorted(naming.get(pull["number"], [])), facts, failure),
+            )
+            for pull in pulls
+        ],
     )
 
 
@@ -469,4 +466,8 @@ async def list_spec_changes(repo: str, include_inactive: bool = False) -> list[d
         )
     progress = await read_spec_progress(repo)
     await landing.notify_landed(repo, progress.landing_candidates)
-    return [entry for entry in progress.spec_changes if include_inactive or not entry["dropped"]]
+    return [
+        candidate.entry
+        for candidate in progress.landing_candidates
+        if include_inactive or not candidate.entry["dropped"]
+    ]

@@ -1562,7 +1562,7 @@ async def get_dashboard(
                 incomplete_repos.append(repo_name)
             continue
         spec_gaps[repo_name] = progress.spec_gaps
-        for entry in progress.spec_changes:
+        for entry in (candidate.entry for candidate in progress.landing_candidates):
             spec_status = spec_change_status(entry)
             spec_change_counts[spec_status] = spec_change_counts.get(spec_status, 0) + 1
             if status is not None and spec_status != status:

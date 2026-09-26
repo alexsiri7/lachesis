@@ -203,7 +203,7 @@ async def web_index(request: Request) -> Response:
                         "status": "dropped" if change["dropped"] else spec_change_status(change),
                         "issue_count": len(change["derived"]["linked_issues"]),
                     }
-                    for change in progress.spec_changes
+                    for change in (candidate.entry for candidate in progress.landing_candidates)
                 ]
         except Exception as exc:
             logger.warning("web_index: failed to load spec changes repo=%s: %s", repo_name, exc)

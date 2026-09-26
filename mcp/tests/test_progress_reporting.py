@@ -18,6 +18,7 @@ from pytest_httpx import HTTPXMock
 from auth import current_db_user_id
 from derive import IssueFacts, derive, derive_spec_change
 from groups import Candidate, group_requirements
+from landing import SpecChangeCandidate
 from tools.requirements import get_dashboard
 from tools.specs import list_spec_changes, read_spec_progress
 
@@ -730,7 +731,7 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     }
     monkeypatch.setattr(
         "web.read_spec_progress",
-        AsyncMock(return_value=SpecProgress([change], {"backlog": 3}, [])),
+        AsyncMock(return_value=SpecProgress({"backlog": 3}, [SpecChangeCandidate("", change)])),
     )
     token = jose_jwt.encode(
         {"sub": "google-sub", "email": "user@example.com", "lachesis_uid": "uid", "exp": 2**31},
