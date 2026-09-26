@@ -333,9 +333,17 @@ def derive_spec_change(
 
     A spec change records no status of its own, so it never diverges.  Its pull
     request is part of the work: while open it is what the change awaits, and its
-    own movement counts towards ``last_activity``.
+    own movement counts towards ``last_activity``.  It is done only once that pull
+    request has merged, and only when every issue naming it was read: a *failure*
+    that left any of them unread makes the whole change unreadable.
     """
+    if failure is not None and any(number not in facts for number in numbers):
+        facts = {}
     derived = derive(None, numbers, facts, on_pr_branch=state == "open", failure=failure)
+    if derived["status"] == "done" and state != "merged":
+        derived["status"] = "in-progress"
+        derived["landed_at"] = None
+        derived["landed_commit"] = None
     stamps = [stamp for stamp in (derived["last_activity"], updated_at) if stamp]
     derived["last_activity"] = max(stamps) if stamps else None
     return derived

@@ -235,6 +235,24 @@ def test_a_spec_change_is_never_diverged() -> None:
     assert derived["signals"]["closed_but_recorded_in_progress"] is False
 
 
+def test_a_spec_change_is_not_done_before_its_pull_request_merges() -> None:
+    facts = {42: _facts(42, state="CLOSED", merged=True)}
+
+    derived = derive_spec_change("open", None, [42], facts)
+
+    assert derived["status"] == "in-progress"
+    assert (derived["landed_at"], derived["landed_commit"]) == (None, None)
+
+
+def test_a_spec_change_with_an_unread_issue_is_unreadable_not_done() -> None:
+    facts = {1: _facts(1, state="CLOSED", merged=True)}
+
+    derived = derive_spec_change("merged", None, [1, 2], facts, failure="transient")
+
+    assert derived["status"] is None
+    assert (derived["source"], derived["unavailable_cause"]) == ("unavailable", "transient")
+
+
 # ---------------------------------------------------------------------------
 # Dropped work is recognised
 # ---------------------------------------------------------------------------
@@ -540,6 +558,26 @@ async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
     listed = {entry["repo"]: entry for entry in result["repos"]}
     assert [c["spec_change"] for c in listed["owner/specs"]["spec_changes"]] == [20]
     assert listed["owner/quiet"]["spec_changes"] == []
+
+
+@pytest.mark.parametrize(("status", "listed"), [("none", [158]), ("unreadable", [])])
+async def test_the_dashboard_filters_on_a_spec_change_only_status(
+    httpx_mock: HTTPXMock, signed_in: None, status: str, listed: list[int]
+) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
+    ):
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(
+            json=[_spec_change_item(158, merged_at=_stamp(10), repo="owner/specs")]
+        )
+
+        result = await get_dashboard(status=status)
+
+    [repo] = result["repos"]
+    assert [change["spec_change"] for change in repo["spec_changes"]] == listed
 
 
 async def test_a_spec_repository_whose_spec_changes_cannot_be_read_is_incomplete(
