@@ -451,7 +451,7 @@ def set_ntfy_config(user_id: str, server: str, topic: str, token: str) -> dict[s
 
 
 def notified_requirement_ids(user_id: str, repo_name: str) -> set[str]:
-    """Return the ids of the repo's requirements this account was already notified about."""
+    """Return the ids of the repo's requirements and spec changes already notified about."""
     sql = text(
         """
         SELECT requirement_id
@@ -465,7 +465,7 @@ def notified_requirement_ids(user_id: str, repo_name: str) -> set[str]:
 
 
 def claim_notification(user_id: str, repo_name: str, requirement_id: str) -> bool:
-    """Claim the single notification owed for a requirement, returning whether it is ours.
+    """Claim the single notification owed for a unit of work, returning whether it is ours.
 
     True means this call won the claim and should deliver; False means the
     requirement was already claimed and must not be notified again. The absent
