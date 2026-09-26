@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import re
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -3937,9 +3938,22 @@ async def test_update_requirement_rejects_a_malformed_target(httpx_mock: HTTPXMo
     """A replacement reference must be a mapping with an id."""
     _mock_read_flow(httpx_mock)
 
-    with pytest.raises(ValueError, match="superseded_by"):
+    with pytest.raises(ValueError, match=re.escape("got '030'")):
         await update_requirement(
             "owner/repo", "001", {"status": "superseded", "superseded_by": "030"}
+        )
+
+
+@pytest.mark.parametrize("raw_id", [None, "", "  "])
+async def test_update_requirement_rejects_a_target_without_an_id(
+    httpx_mock: HTTPXMock, raw_id: str | None
+) -> None:
+    """A requirement reference names the requirement it points at."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError, match=re.escape(f"'id', got {raw_id!r}")):
+        await update_requirement(
+            "owner/repo", "001", {"status": "superseded", "superseded_by": {"id": raw_id}}
         )
 
 
@@ -3983,21 +3997,21 @@ async def test_superseded_by_a_spec(httpx_mock: HTTPXMock) -> None:
 
 
 @pytest.mark.parametrize(
-    "target",
+    ("target", "rejected"),
     [
-        {"id": "030", "spec_change": 156},
-        {"spec_change": "156"},
-        {"spec_change": True},
-        {"spec_change": 0},
+        ({"id": "030", "spec_change": 156}, {"id": "030", "spec_change": 156}),
+        ({"spec_change": "156"}, "156"),
+        ({"spec_change": True}, True),
+        ({"spec_change": 0}, 0),
     ],
 )
 async def test_update_requirement_rejects_a_malformed_spec_change_target(
-    httpx_mock: HTTPXMock, target: dict[str, object]
+    httpx_mock: HTTPXMock, target: dict[str, object], rejected: object
 ) -> None:
     """A spec change is named by one positive pull request number, and never alongside an id."""
     _mock_read_flow(httpx_mock)
 
-    with pytest.raises(ValueError, match="spec_change"):
+    with pytest.raises(ValueError, match=re.escape(f"got {rejected!r}")):
         await update_requirement(
             "owner/repo", "001", {"status": "superseded", "superseded_by": target}
         )
