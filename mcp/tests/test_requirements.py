@@ -3842,7 +3842,7 @@ Users need to save their rankings.
 """
 
 
-async def test_update_requirement_cancelled_requires_a_reason(httpx_mock: HTTPXMock) -> None:
+async def test_cancel_without_a_reason(httpx_mock: HTTPXMock) -> None:
     """Cancelling without saying why is rejected."""
     _mock_read_flow(httpx_mock)
 
@@ -3940,6 +3940,66 @@ async def test_update_requirement_rejects_a_malformed_target(httpx_mock: HTTPXMo
     with pytest.raises(ValueError, match="superseded_by"):
         await update_requirement(
             "owner/repo", "001", {"status": "superseded", "superseded_by": "030"}
+        )
+
+
+async def test_supersede_across_repositories(httpx_mock: HTTPXMock) -> None:
+    """The replacement is recorded, and the superseded requirement leaves default listings."""
+    _mock_full_flow(httpx_mock)
+    result = await update_requirement(
+        "owner/repo",
+        "001",
+        {"status": "superseded", "superseded_by": {"id": "030", "repo": "other/repo"}},
+    )
+    assert frontmatter.loads(result["content"])["superseded_by"] == {
+        "repo": "other/repo",
+        "id": "030",
+    }
+
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(result["content"], "sha2"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+    assert await list_requirements("owner/repo") == []
+
+
+async def test_superseded_by_a_spec(httpx_mock: HTTPXMock) -> None:
+    """A spec change, named by its pull request, can replace a requirement."""
+    _mock_full_flow(httpx_mock)
+    result = await update_requirement(
+        "owner/repo",
+        "001",
+        {"status": "superseded", "superseded_by": {"spec_change": 156, "repo": "owner/repo"}},
+    )
+    replacement = {"repo": "owner/repo", "spec_change": 156}
+    assert frontmatter.loads(result["content"])["superseded_by"] == replacement
+
+    httpx_mock.add_response(json=_LIST_RESP)
+    httpx_mock.add_response(json=_make_file_response(result["content"], "sha2"))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+    [listed] = await list_requirements("owner/repo", include_inactive=True)
+    assert listed["superseded_by"] == replacement
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"id": "030", "spec_change": 156},
+        {"spec_change": "156"},
+        {"spec_change": True},
+        {"spec_change": 0},
+    ],
+)
+async def test_update_requirement_rejects_a_malformed_spec_change_target(
+    httpx_mock: HTTPXMock, target: dict[str, object]
+) -> None:
+    """A spec change is named by one positive pull request number, and never alongside an id."""
+    _mock_read_flow(httpx_mock)
+
+    with pytest.raises(ValueError, match="spec_change"):
+        await update_requirement(
+            "owner/repo", "001", {"status": "superseded", "superseded_by": target}
         )
 
 

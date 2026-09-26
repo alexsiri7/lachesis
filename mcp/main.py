@@ -130,8 +130,9 @@ mcp.tool(
         "those belong in GitHub issues. "
         "`status` is one of draft, idea, planned, in-progress, done, cancelled, "
         "superseded. Setting it to 'cancelled' requires `reason` — why the work "
-        "was dropped. Setting it to 'superseded' requires `superseded_by` as "
-        '{"id": "030", "repo": "owner/repo"}, where `repo` defaults to the '
+        "was dropped. Setting it to 'superseded' requires `superseded_by`: another "
+        'requirement as {"id": "030", "repo": "owner/repo"}, or a spec change as '
+        '{"spec_change": 156, "repo": "owner/repo"}, where `repo` defaults to the '
         "requirement's own repo. Returns `{content, pr}` like `get_requirement`: "
         "`pr` is the open pull request the update awaits merge on — opened by Lachesis "
         "when the default branch is protected — and null once it is on the default branch."

@@ -634,12 +634,28 @@ def _validate_lifecycle_fields(
             raise ValueError(f"status {owning_status!r} requires {field!r}")
 
 
-async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str]:
-    """Validate the replacement reference and fill in the repo it defaults to."""
-    if not isinstance(value, dict) or set(value) - {"id", "repo"}:
+async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str | int]:
+    """Validate the replacement reference and fill in the repo it defaults to.
+
+    The replacement is either a requirement, ``{"id", "repo"}``, or a spec change,
+    ``{"spec_change": <pr number>, "repo"}``.
+    """
+    if (
+        not isinstance(value, dict)
+        or len({"id", "spec_change"} & value.keys()) != 1
+        or value.keys() - {"id", "spec_change", "repo"}
+    ):
         raise ValueError(
-            f"'superseded_by' must be a mapping with keys 'id' and optional 'repo', got {value!r}"
+            "'superseded_by' must be a mapping with either 'id' (a requirement) or "
+            "'spec_change' (a pull request number), and optional 'repo'"
         )
+    target_repo = value.get("repo")
+    resolved = await _resolve_repo(target_repo) if target_repo else repo
+    if "spec_change" in value:
+        number = value["spec_change"]
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise ValueError(f"'spec_change' must be a pull request number, got {number!r}")
+        return {"repo": resolved, "spec_change": number}
     raw_id = value.get("id")
     if isinstance(raw_id, int) and not isinstance(raw_id, bool):
         req_id = f"{raw_id:03d}"
@@ -647,8 +663,6 @@ async def _normalize_superseded_by(value: object, repo: str) -> dict[str, str]:
         req_id = raw_id.strip()
     else:
         raise ValueError(f"'superseded_by' needs a non-empty 'id', got {raw_id!r}")
-    target_repo = value.get("repo")
-    resolved = await _resolve_repo(target_repo) if target_repo else repo
     return {"repo": resolved, "id": req_id}
 
 
@@ -656,8 +670,9 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> dict
     """Update fields (title, why, what, status, reason, superseded_by) in a requirement.
 
     Setting ``status`` to ``cancelled`` requires a ``reason``; setting it to
-    ``superseded`` requires ``superseded_by`` as ``{"id": ..., "repo": ...}``,
-    where ``repo`` defaults to the requirement's own repo.
+    ``superseded`` requires ``superseded_by``: another requirement as
+    ``{"id": ..., "repo": ...}`` or a spec change as ``{"spec_change": <pr number>,
+    "repo": ...}``, where ``repo`` defaults to the requirement's own repo.
 
     Returns ``{"content", "pr"}`` in the shape of :func:`get_requirement`: the
     updated file, and the open pull request the update awaits merge on, or ``None``
