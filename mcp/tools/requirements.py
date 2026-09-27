@@ -86,23 +86,26 @@ async def get_initial_instructions(repo: str | None = None) -> str:
     return "\n".join([*workflows, _BACKLOG])
 
 
-async def _resolve_repo(repo: str) -> str:
+async def _resolve_repo(repo: str, *, require_registered: bool = False) -> str:
     """Resolve a short name (e.g. 'lachesis') to a registered 'owner/repo' string.
 
     If the input already contains '/' (or is a full URL) it is normalised and
     returned as-is.  Otherwise the user's registered repos are searched for one
     whose final path component matches the short name.  Falls back to the raw
     input if no match is found or if there is no auth context.
+
+    With *require_registered*, the repo must be one the current user has
+    registered (matched by short name or full name); otherwise ``ValueError``.
     """
     try:
         normalized = normalize_repo(repo)
     except ValueError:
         normalized = repo
 
-    if "/" in normalized:
+    if "/" in normalized and not require_registered:
         return normalized
 
-    user_id = current_db_user_id.get()
+    user_id = _require_user_id() if require_registered else current_db_user_id.get()
     if user_id:
         rows = db.list_repos(user_id)
         for row in rows:
@@ -110,9 +113,11 @@ async def _resolve_repo(repo: str) -> str:
                 full = normalize_repo(row["repo_name"])
             except ValueError:
                 continue
-            if full.split("/")[-1].lower() == normalized.lower():
+            if normalized.lower() in (full.lower(), full.split("/")[-1].lower()):
                 return full
 
+    if require_registered:
+        raise ValueError(f"Repository {normalized!r} is not registered")
     return normalized
 
 
@@ -1670,6 +1675,29 @@ async def update_github_issue(
     if result is None:
         raise FileNotFoundError(f"Issue #{issue_number} not found in {repo!r}")
     return result
+
+
+async def get_comments(repo: str, number: int) -> list[dict[str, Any]]:
+    """Return the comments on an issue or pull request, oldest first.
+
+    Each comment carries ``author``, ``created_at``, ``body`` and ``url``.
+    """
+    repo = await _resolve_repo(repo, require_registered=True)
+    comments = await github.list_issue_comments(repo, number)
+    if comments is None:
+        raise FileNotFoundError(f"Issue or pull request #{number} not found in {repo!r}")
+    return comments
+
+
+async def post_comment(repo: str, number: int, body: str) -> dict[str, Any]:
+    """Post *body* as a comment on an issue or pull request and return the comment's URL."""
+    if not body.strip():
+        raise ValueError("body must not be empty")
+    repo = await _resolve_repo(repo, require_registered=True)
+    url = await github.create_issue_comment(repo, number, body)
+    if url is None:
+        raise FileNotFoundError(f"Issue or pull request #{number} not found in {repo!r}")
+    return {"url": url}
 
 
 async def get_dependencies(repo: str, issue_number: int) -> dict[str, Any]:

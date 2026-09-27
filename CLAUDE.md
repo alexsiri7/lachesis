@@ -41,7 +41,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
     __init__.py
     notifications.py ntfy configuration and test-notification tools
     specs.py         Spec tools: read (list_capabilities, get_capability), change (propose_spec_change, update_spec_change, with format checking), and the uses_specs detection helper
-    requirements.py  All 12 MCP tool implementations (includes read-only get_initial_instructions, get_github_issue, get_dependencies; write tools add_dependency, update_github_issue)
+    requirements.py  All 12 MCP tool implementations (includes read-only get_initial_instructions, get_github_issue, get_comments, get_dependencies; write tools add_dependency, post_comment, update_github_issue)
   templates/
     dashboard.html   Read-only requirements dashboard (Jinja2)
   Dockerfile
