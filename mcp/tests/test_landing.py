@@ -547,6 +547,11 @@ async def test_a_question_with_no_topic_sends_nothing(set_user_id: str) -> None:
     sent.assert_not_awaited()
 
 
+async def test_a_raising_db_call_is_swallowed_for_questions(set_user_id: str) -> None:
+    with patch("landing.db.get_ntfy_config", side_effect=RuntimeError("no db")):
+        assert await landing.notify_waiting("owner/repo", [_waiting()]) is None
+
+
 async def test_notification_service_down_still_lists_the_question(
     set_user_id: str, httpx_mock: HTTPXMock
 ) -> None:
