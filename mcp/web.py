@@ -233,6 +233,7 @@ async def web_index(request: Request) -> Response:
         waiting_on_author=[
             {**issue, "waited": _waited(issue["waiting_since"], now)} for issue in waiting.issues
         ],
+        waiting_on_author_unreadable=waiting.unreadable,
         repos=repos_data,
     )
 

@@ -891,9 +891,7 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     assert "3 open" in resp.text
 
 
-async def test_the_web_view_lists_the_questions_waiting_on_the_author_first(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def _web_dashboard(monkeypatch: pytest.MonkeyPatch, list_waiting_issues: AsyncMock) -> str:
     from jose import jwt as jose_jwt
 
     from main import app
@@ -904,21 +902,7 @@ async def test_the_web_view_lists_the_questions_waiting_on_the_author_first(
     monkeypatch.setattr("web.db.list_repos", MagicMock(return_value=[{"repo_name": "owner/repo"}]))
     monkeypatch.setattr("web.github.list_files", AsyncMock(return_value=[]))
     monkeypatch.setattr("web.uses_specs", AsyncMock(return_value=False))
-    marked = (datetime.now(UTC) - timedelta(hours=6, minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    monkeypatch.setattr(
-        "web.github.list_waiting_issues",
-        AsyncMock(
-            return_value=[
-                {
-                    "number": 160,
-                    "title": "Park issues",
-                    "url": "https://github.com/owner/repo/issues/160",
-                    "question": "Does a parked issue keep its position?",
-                    "waiting_since": marked,
-                }
-            ]
-        ),
-    )
+    monkeypatch.setattr("web.github.list_waiting_issues", list_waiting_issues)
     token = jose_jwt.encode(
         {"sub": "google-sub", "email": "user@example.com", "lachesis_uid": "uid", "exp": 2**31},
         "test-secret",
@@ -933,8 +917,53 @@ async def test_the_web_view_lists_the_questions_waiting_on_the_author_first(
         resp = await client.get("/web/")
 
     assert resp.status_code == 200
-    page = resp.text
+    return resp.text
+
+
+async def test_the_web_view_lists_the_questions_waiting_on_the_author_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marked = (datetime.now(UTC) - timedelta(hours=6, minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    page = await _web_dashboard(
+        monkeypatch,
+        AsyncMock(
+            return_value=[
+                {
+                    "number": 160,
+                    "title": "Park issues",
+                    "url": "https://github.com/owner/repo/issues/160",
+                    "question": "Does a parked issue keep its position?",
+                    "waiting_since": marked,
+                }
+            ]
+        ),
+    )
+
     assert "owner/repo#160" in page
     assert "Does a parked issue keep its position?" in page
     assert "waiting 6h" in page
     assert page.index("Waiting on you") < page.index("No requirements found.")
+
+
+async def test_the_web_view_says_when_a_repository_could_not_be_searched_for_questions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = await _web_dashboard(monkeypatch, AsyncMock(side_effect=RuntimeError("rate limited")))
+
+    assert "Waiting on you (0)" in page
+    assert "There may be more: could not search owner/repo." in page
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "shown"),
+    [
+        (timedelta(hours=23, minutes=59), "23h"),
+        (timedelta(hours=24), "1d"),
+        (timedelta(days=3, hours=5), "3d"),
+    ],
+)
+def test_the_web_view_shows_waits_past_a_day_in_days(elapsed: timedelta, shown: str) -> None:
+    from web import _waited
+
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    assert _waited((now - elapsed).isoformat(), now) == shown
