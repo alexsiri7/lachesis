@@ -40,6 +40,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   tools/
     __init__.py
     notifications.py ntfy configuration and test-notification tools
+    contents.py      Read-only repository contents: read_file, list_directory (registered repos only)
     specs.py         Spec tools: read (list_capabilities, get_capability), change (propose_spec_change, update_spec_change, with format checking), and the uses_specs detection helper
     requirements.py  All 12 MCP tool implementations (includes read-only get_initial_instructions, get_github_issue, get_comments, get_dependencies; write tools add_dependency, post_comment, ask_author, answer_author, update_github_issue)
   templates/
