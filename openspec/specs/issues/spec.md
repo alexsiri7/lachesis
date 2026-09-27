@@ -51,6 +51,15 @@ A spec gap SHALL carry `Spec gap: yes` in place of the spec change line and SHAL
 - WHEN an issue is created naming neither a spec change nor a spec gap
 - THEN creation is refused and the caller is told what is missing
 
+### Requirement: Implementation waits for its tests
+
+In a repository that uses specs, an issue implementing a spec change SHALL be created blocked by that spec change's acceptance-tests issue.
+
+#### Scenario: Implementation issue created
+- GIVEN spec change #170 and its acceptance-tests issue #171
+- WHEN an issue implementing #170 is created
+- THEN it is blocked by #171
+
 ### Requirement: Issues can be read and edited
 
 The system SHALL return an issue's title, body, state, assignees, labels and linked pull request. It SHALL allow an issue's title, body and state (open or closed) to be changed, and SHALL return the updated issue's number, title and URL.
