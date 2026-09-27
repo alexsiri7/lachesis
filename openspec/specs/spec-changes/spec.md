@@ -64,3 +64,13 @@ The system SHALL NOT write status, progress, issue numbers or dates into spec fi
 - GIVEN every issue for a spec change has merged
 - WHEN progress is reported
 - THEN no spec file is modified
+
+### Requirement: A spec change brings its own acceptance tests
+
+When a spec change is proposed, the system SHALL open an issue labelled `acceptance-tests` for it, naming the spec change and the capabilities it touches. That issue's work SHALL be done on the spec change's own branch, so that the spec and its acceptance tests merge together, as described in delivery.
+
+#### Scenario: Proposing opens the test issue
+- GIVEN a repository that uses specs
+- WHEN a spec change is proposed
+- THEN an acceptance-tests issue is opened naming the spec change and its capabilities
+- AND the caller receives its number with the spec change's
