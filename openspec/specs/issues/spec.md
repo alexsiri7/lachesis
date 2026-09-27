@@ -2,7 +2,7 @@
 
 ## Purpose
 
-GitHub issues are the task layer: they describe how a requirement's behaviour gets built, and they are what the autonomous worker picks up. This capability covers creating, reading and editing issues, and reading the pull requests that implement them.
+GitHub issues are the task layer: they describe how a requirement's behaviour gets built, and they are what the autonomous worker picks up. This capability covers creating, reading and editing issues, reading the pull requests that implement them, and the conversation on both — including questions that only the author can answer.
 
 ## Requirements
 
@@ -73,3 +73,27 @@ The system SHALL return any pull request in a registered repository, whether or 
 - GIVEN no pull request 9999 exists
 - WHEN it is requested
 - THEN the result says it was not found
+
+### Requirement: Conversations can be read and joined
+
+The system SHALL return the comments on any issue or pull request in a registered repository, oldest first, each with its author, time and body. It SHALL post a comment on any issue or pull request and return the new comment's URL.
+
+#### Scenario: Reading a worker's question
+- GIVEN the worker commented on issue 160 asking which of two behaviours the spec intends
+- WHEN issue 160's comments are read
+- THEN the question is returned with its author and time
+
+### Requirement: Questions wait on the author
+
+Anyone working an issue SHALL be able to mark it as waiting on the author by posting the question as a comment in the same call that labels the issue `needs-author`. Answering SHALL post the answer as a comment and remove the label in one call. Marking and answering SHALL each be a single operation, so an issue is never labelled without its question or left labelled after its answer.
+
+#### Scenario: Asking
+- GIVEN the worker cannot tell what the spec intends for issue 160
+- WHEN it asks the author through the system
+- THEN issue 160 carries the question as its latest comment and the needs-author label
+
+#### Scenario: Answering
+- GIVEN issue 160 is waiting on the author
+- WHEN the answer is posted through the system
+- THEN the answer is the latest comment and the needs-author label is gone
+
