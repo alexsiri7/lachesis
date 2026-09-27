@@ -25,6 +25,7 @@ from auth import (
     resolve_user_id_from_jwt,
 )
 from settings import settings
+from tools import contents as contents_tools
 from tools import notifications as notify_tools
 from tools import repos as repo_tools
 from tools import requirements as req_tools
@@ -440,6 +441,28 @@ mcp.tool(
         "propose a new spec change instead."
     ),
 )(spec_tools.update_spec_change)
+
+mcp.tool(
+    description=(
+        "Read a file in a registered repository, from its default branch or from `ref` "
+        "(a branch, tag or commit SHA — e.g. a pull request's head branch). Returns "
+        "`content` and `size`; a file over 200 KB returns only its start with "
+        "`truncated: true`. A binary file returns `binary: true` with its `size` and "
+        "`type` instead of content. Refused for repositories that are not registered."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(contents_tools.read_file)
+
+mcp.tool(
+    description=(
+        "List a directory in a registered repository, from its default branch or from "
+        "`ref` (a branch, tag or commit SHA). An empty `path` is the repository root. "
+        "Each entry has `name`, `path` and `kind` (file, dir, symlink or submodule); "
+        "read_file reads a file, and a symlink whose target is a file in the repository. "
+        "Refused for repositories that are not registered."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(contents_tools.list_directory)
 
 mcp.tool(
     description=(

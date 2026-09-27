@@ -92,6 +92,56 @@ async def get_file(repo: str, path: str, *, branch: str | None = None) -> tuple[
     return content, data["sha"]
 
 
+async def get_contents(
+    repo: str, path: str, *, ref: str | None = None
+) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """Return the Contents API response for *path* at *ref*, or ``None`` on 404.
+
+    A directory yields a list of entries, a file a dict whose ``content`` is only
+    inline up to 1 MB. An empty *path* is the repository root.
+    """
+    params = {"ref": ref} if ref else {}
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/contents/{quote(path)}",
+            headers=_headers(),
+            params=params,
+        )
+    if resp.status_code == 404:
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.get_contents failed repo=%s path=%s status=%s",
+            repo,
+            path,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    return resp.json()  # type: ignore[no-any-return]
+
+
+async def get_raw_file(repo: str, path: str, *, ref: str | None = None) -> bytes:
+    """Return the bytes of the file at *path*, including files too large to inline."""
+    params = {"ref": ref} if ref else {}
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/contents/{quote(path)}",
+            headers={**_headers(), "Accept": "application/vnd.github.raw+json"},
+            params=params,
+        )
+    if resp.status_code == 404:
+        raise FileNotFoundError(f"{path!r} not found in {repo!r}")
+    if not resp.is_success:
+        logger.warning(
+            "github.get_raw_file failed repo=%s path=%s status=%s",
+            repo,
+            path,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    return resp.content
+
+
 async def create_file(
     repo: str, path: str, content: str, message: str, *, branch: str | None = None
 ) -> dict[str, Any]:
