@@ -113,6 +113,33 @@ def _mock_issue_activity(httpx_mock: HTTPXMock, *nodes: dict) -> None:
     )
 
 
+def _waiting_node(
+    number: int, *, labelled_at: str, comments: tuple[tuple[str, str], ...]
+) -> dict[str, Any]:
+    """A GraphQL issue node as the waiting-on-author query returns it."""
+    return {
+        "number": number,
+        "title": f"Issue {number}",
+        "url": f"https://github.com/owner/repo/issues/{number}",
+        "createdAt": _stamp(30),
+        "timelineItems": {
+            "nodes": [
+                {"createdAt": _stamp(40), "label": {"name": "spec-gap"}},
+                {"createdAt": labelled_at, "label": {"name": "needs-author"}},
+            ]
+        },
+        "comments": {"nodes": [{"body": body, "createdAt": at} for at, body in comments]},
+    }
+
+
+def _mock_waiting(httpx_mock: HTTPXMock, *nodes: dict[str, Any]) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"issues": {"nodes": list(nodes)}}}},
+    )
+
+
 def _facts(number: int, *, state: str = "OPEN", merged: bool = False) -> IssueFacts:
     return {
         "number": number,
@@ -454,6 +481,7 @@ async def test_a_spec_change_whose_issues_cannot_be_read_is_unreadable(
             ]
         )
         httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+        _mock_waiting(httpx_mock)
 
         result = await get_dashboard()
 
@@ -500,6 +528,7 @@ async def test_get_dashboard_offers_spec_changes_for_landing(
             ]
         )
         _mock_issue_activity(httpx_mock, _issue_node(21, state="CLOSED", merged_pr=31))
+        _mock_waiting(httpx_mock)
 
         result = await get_dashboard()
 
@@ -518,6 +547,94 @@ async def test_list_spec_changes_is_refused_without_specs(httpx_mock: HTTPXMock)
 
     with pytest.raises(ValueError, match="list_requirements"):
         await list_spec_changes("owner/repo")
+
+
+# ---------------------------------------------------------------------------
+# Questions waiting on the author come first
+# ---------------------------------------------------------------------------
+
+
+async def test_a_question_overnight(httpx_mock: HTTPXMock, signed_in: None) -> None:
+    now = datetime.now(UTC)
+    marked = (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    question = "Does a parked issue keep its backlog position?"
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=False)),
+    ):
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        _mock_waiting(
+            httpx_mock,
+            _waiting_node(
+                160,
+                labelled_at=marked,
+                comments=((_stamp(2), "Picked this up."), (marked, question)),
+            ),
+        )
+
+        result = await get_dashboard()
+
+    [waiting] = result["waiting_on_author"]
+    assert waiting == {
+        "repo": "owner/repo",
+        "number": 160,
+        "title": "Issue 160",
+        "url": "https://github.com/owner/repo/issues/160",
+        "question": question,
+        "waiting_since": marked,
+    }
+    assert (now - datetime.fromisoformat(waiting["waiting_since"])) // timedelta(hours=1) == 6
+    assert result["summary"]["waiting_on_author_count"] == 1
+
+
+async def test_the_question_is_the_comment_posted_when_the_issue_was_marked(
+    httpx_mock: HTTPXMock, signed_in: None
+) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=False)),
+    ):
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        _mock_waiting(
+            httpx_mock,
+            _waiting_node(
+                1,
+                labelled_at=_stamp(3),
+                comments=((_stamp(4), "Earlier."), (_stamp(3), "The question"), (_stamp(1), "+1")),
+            ),
+            _waiting_node(2, labelled_at=_stamp(5), comments=((_stamp(2), "Only after."),)),
+            _waiting_node(3, labelled_at=_stamp(4), comments=()),
+        )
+
+        result = await get_dashboard()
+
+    assert [(entry["number"], entry["question"]) for entry in result["waiting_on_author"]] == [
+        (2, "Only after."),
+        (3, None),
+        (1, "The question"),
+    ]
+
+
+async def test_a_repository_whose_waiting_questions_cannot_be_searched_is_incomplete(
+    httpx_mock: HTTPXMock, signed_in: None
+) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=False)),
+    ):
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(
+            method="POST", url=_GRAPHQL_URL, json={"errors": [{"type": "FORBIDDEN"}]}
+        )
+
+        result = await get_dashboard()
+
+    assert result["waiting_on_author"] == []
+    assert result["summary"]["incomplete_repos"] == ["owner/repo"]
+    assert result["summary"]["lower_bound"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +704,15 @@ async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
         _mock_requirement_repo(httpx_mock, stalled)
         _mock_requirement_repo(httpx_mock, _issue_node(42, state="CLOSED"))
 
+        question = "Should a parked issue keep its position?"
+        _mock_waiting(
+            httpx_mock, _waiting_node(160, labelled_at=_stamp(1), comments=((_stamp(1), question),))
+        )
+        _mock_waiting(httpx_mock)
+        _mock_waiting(
+            httpx_mock, _waiting_node(7, labelled_at=_stamp(3), comments=((_stamp(3), "Which?"),))
+        )
+
         result = await get_dashboard()
 
     grouped = result["groups"]
@@ -595,7 +721,14 @@ async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
     assert _group_of(grouped, repo="owner/quiet", id="001") == "stalled"
     assert _group_of(grouped, repo="owner/app", id="001") == "needs_attention"
 
+    assert [(entry["repo"], entry["number"]) for entry in result["waiting_on_author"]] == [
+        ("owner/app", 7),
+        ("owner/specs", 160),
+    ]
+    assert result["waiting_on_author"][1]["question"] == question
+
     summary = result["summary"]
+    assert summary["waiting_on_author_count"] == 2
     assert summary["spec_gaps"] == {"owner/specs": {"backlog": 2, "issues": 1}}
     assert summary["spec_changes_by_status"] == {"done": 1, "none": 1}
     assert summary["total"] == sum(summary["groups"].values()) == 4
@@ -624,6 +757,7 @@ async def test_the_dashboard_filters_on_a_spec_change_only_status(
             ]
         )
         httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+        _mock_waiting(httpx_mock)
 
         result = await get_dashboard(status=status)
 
@@ -648,6 +782,7 @@ async def test_a_spec_repository_whose_spec_changes_cannot_be_read_is_incomplete
         httpx_mock.add_response(json=[])  # no requirement files
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         httpx_mock.add_response(status_code=502)
+        _mock_waiting(httpx_mock)
 
         result = await get_dashboard()
 
@@ -676,6 +811,7 @@ async def test_rate_limited_on_one_repository(httpx_mock: HTTPXMock, signed_in: 
             json={"message": "API rate limit exceeded"},
         )
         _mock_requirement_repo(httpx_mock, _issue_node(42))
+        _mock_waiting(httpx_mock)
         result = await get_dashboard()
 
     assert result["summary"]["failed_repos"] == [{"repo": "owner/first", "cause": "rate_limited"}]
@@ -719,6 +855,7 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     monkeypatch.setattr("web.db.list_repos", MagicMock(return_value=[{"repo_name": "owner/specs"}]))
     monkeypatch.setattr("web.github.list_files", AsyncMock(return_value=[]))
     monkeypatch.setattr("web.uses_specs", AsyncMock(return_value=True))
+    monkeypatch.setattr("web.github.list_waiting_issues", AsyncMock(return_value=[]))
     built = derive_spec_change(
         "merged", None, [1, 2, 3], {n: _facts(n, state="CLOSED", merged=True) for n in (1, 2, 3)}
     )
@@ -752,3 +889,81 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     assert "3 issues" in resp.text
     assert "Open spec gaps" in resp.text
     assert "3 open" in resp.text
+
+
+async def _web_dashboard(monkeypatch: pytest.MonkeyPatch, list_waiting_issues: AsyncMock) -> str:
+    from jose import jwt as jose_jwt
+
+    from main import app
+    from web import _COOKIE_NAME
+
+    monkeypatch.setattr("web.settings.secret_key", "test-secret")
+    monkeypatch.setattr("web.settings.allowed_email", "user@example.com")
+    monkeypatch.setattr("web.db.list_repos", MagicMock(return_value=[{"repo_name": "owner/repo"}]))
+    monkeypatch.setattr("web.github.list_files", AsyncMock(return_value=[]))
+    monkeypatch.setattr("web.uses_specs", AsyncMock(return_value=False))
+    monkeypatch.setattr("web.github.list_waiting_issues", list_waiting_issues)
+    token = jose_jwt.encode(
+        {"sub": "google-sub", "email": "user@example.com", "lachesis_uid": "uid", "exp": 2**31},
+        "test-secret",
+        algorithm="HS256",
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),  # type: ignore[arg-type]
+        base_url="http://test",
+    ) as client:
+        client.cookies.set(_COOKIE_NAME, token)
+        resp = await client.get("/web/")
+
+    assert resp.status_code == 200
+    return resp.text
+
+
+async def test_the_web_view_lists_the_questions_waiting_on_the_author_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marked = (datetime.now(UTC) - timedelta(hours=6, minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    page = await _web_dashboard(
+        monkeypatch,
+        AsyncMock(
+            return_value=[
+                {
+                    "number": 160,
+                    "title": "Park issues",
+                    "url": "https://github.com/owner/repo/issues/160",
+                    "question": "Does a parked issue keep its position?",
+                    "waiting_since": marked,
+                }
+            ]
+        ),
+    )
+
+    assert "owner/repo#160" in page
+    assert "Does a parked issue keep its position?" in page
+    assert "waiting 6h" in page
+    assert page.index("Waiting on you") < page.index("No requirements found.")
+
+
+async def test_the_web_view_says_when_a_repository_could_not_be_searched_for_questions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = await _web_dashboard(monkeypatch, AsyncMock(side_effect=RuntimeError("rate limited")))
+
+    assert "Waiting on you (0)" in page
+    assert "There may be more: could not search owner/repo." in page
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "shown"),
+    [
+        (timedelta(hours=23, minutes=59), "23h"),
+        (timedelta(hours=24), "1d"),
+        (timedelta(days=3, hours=5), "3d"),
+    ],
+)
+def test_the_web_view_shows_waits_past_a_day_in_days(elapsed: timedelta, shown: str) -> None:
+    from web import _waited
+
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    assert _waited((now - elapsed).isoformat(), now) == shown

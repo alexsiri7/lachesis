@@ -705,8 +705,18 @@ async def test_session_start_without_a_repository() -> None:
     assert all(tool in guidance for tool in _BACKLOG_TOOLS)
 
 
+@pytest.mark.parametrize("specs", [True, False, None])
+async def test_session_start_with_the_author(httpx_mock: HTTPXMock, specs: bool | None) -> None:
+    if specs is not None:
+        (_mock_spec_repo if specs else _mock_not_spec_repo)(httpx_mock)
+    guidance = await get_initial_instructions(_REPO if specs is not None else None)
+
+    assert "call get_dashboard before anything else" in guidance
+    assert "waiting_on_author" in guidance
+
+
 # Issue fields the guidance names alongside the tools.
-_GUIDANCE_FIELDS = {"spec_change", "spec_gap", "uses_specs"}
+_GUIDANCE_FIELDS = {"spec_change", "spec_gap", "uses_specs", "waiting_on_author"}
 
 
 @pytest.mark.parametrize("specs", [True, False, None])

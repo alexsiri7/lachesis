@@ -1162,6 +1162,88 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
     return {"facts": facts, "failure": failure}
 
 
+_WAITING_QUERY = """
+query($owner: String!, $name: String!, $label: String!) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, states: OPEN, labels: [$label]) {
+      nodes {
+        number
+        title
+        url
+        createdAt
+        timelineItems(last: 20, itemTypes: [LABELED_EVENT]) {
+          nodes { ... on LabeledEvent { createdAt label { name } } }
+        }
+        comments(last: 50) { nodes { body createdAt } }
+      }
+    }
+  }
+}
+"""
+
+
+class WaitingIssue(TypedDict):
+    """An open issue carrying a waiting label, with the question it waits on."""
+
+    number: int
+    title: str
+    url: str
+    question: str | None
+    waiting_since: str
+
+
+def _waiting_issue(issue: dict[str, Any], label: str) -> WaitingIssue:
+    """Pair *issue* with the comment posted when *label* was last added to it.
+
+    That is the latest comment at or before the labelling — ``ask_author`` posts the
+    question first — or, when none precedes it, the latest comment of all.
+    """
+    labelled = [
+        event["createdAt"]
+        for event in (issue.get("timelineItems") or {}).get("nodes") or []
+        if (event.get("label") or {}).get("name") == label
+    ]
+    waiting_since = max(labelled) if labelled else issue["createdAt"]
+    comments = (issue.get("comments") or {}).get("nodes") or []
+    before = [comment for comment in comments if comment["createdAt"] <= waiting_since]
+    question = (before or comments)[-1]["body"] if comments else None
+    return {
+        "number": issue["number"],
+        "title": issue["title"],
+        "url": issue["url"],
+        "question": question,
+        "waiting_since": waiting_since,
+    }
+
+
+async def list_waiting_issues(repo: str, label: str) -> list[WaitingIssue]:
+    """Return the open issues in *repo* labelled *label*, each with its question.
+
+    One query covers the whole repository, however many issues are waiting.
+    """
+    owner, _, name = repo.partition("/")
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            "https://api.github.com/graphql",
+            headers=_headers(),
+            json={
+                "query": _WAITING_QUERY,
+                "variables": {"owner": owner, "name": name, "label": label},
+            },
+        )
+    if not resp.is_success:
+        logger.warning(
+            "github.list_waiting_issues failed repo=%s status=%s", repo, resp.status_code
+        )
+        resp.raise_for_status()
+    data = resp.json()
+    repository = (data.get("data") or {}).get("repository")
+    if data.get("errors") or repository is None:
+        logger.warning("github.list_waiting_issues graphql errors repo=%s: %s", repo, data)
+        raise RuntimeError(f"Could not list issues labelled {label!r} in {repo!r}")
+    return [_waiting_issue(issue, label) for issue in repository["issues"]["nodes"]]
+
+
 _DEPLOYMENT_PAGE_SIZE = 100
 _DEPLOYMENT_SCAN_LIMIT = 5
 _STATUS_SCAN_LIMIT = 10
