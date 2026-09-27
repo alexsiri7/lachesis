@@ -8,11 +8,12 @@ Progress reporting answers what happened to the work: what landed, what was drop
 
 ### Requirement: Status is derived from the work
 
-For every unit of work, the system SHALL derive a status from its issues and their pull requests: "done" when every issue closed with a merged pull request, "in-progress" when work has started but not finished, and none when it has no issues. For a spec change, its issues SHALL be those whose reference block names it; for a requirement file, those linked to it. The system SHALL say where the derived status came from: the issues, no issues, or GitHub being unreadable, with the cause.
+For every unit of work, the system SHALL derive a status from its issues and their pull requests: "done" when every issue closed with a merged pull request and, for a spec change, every scenario it adds or modifies passes on the default branch; "in-progress" when work has started but not finished; and none when it has no issues. For a spec change, its issues SHALL be those whose reference block names it; for a requirement file, those linked to it. The system SHALL say where the derived status came from: the issues, no issues, or GitHub being unreadable, with the cause.
 
 #### Scenario: Spec change fully built
 - GIVEN merged spec change #152
 - AND three issues naming #152, all closed with merged pull requests
+- AND every scenario #152 adds or modifies passes on the default branch
 - WHEN progress is reported
 - THEN spec change #152 is "done"
 
@@ -21,6 +22,21 @@ For every unit of work, the system SHALL derive a status from its issues and the
 - AND all its linked issues closed with merged pull requests
 - WHEN it is listed
 - THEN its derived status is "done"
+
+#### Scenario: Built but not yet passing
+- GIVEN every issue for spec change #170 closed with a merged pull request
+- AND one of its scenarios is still expected to fail on the default branch
+- WHEN progress is reported
+- THEN #170 is "in-progress" and names the scenario still pending
+
+### Requirement: Scenario results are visible per capability
+
+For each capability of a repository that uses specs, the system SHALL report every scenario's result from the latest default-branch CI run: passing, expected to fail, failing, or untested.
+
+#### Scenario: Capability view
+- GIVEN the latest default-branch run passed five backlog scenarios and one is expected to fail
+- WHEN progress is reported
+- THEN backlog shows five passing and one expected to fail, by name
 
 ### Requirement: Disagreement is reported, and author intent wins
 
