@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The author learns when a whole unit of work — a spec change, or a requirement file in a repository without specs — becomes usable, so they can go and try it. Notifications fire at the level of the unit of work, not an issue, and arrive as a push rather than something the author must check.
+The author learns when a whole unit of work — a spec change, or a requirement file in a repository without specs — becomes usable, so they can go and try it. Notifications fire at the level of the unit of work, not an issue, and arrive as a push rather than something the author must check. The same channel tells the author when work is waiting on their answer.
 
 ## Requirements
 
@@ -46,6 +46,15 @@ A unit of work SHALL be notified at most once for landing. Re-running a deployme
 - GIVEN a unit of work already notified as landed
 - WHEN the deployment is re-run
 - THEN no new notification is sent
+
+### Requirement: Questions reach the author
+
+When an issue is marked as waiting on the author, the system SHALL send a push notification naming the repository and issue, giving the question, and linking to the issue. Each marking SHALL notify once; a question asked again after an answer SHALL notify again.
+
+#### Scenario: Worker asks overnight
+- GIVEN notifications are configured
+- WHEN the worker marks issue 160 as waiting on the author
+- THEN one notification arrives with the question and a link to issue 160
 
 ### Requirement: Delivery never blocks anything
 
