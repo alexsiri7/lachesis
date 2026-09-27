@@ -1792,6 +1792,17 @@ async def test_post_comment_returns_new_comment_url(
     assert result == {"url": "https://github.com/alexsiri7/lachesis/issues/160#issuecomment-2"}
 
 
+async def test_post_comment_raises_when_issue_missing(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    httpx_mock.add_response(method="POST", url=_ISSUE_160_COMMENTS_URL, status_code=404)
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(FileNotFoundError, match="#160"),
+    ):
+        await post_comment("alexsiri7/lachesis", 160, "Behaviour A.")
+
+
 async def test_post_comment_rejects_empty_body(set_user_id: str) -> None:
     with pytest.raises(ValueError, match="body"):
         await post_comment("alexsiri7/lachesis", 160, "   ")
