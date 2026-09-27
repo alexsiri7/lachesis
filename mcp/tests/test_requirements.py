@@ -18,6 +18,8 @@ from auth import current_db_user_id
 from tools.requirements import (
     _MAX_WRITE_ATTEMPTS,
     add_dependency,
+    answer_author,
+    ask_author,
     create_github_issues,
     create_requirement,
     delete_requirement,
@@ -1825,6 +1827,149 @@ async def test_comments_refused_for_unregistered_repository(call, set_user_id: s
 
 
 # ---------------------------------------------------------------------------
+# ask_author / answer_author
+# ---------------------------------------------------------------------------
+
+_ISSUE_160_URL = "https://api.github.com/repos/alexsiri7/lachesis/issues/160"
+_NEEDS_AUTHOR_ON_160 = f"{_ISSUE_160_URL}/labels/needs-author"
+_QUESTION_URL = "https://github.com/alexsiri7/lachesis/issues/160#issuecomment-3"
+
+
+def _mock_issue_160(httpx_mock: HTTPXMock, labels: list[str]) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url=_ISSUE_160_URL,
+        json={
+            "number": 160,
+            "id": 1160,
+            "title": "Issue 160",
+            "state": "open",
+            "labels": [{"name": name} for name in labels],
+            "html_url": "https://github.com/alexsiri7/lachesis/issues/160",
+        },
+    )
+
+
+def _requests(httpx_mock: HTTPXMock) -> list[tuple[str, str]]:
+    return [(r.method, str(r.url)) for r in httpx_mock.get_requests()]
+
+
+async def test_asking(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Scenario: Asking — the question is the latest comment and the label is on."""
+    _mock_issue_160(httpx_mock, [])
+    httpx_mock.add_response(
+        method="POST", url="https://api.github.com/repos/alexsiri7/lachesis/labels", status_code=201
+    )
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", json=[])
+    httpx_mock.add_response(
+        method="POST", url=f"{_ISSUE_160_URL}/comments", json={"html_url": _QUESTION_URL}
+    )
+
+    with patch("tools.requirements.db.list_repos", return_value=_REGISTERED):
+        result = await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
+
+    assert result == {"url": _QUESTION_URL}
+    requests = httpx_mock.get_requests()
+    assert json.loads(requests[1].content) == {"name": "needs-author", "color": "fbca04"}
+    assert json.loads(requests[2].content) == {"labels": ["needs-author"]}
+    assert json.loads(requests[3].content) == {"body": "Behaviour A or B?"}
+
+
+async def test_asking_takes_the_label_off_when_the_question_fails(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """An issue must never carry needs-author without its question."""
+    _mock_issue_160(httpx_mock, [])
+    httpx_mock.add_response(
+        method="POST", url="https://api.github.com/repos/alexsiri7/lachesis/labels", status_code=201
+    )
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", json=[])
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
+    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_ON_160, json=[])
+
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
+
+    assert _requests(httpx_mock)[-1] == ("DELETE", _NEEDS_AUTHOR_ON_160)
+
+
+async def test_asking_again_keeps_the_label_from_the_earlier_question(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """A failed follow-up question leaves the earlier question's label alone."""
+    _mock_issue_160(httpx_mock, ["needs-author"])
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
+
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        await ask_author("alexsiri7/lachesis", 160, "And C?")
+
+    assert [method for method, _ in _requests(httpx_mock)] == ["GET", "POST"]
+
+
+async def test_answering(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Scenario: Answering — the answer is the latest comment and the label is gone."""
+    _mock_issue_160(httpx_mock, ["needs-author"])
+    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_ON_160, json=[])
+    httpx_mock.add_response(
+        method="POST", url=f"{_ISSUE_160_URL}/comments", json={"html_url": _QUESTION_URL}
+    )
+
+    with patch("tools.requirements.db.list_repos", return_value=_REGISTERED):
+        result = await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
+
+    assert result == {"url": _QUESTION_URL}
+    assert json.loads(httpx_mock.get_requests()[-1].content) == {"body": "Behaviour A."}
+
+
+async def test_answering_puts_the_label_back_when_the_answer_fails(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """An issue must never lose needs-author without its answer."""
+    _mock_issue_160(httpx_mock, ["needs-author"])
+    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_ON_160, json=[])
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", json=[])
+
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
+
+    assert json.loads(httpx_mock.get_requests()[-1].content) == {"labels": ["needs-author"]}
+
+
+async def test_answering_is_refused_when_the_issue_is_not_waiting(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_issue_160(httpx_mock, [])
+
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(ValueError, match="not waiting on the author"),
+    ):
+        await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
+
+    assert [method for method, _ in _requests(httpx_mock)] == ["GET"]
+
+
+async def test_asking_raises_when_issue_missing(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    httpx_mock.add_response(method="GET", url=_ISSUE_160_URL, status_code=404)
+
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(FileNotFoundError, match="#160"),
+    ):
+        await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
+
+
+# ---------------------------------------------------------------------------
 # update_github_issue tests
 # ---------------------------------------------------------------------------
 
@@ -3054,6 +3199,16 @@ async def test_get_initial_instructions_documents_parking() -> None:
     assert "park" in result
 
 
+async def test_stuck_on_intent() -> None:
+    """Scenario: Stuck on intent — ask the author rather than guess, then move on."""
+    result = await get_initial_instructions()
+
+    assert "ask_author" in result
+    assert "do not guess" in result
+    assert "move on to other work" in result
+    assert "answer_author" in result
+
+
 # ---------------------------------------------------------------------------
 # Backlog ordering — get_backlog, move_issue, set_backlog_flags
 # ---------------------------------------------------------------------------
@@ -3634,8 +3789,8 @@ async def test_next_issue_reports_a_blocked_interrupt_rather_than_skipping_it(
     assert [(e["number"], e["interrupt"]) for e in result["blocked"]] == [(2, True)]
 
 
-async def test_next_issue_all_blocked(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    """Nothing to return, and the explanation names what is doing the blocking."""
+async def test_everything_blocked(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Scenario: Everything blocked — the explanation names what is doing the blocking."""
     _mock_open_issues(httpx_mock, [1, 2])
     _mock_blocked_by(httpx_mock, 1, [2])
     fake = _FakeBacklog([{"issue_number": 2, "ready": False}])
@@ -3699,10 +3854,8 @@ async def test_next_issue_all_in_progress(httpx_mock: HTTPXMock, set_user_id: st
     assert result["reason"] == "all_in_progress"
 
 
-async def test_next_issue_passes_over_an_in_progress_issue(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """An in-progress issue at the front does not stop the walk."""
+async def test_skip_work_already_in_progress(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Scenario: Skip work already in progress — it does not stop the walk."""
     _mock_open_issues(httpx_mock, [1, 2], {1: ["archon:in-progress"]})
     _mock_blocked_by(httpx_mock, 2, [])
     fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 2, "ready": True}])
@@ -3711,6 +3864,40 @@ async def test_next_issue_passes_over_an_in_progress_issue(
         result = await next_issue("owner/repo")
 
     assert result["issue"]["number"] == 2
+
+
+async def test_waiting_on_the_author(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Scenario: Waiting on the author — skipped, then eligible again at its position."""
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 2, "ready": True}])
+
+    _mock_open_issues(httpx_mock, [1, 2], {1: ["needs-author"]})
+    _mock_blocked_by(httpx_mock, 2, [])
+    with _patch_backlog(fake):
+        waiting = await next_issue("owner/repo")
+    assert waiting["issue"]["number"] == 2
+
+    httpx_mock.reset()
+    _mock_open_issues(httpx_mock, [1, 2])
+    _mock_blocked_by(httpx_mock, 1, [])
+    with _patch_backlog(fake):
+        answered = await next_issue("owner/repo")
+    assert answered["issue"]["number"] == 1
+    assert answered["issue"]["position"] == 0
+
+
+async def test_next_issue_all_waiting_on_the_author(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Everything eligible waiting on the author is its own reason, not 'parked'."""
+    _mock_open_issues(httpx_mock, [1, 2], {1: ["needs-author"], 2: ["archon:in-progress"]})
+    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 2, "ready": True}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "all_waiting"
+    assert "needs-author" in result["explanation"]
 
 
 async def test_next_issue_interrupt_wins_across_repos(

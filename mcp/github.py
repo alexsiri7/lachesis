@@ -7,6 +7,7 @@ import base64
 import logging
 import re
 from typing import Any, Literal, TypedDict
+from urllib.parse import quote
 
 import httpx
 
@@ -654,6 +655,26 @@ async def add_labels(repo: str, issue_number: int, labels: list[str]) -> None:
             "github.add_labels failed repo=%s issue=%s status=%s",
             repo,
             issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+
+
+async def remove_label(repo: str, issue_number: int, name: str) -> None:
+    """Remove the label *name* from an issue or pull request; a label already gone is fine."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.delete(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/labels/{quote(name, safe='')}",
+            headers=_headers(),
+        )
+    if resp.status_code == 404:
+        return
+    if not resp.is_success:
+        logger.warning(
+            "github.remove_label failed repo=%s issue=%s label=%s status=%s",
+            repo,
+            issue_number,
+            name,
             resp.status_code,
         )
     resp.raise_for_status()
