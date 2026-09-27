@@ -128,6 +128,18 @@ async def test_read_file_past_the_limit_returns_the_start_and_the_full_size(
     assert result["content"] == "a" * MAX_READ_BYTES
 
 
+async def test_read_file_truncated_mid_character_drops_the_partial_character(
+    httpx_mock: HTTPXMock,
+) -> None:
+    data = b"a" * (MAX_READ_BYTES - 1) + "€".encode() * 3
+    httpx_mock.add_response(url=f"{_CONTENTS}/euro.txt", json=_file("euro.txt", data))
+
+    result = await read_file(_REPO, "euro.txt")
+
+    assert result["truncated"] is True
+    assert result["content"] == "a" * (MAX_READ_BYTES - 1)
+
+
 async def test_read_file_too_large_to_inline_fetches_the_raw_bytes(httpx_mock: HTTPXMock) -> None:
     data = "é".encode() * MAX_READ_BYTES
     httpx_mock.add_response(
@@ -174,6 +186,22 @@ async def test_read_file_refuses_a_directory(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(url=f"{_CONTENTS}/src", json=[_entry("src/a.py", "file")])
     with pytest.raises(ValueError, match="not a file"):
         await read_file(_REPO, "src")
+
+
+async def test_list_directory_reports_symlinks_and_submodules_as_read_file_sees_them(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url=f"{_CONTENTS}/vendor",
+        json=[_entry("vendor/latest", "symlink"), _entry("vendor/lib", "submodule")],
+    )
+    httpx_mock.add_response(url=f"{_CONTENTS}/vendor/lib", json=_entry("vendor/lib", "submodule"))
+
+    listing = await list_directory(_REPO, "vendor")
+
+    assert [e["kind"] for e in listing["entries"]] == ["symlink", "submodule"]
+    with pytest.raises(ValueError, match="not a file"):
+        await read_file(_REPO, "vendor/lib")
 
 
 async def test_list_directory_with_empty_path_lists_the_root(httpx_mock: HTTPXMock) -> None:
