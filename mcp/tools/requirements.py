@@ -1672,6 +1672,43 @@ async def update_github_issue(
     return result
 
 
+async def _require_registered(repo: str) -> str:
+    """Resolve *repo* and refuse it unless the current user has registered it."""
+    user_id = _require_user_id()
+    resolved = await _resolve_repo(repo)
+    for row in db.list_repos(user_id):
+        try:
+            registered = normalize_repo(row["repo_name"])
+        except ValueError:
+            continue
+        if registered.lower() == resolved.lower():
+            return registered
+    raise ValueError(f"Repository {resolved!r} is not registered")
+
+
+async def get_comments(repo: str, number: int) -> list[dict[str, Any]]:
+    """Return the comments on an issue or pull request, oldest first.
+
+    Each comment carries ``author``, ``created_at``, ``body`` and ``url``.
+    """
+    repo = await _require_registered(repo)
+    comments = await github.list_issue_comments(repo, number)
+    if comments is None:
+        raise FileNotFoundError(f"Issue or pull request #{number} not found in {repo!r}")
+    return comments
+
+
+async def post_comment(repo: str, number: int, body: str) -> dict[str, Any]:
+    """Post *body* as a comment on an issue or pull request and return the comment's URL."""
+    if not body.strip():
+        raise ValueError("body must not be empty")
+    repo = await _require_registered(repo)
+    url = await github.create_issue_comment(repo, number, body)
+    if url is None:
+        raise FileNotFoundError(f"Issue or pull request #{number} not found in {repo!r}")
+    return {"url": url}
+
+
 async def get_dependencies(repo: str, issue_number: int) -> dict[str, Any]:
     """Return the blocked_by and blocking dependency lists for a GitHub issue.
 

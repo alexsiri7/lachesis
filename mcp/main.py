@@ -283,6 +283,23 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Return the comments on an issue or pull request in a registered repository, "
+        "oldest first, each with author, created_at, body and url. Pull request "
+        "conversation comments are included; review comments on code lines are not. "
+        "Refused for repositories that are not registered."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(req_tools.get_comments)
+
+mcp.tool(
+    description=(
+        "Post a comment on an issue or pull request in a registered repository. "
+        "Returns the new comment's url. Refused for repositories that are not registered."
+    ),
+)(req_tools.post_comment)
+
+mcp.tool(
+    description=(
         "Return the dependency relationships of a GitHub issue: "
         "blocked_by (issues this one depends on) and "
         "blocking (issues that depend on this one). "

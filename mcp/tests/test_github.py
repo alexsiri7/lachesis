@@ -18,6 +18,7 @@ from github import (
     create_branch,
     create_file,
     create_issue,
+    create_issue_comment,
     create_pull_request,
     enable_automerge,
     failure_from_exception,
@@ -32,6 +33,7 @@ from github import (
     get_repo_settings,
     list_blocked_by_numbers,
     list_files,
+    list_issue_comments,
     list_labelled_prs,
     list_lachesis_prs,
     list_open_issues,
@@ -651,6 +653,71 @@ async def test_update_issue_raises_on_non_404_error(httpx_mock: HTTPXMock) -> No
     )
     with pytest.raises(httpx.HTTPStatusError):
         await update_issue("owner/repo", 42, {"state": "invalid"})
+
+
+# ---------------------------------------------------------------------------
+# list_issue_comments / create_issue_comment
+# ---------------------------------------------------------------------------
+
+_COMMENTS_URL = "https://api.github.com/repos/owner/repo/issues/42/comments"
+
+
+def _comment(n: int) -> dict:
+    return {
+        "user": {"login": f"user{n}"},
+        "created_at": f"2026-09-{n % 28 + 1:02d}T10:00:00Z",
+        "body": f"comment {n}",
+        "html_url": f"https://github.com/owner/repo/issues/42#issuecomment-{n}",
+    }
+
+
+async def test_list_issue_comments_follows_every_page(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{_COMMENTS_URL}?per_page=100&page=1", json=[_comment(n) for n in range(100)]
+    )
+    httpx_mock.add_response(url=f"{_COMMENTS_URL}?per_page=100&page=2", json=[_comment(100)])
+
+    comments = await list_issue_comments("owner/repo", 42)
+
+    assert [c["body"] for c in comments] == [f"comment {n}" for n in range(101)]
+    assert comments[0] == {
+        "author": "user0",
+        "created_at": "2026-09-01T10:00:00Z",
+        "body": "comment 0",
+        "url": "https://github.com/owner/repo/issues/42#issuecomment-0",
+    }
+
+
+async def test_list_issue_comments_keeps_comments_from_deleted_accounts(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(json=[{**_comment(1), "user": None}])
+    comments = await list_issue_comments("owner/repo", 42)
+    assert comments[0]["author"] is None
+
+
+async def test_list_issue_comments_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(status_code=404)
+    assert await list_issue_comments("owner/repo", 42) is None
+
+
+async def test_create_issue_comment_returns_url(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=_COMMENTS_URL,
+        status_code=201,
+        json={"html_url": "https://github.com/owner/repo/issues/42#issuecomment-7"},
+    )
+
+    url = await create_issue_comment("owner/repo", 42, "Which one?")
+
+    assert url == "https://github.com/owner/repo/issues/42#issuecomment-7"
+    assert json.loads(httpx_mock.get_requests()[0].content) == {"body": "Which one?"}
+
+
+async def test_create_issue_comment_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", url=_COMMENTS_URL, status_code=404)
+    assert await create_issue_comment("owner/repo", 42, "hi") is None
 
 
 # ---------------------------------------------------------------------------

@@ -579,6 +579,68 @@ async def update_issue(
     }
 
 
+async def list_issue_comments(repo: str, issue_number: int) -> list[dict[str, Any]] | None:
+    """Return the comments on an issue or pull request oldest first, or ``None`` on 404.
+
+    Each comment has ``author`` (login), ``created_at``, ``body`` and ``url``.
+    """
+    items: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        page = 1
+        while True:
+            resp = await http.get(
+                f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/comments",
+                headers=_headers(),
+                params={"per_page": _ISSUES_PAGE_SIZE, "page": page},
+            )
+            if resp.status_code == 404:
+                return None
+            if not resp.is_success:
+                logger.warning(
+                    "github.list_issue_comments failed repo=%s issue=%s page=%s status=%s",
+                    repo,
+                    issue_number,
+                    page,
+                    resp.status_code,
+                )
+                resp.raise_for_status()
+            batch = resp.json()
+            items.extend(batch)
+            if len(batch) < _ISSUES_PAGE_SIZE:
+                break
+            page += 1
+    return [
+        {
+            "author": (item.get("user") or {}).get("login"),
+            "created_at": item["created_at"],
+            "body": item.get("body") or "",
+            "url": item["html_url"],
+        }
+        for item in items
+    ]
+
+
+async def create_issue_comment(repo: str, issue_number: int, body: str) -> str | None:
+    """Post *body* as a comment on an issue or pull request; return its URL, or ``None`` on 404."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/comments",
+            headers=_headers(),
+            json={"body": body},
+        )
+    if resp.status_code == 404:
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.create_issue_comment failed repo=%s issue=%s status=%s",
+            repo,
+            issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    return resp.json()["html_url"]
+
+
 async def add_labels(repo: str, issue_number: int, labels: list[str]) -> None:
     """Add *labels* to an issue or pull request, keeping the labels it already has."""
     async with httpx.AsyncClient(timeout=10.0) as http:

@@ -22,6 +22,7 @@ from tools.requirements import (
     create_requirement,
     delete_requirement,
     get_backlog,
+    get_comments,
     get_dashboard,
     get_dependencies,
     get_github_issue,
@@ -32,6 +33,7 @@ from tools.requirements import (
     list_requirements,
     move_issue,
     next_issue,
+    post_comment,
     set_backlog_flags,
     update_github_issue,
     update_requirement,
@@ -1724,6 +1726,91 @@ async def test_list_requirements_short_name_case_insensitive(
         result = await list_requirements("lachesis")
 
     assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# get_comments / post_comment
+# ---------------------------------------------------------------------------
+
+_REGISTERED = [{"id": "r1", "repo_name": "alexsiri7/lachesis", "created_at": "t"}]
+_ISSUE_160_COMMENTS_URL = re.compile(
+    r"https://api\.github\.com/repos/alexsiri7/lachesis/issues/160/comments.*"
+)
+
+
+async def test_reading_a_workers_question(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Scenario: Reading a worker's question."""
+    httpx_mock.add_response(
+        url=_ISSUE_160_COMMENTS_URL,
+        json=[
+            {
+                "user": {"login": "worker-bot"},
+                "created_at": "2026-09-20T09:00:00Z",
+                "body": "Does the spec intend behaviour A or behaviour B?",
+                "html_url": "https://github.com/alexsiri7/lachesis/issues/160#issuecomment-1",
+            }
+        ],
+    )
+
+    with patch("tools.requirements.db.list_repos", return_value=_REGISTERED):
+        comments = await get_comments("lachesis", 160)
+
+    assert comments == [
+        {
+            "author": "worker-bot",
+            "created_at": "2026-09-20T09:00:00Z",
+            "body": "Does the spec intend behaviour A or behaviour B?",
+            "url": "https://github.com/alexsiri7/lachesis/issues/160#issuecomment-1",
+        }
+    ]
+
+
+async def test_get_comments_raises_when_issue_missing(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    httpx_mock.add_response(url=_ISSUE_160_COMMENTS_URL, status_code=404)
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(FileNotFoundError, match="#160"),
+    ):
+        await get_comments("alexsiri7/lachesis", 160)
+
+
+async def test_post_comment_returns_new_comment_url(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="https://api.github.com/repos/alexsiri7/lachesis/issues/160/comments",
+        status_code=201,
+        json={"html_url": "https://github.com/alexsiri7/lachesis/issues/160#issuecomment-2"},
+    )
+
+    with patch("tools.requirements.db.list_repos", return_value=_REGISTERED):
+        result = await post_comment("https://github.com/alexsiri7/Lachesis", 160, "Behaviour A.")
+
+    assert result == {"url": "https://github.com/alexsiri7/lachesis/issues/160#issuecomment-2"}
+
+
+async def test_post_comment_rejects_empty_body(set_user_id: str) -> None:
+    with pytest.raises(ValueError, match="body"):
+        await post_comment("alexsiri7/lachesis", 160, "   ")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: get_comments("someone/else", 1),
+        lambda: post_comment("someone/else", 1, "hello"),
+    ],
+    ids=["get_comments", "post_comment"],
+)
+async def test_comments_refused_for_unregistered_repository(call, set_user_id: str) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(ValueError, match="'someone/else' is not registered"),
+    ):
+        await call()
 
 
 # ---------------------------------------------------------------------------
