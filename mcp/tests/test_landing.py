@@ -20,6 +20,7 @@ import github
 import landing
 from auth import current_db_user_id
 from derive import IssueFacts, derive
+from tools.requirements import waiting_on_author
 from tools.specs import _spec_change_entry
 
 _EPOCH = datetime(2026, 9, 1, tzinfo=UTC)
@@ -471,3 +472,92 @@ async def test_no_topic_configured(set_user_id: str, unit_of_work: UnitOfWork) -
     ):
         await landing.notify_landed("owner/repo", [unit_of_work(issues=3, landed=3)])
     sent.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# questions reach the author
+# ---------------------------------------------------------------------------
+
+
+def _waiting(
+    number: int = 160,
+    *,
+    question: str | None = "Should a parked issue keep its backlog position?",
+    waiting_since: str = "2026-09-05T02:00:00Z",
+) -> github.WaitingIssue:
+    return {
+        "number": number,
+        "title": f"Issue {number}",
+        "url": f"https://github.com/owner/repo/issues/{number}",
+        "question": question,
+        "waiting_since": waiting_since,
+    }
+
+
+async def test_worker_asks_overnight(set_user_id: str, httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", url="https://ntfy.example/lachesis")
+    with (
+        patch("tools.requirements.github.list_waiting_issues", return_value=[_waiting()]),
+        patch("landing.db.get_ntfy_config", return_value=dict(_CONFIG)),
+        patch("notify.db.get_ntfy_config", return_value=dict(_CONFIG)),
+        patch("notify.db.claim_notification", return_value=True) as claim,
+    ):
+        await waiting_on_author(["owner/repo"])
+
+    [request] = httpx_mock.get_requests()
+    assert "owner/repo#160" in request.headers["Title"]
+    assert request.headers["Click"] == "https://github.com/owner/repo/issues/160"
+    assert request.content.decode() == "Should a parked issue keep its backlog position?"
+    claim.assert_called_once_with("test-uid", "owner/repo", "question:160:2026-09-05T02:00:00Z")
+
+
+async def test_a_question_asked_again_after_an_answer_is_a_new_notification(
+    set_user_id: str, configured: dict
+) -> None:
+    await landing.notify_waiting("owner/repo", [_waiting()])
+    await landing.notify_waiting("owner/repo", [_waiting(waiting_since="2026-09-06T09:00:00Z")])
+
+    keys = [call.kwargs["requirement_id"] for call in configured["sent"].await_args_list]
+    assert len(set(keys)) == 2
+
+
+async def test_a_question_marked_before_the_epoch_is_history(
+    set_user_id: str, configured: dict
+) -> None:
+    await landing.notify_waiting("owner/repo", [_waiting(waiting_since="2026-08-20T10:00:00Z")])
+    configured["sent"].assert_not_awaited()
+
+
+async def test_a_long_question_is_truncated_behind_the_link(
+    set_user_id: str, configured: dict
+) -> None:
+    await landing.notify_waiting("owner/repo", [_waiting(question=" ".join(["why"] * 1000))])
+
+    body = configured["sent"].await_args.kwargs["body"]
+    assert body.endswith("...")
+    assert len(body) <= landing._QUESTION_MAX_CHARS + 3
+
+
+async def test_a_question_with_no_topic_sends_nothing(set_user_id: str) -> None:
+    with (
+        patch("landing.db.get_ntfy_config", return_value={**_CONFIG, "topic": ""}),
+        patch("landing.notify.notify_requirement", new_callable=AsyncMock) as sent,
+    ):
+        await landing.notify_waiting("owner/repo", [_waiting()])
+    sent.assert_not_awaited()
+
+
+async def test_notification_service_down_still_lists_the_question(
+    set_user_id: str, httpx_mock: HTTPXMock
+) -> None:
+    httpx_mock.add_exception(httpx.ConnectError("unreachable"))
+    with (
+        patch("tools.requirements.github.list_waiting_issues", return_value=[_waiting()]),
+        patch("landing.db.get_ntfy_config", return_value=dict(_CONFIG)),
+        patch("notify.db.get_ntfy_config", return_value=dict(_CONFIG)),
+        patch("notify.db.claim_notification", return_value=True),
+    ):
+        waiting = await waiting_on_author(["owner/repo"])
+
+    assert [issue["number"] for issue in waiting.issues] == [160]
+    assert len(httpx_mock.get_requests()) == 1

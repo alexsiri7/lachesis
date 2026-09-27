@@ -1402,6 +1402,7 @@ async def waiting_on_author(repos: list[str]) -> WaitingOnAuthor:
             logger.warning("waiting_on_author: could not search %s error=%r", repo_name, exc)
             unreadable.append(repo_name)
             continue
+        await landing.notify_waiting(repo_name, waiting)
         issues.extend({"repo": repo_name, **issue} for issue in waiting)
     issues.sort(key=lambda issue: issue["waiting_since"])
     return WaitingOnAuthor(issues, unreadable)

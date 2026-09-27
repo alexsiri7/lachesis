@@ -1,11 +1,14 @@
-"""Decide which units of work have just landed and announce them once.
+"""Decide which units of work have just landed, and which questions now wait on
+the author, and announce each once.
 
 A unit of work is a requirement file, or a spec change in a repository that uses
 specs.  Evaluated as a side effect of the read paths that list them rather than
 from an event source: a read is what brings the repo's issue and pull request facts into
 memory, and Archon — which merges the work — is a heavy caller of those reads.
 Nothing is consumed by a read that does not happen, so a quiet period only
-delays a notification, never cancels it.
+delays a notification, never cancels it.  Questions ride the same reads: an
+issue marked ``needs-author`` is noticed when the waiting issues are listed,
+however the label was added.
 
 Like :mod:`notify`, nothing here raises into its caller: the read the author
 asked for must not fail because a notification could not be worked out.
@@ -30,6 +33,9 @@ logger = logging.getLogger(__name__)
 Verdict = Literal["merged", "deployed", "failed"]
 
 _SUMMARY_MAX_CHARS = 200
+# ntfy turns a message over 4096 bytes into an attachment; the full question
+# stays one tap away behind the issue link.
+_QUESTION_MAX_CHARS = 1000
 _EMPHASIS = re.compile(r"[*_]+")
 _BOLD_ONLY = re.compile(r"^\*\*[^*]+\*\*$")
 _FIRST_SENTENCE = re.compile(r".+?[.!?](?=\s|$)")
@@ -92,7 +98,7 @@ Landable = Candidate | SpecChangeCandidate
 
 
 class Notification(NamedTuple):
-    """The composed announcement for one landed unit of work."""
+    """The composed announcement for one landed unit of work or waiting question."""
 
     title: str
     body: str
@@ -155,10 +161,10 @@ def _plain(line: str) -> str:
     return " ".join(_EMPHASIS.sub("", line).split())
 
 
-def _clip(line: str) -> str:
-    if len(line) <= _SUMMARY_MAX_CHARS:
+def _clip(line: str, limit: int = _SUMMARY_MAX_CHARS) -> str:
+    if len(line) <= limit:
         return line
-    return line[:_SUMMARY_MAX_CHARS].rsplit(" ", 1)[0] + "..."
+    return line[:limit].rsplit(" ", 1)[0] + "..."
 
 
 def _as_datetime(value: Any) -> datetime | None:
@@ -303,3 +309,58 @@ async def notify_landed(repo: str, candidates: Sequence[Landable]) -> None:
             )
     except Exception:
         logger.warning("landing: could not evaluate landings for %s", repo, exc_info=True)
+
+
+def _question_message(repo: str, issue: github.WaitingIssue) -> Notification:
+    question = (issue["question"] or "").strip()
+    return Notification(
+        f"Question on {repo}#{issue['number']}: {issue['title']}",
+        _clip(question, _QUESTION_MAX_CHARS) if question else "No question was posted.",
+        issue["url"],
+        ["question"],
+        None,
+    )
+
+
+async def notify_waiting(repo: str, issues: Sequence[github.WaitingIssue]) -> None:
+    """Announce every issue newly marked as waiting on the author. Never raises.
+
+    The ledger key carries the time of the marking, so each marking is announced
+    once and the same issue marked again after an answer is announced afresh.
+    Markings made before the account asked to hear about them are history, as
+    landings are.
+    """
+    try:
+        user_id = current_db_user_id.get()
+        if not user_id:
+            return
+
+        config = db.get_ntfy_config(user_id)
+        if config is None or not config["topic"]:
+            return
+        epoch = _as_datetime(config.get("created_at"))
+        if epoch is None:
+            logger.warning(
+                "landing: ntfy config for user=%s carries no usable created_at; "
+                "treating every question as history",
+                user_id,
+            )
+            return
+
+        for issue in issues:
+            marked_at = _as_datetime(issue["waiting_since"])
+            if marked_at is None or marked_at <= epoch:
+                continue
+            note = _question_message(repo, issue)
+            await notify.notify_requirement(
+                user_id,
+                repo=repo,
+                requirement_id=f"question:{issue['number']}:{issue['waiting_since']}",
+                title=note.title,
+                body=note.body,
+                click=note.click,
+                tags=note.tags,
+                priority=note.priority,
+            )
+    except Exception:
+        logger.warning("landing: could not evaluate questions for %s", repo, exc_info=True)
