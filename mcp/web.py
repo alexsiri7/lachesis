@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+from datetime import UTC, datetime
 from typing import Any, cast
 from urllib.parse import urlencode
 
@@ -23,6 +24,7 @@ import github
 from oauth import create_jwt, exchange_google_code
 from settings import settings
 from status import canonical_status
+from tools.requirements import waiting_on_author
 from tools.specs import read_spec_progress, spec_change_status, uses_specs
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,12 @@ def _get_web_user_status(
     if settings.allowed_email and email != settings.allowed_email:
         return ("missing", None)
     return ("ok", cast(dict[str, Any], payload))
+
+
+def _waited(since: str, now: datetime) -> str:
+    """How long since the ISO timestamp *since*, in whole days once past a day, else hours."""
+    hours = int((now - datetime.fromisoformat(since)).total_seconds() // 3600)
+    return f"{hours // 24}d" if hours >= 24 else f"{hours}h"
 
 
 def _google_auth_url(redirect_uri: str, state: str) -> str:
@@ -217,9 +225,14 @@ async def web_index(request: Request) -> Response:
             }
         )
 
+    now = datetime.now(UTC)
+    waiting = await waiting_on_author([row["repo_name"] for row in repos_raw])
     return _render(
         "dashboard.html",
         user_email=user.get("email"),
+        waiting_on_author=[
+            {**issue, "waited": _waited(issue["waiting_since"], now)} for issue in waiting.issues
+        ],
         repos=repos_data,
     )
 

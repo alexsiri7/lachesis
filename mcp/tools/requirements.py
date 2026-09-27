@@ -70,6 +70,9 @@ When you cannot tell what the spec intends for an issue, do not guess: call ask_
 with your question and move on to other work. The issue is labelled needs-author and
 next_issue passes over it, keeping its backlog position, until answer_author posts the
 answer and removes the label.
+
+When a session with the author starts, call get_dashboard before anything else and raise
+every question in its waiting_on_author list with the author first, oldest first.
 """
 
 
@@ -1381,6 +1384,29 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     }
 
 
+class WaitingOnAuthor(NamedTuple):
+    """The questions waiting on the author, and the repos that could not be searched."""
+
+    issues: list[dict[str, Any]]
+    unreadable: list[str]
+
+
+async def waiting_on_author(repos: list[str]) -> WaitingOnAuthor:
+    """Return every open ``needs-author`` issue across *repos*, oldest first."""
+    issues: list[dict[str, Any]] = []
+    unreadable: list[str] = []
+    for repo_name in repos:
+        try:
+            waiting = await github.list_waiting_issues(repo_name, _NEEDS_AUTHOR_LABEL)
+        except Exception as exc:
+            logger.warning("waiting_on_author: could not search %s error=%r", repo_name, exc)
+            unreadable.append(repo_name)
+            continue
+        issues.extend({"repo": repo_name, **issue} for issue in waiting)
+    issues.sort(key=lambda issue: issue["waiting_since"])
+    return WaitingOnAuthor(issues, unreadable)
+
+
 async def get_dashboard(
     status: str | None = None,
     include_inactive: bool = False,
@@ -1435,8 +1461,16 @@ async def get_dashboard(
     while ``summary.total`` keeps counting the whole corpus, requirement files and
     spec changes both, as it always has.
 
+    ``waiting_on_author`` lists every open issue labelled ``needs-author`` in the
+    repos that were listed, oldest first, apart from ``groups`` because these are
+    issues rather than units of work.  Each carries ``repo``, ``number``, ``title``,
+    ``url``, ``question`` — the comment posted when it was labelled, else the latest
+    comment, ``None`` when there is none — and ``waiting_since``.  The ``status``
+    filter does not narrow it.  ``summary.waiting_on_author_count`` gives its size.
+
     ``summary.incomplete_repos`` names the repos whose open-pull-request fetch
-    failed, or whose spec changes and spec gaps could not be read, and is empty
+    failed, whose spec changes and spec gaps could not be read, or whose
+    questions waiting on the author could not be searched, and is empty
     when every repo was read in full.  While it is non-empty
     every count in ``summary`` is a floor rather than a total — ``total`` and
     ``by_status`` included, since a pull request branch that was not walked
@@ -1616,10 +1650,14 @@ async def get_dashboard(
     grouped = groups.group_requirements(
         all_candidates, now=datetime.now(UTC), stale_after_days=stale_after_days
     )
+    waiting = await waiting_on_author([listing["repo"] for listing in aggregated])
+    incomplete_repos.extend(set(waiting.unreadable) - set(incomplete_repos))
     return {
         "repos": aggregated,
+        "waiting_on_author": waiting.issues,
         "groups": grouped,
         "summary": {
+            "waiting_on_author_count": len(waiting.issues),
             "total": total,
             "by_status": status_counts,
             "spec_changes_by_status": spec_change_counts,

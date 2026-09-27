@@ -452,6 +452,13 @@ def _repo_without_specs():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _nobody_waiting_on_the_author():
+    """Questions waiting on the author are covered in test_progress_reporting.py."""
+    with patch("tools.requirements.github.list_waiting_issues", AsyncMock(return_value=[])):
+        yield
+
+
 async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
     """Single issue is created and result returned."""
     httpx_mock.add_response(

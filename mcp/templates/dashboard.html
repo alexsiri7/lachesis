@@ -2,6 +2,26 @@
 {% block title %}Dashboard – Lachesis{% endblock %}
 {% block content %}
 <h1 class="text-xl font-bold mb-6">Requirements Dashboard</h1>
+{% if waiting_on_author %}
+<section class="mb-8 bg-white rounded-lg border border-yellow-300 p-5">
+  <h2 class="font-semibold text-base mb-4">Waiting on you ({{ waiting_on_author | length }})</h2>
+  <ul class="space-y-3">
+    {% for issue in waiting_on_author %}
+    <li class="text-sm">
+      <div class="flex items-center gap-3">
+        <a href="{{ issue.url }}" target="_blank"
+           class="font-mono text-gray-400 shrink-0 hover:underline">{{ issue.repo }}#{{ issue.number }}</a>
+        <span class="flex-1">{{ issue.title }}</span>
+        <span class="text-xs text-gray-500 shrink-0">waiting {{ issue.waited }}</span>
+      </div>
+      {% if issue.question %}
+      <pre class="mt-1 ml-2 pl-3 border-l border-gray-100 whitespace-pre-wrap font-sans text-gray-700">{{ issue.question }}</pre>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% if not repos %}
   <p class="text-gray-500">No repos registered yet.</p>
 {% endif %}
