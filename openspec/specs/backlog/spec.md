@@ -51,7 +51,7 @@ The system SHALL offer a single interrupt flag that puts an issue ahead of the o
 
 ### Requirement: The system says what to work on next
 
-Asking for the next issue SHALL return the highest-ordered issue that is ready, has no open blocker and is not already in progress, with an interrupt-marked issue winning over position. The repository SHALL be optional; without one, every registered repository SHALL be considered. When nothing qualifies, the answer SHALL say whether everything ready is blocked, everything is parked, or the backlog is empty.
+Asking for the next issue SHALL return the highest-ordered issue that is ready, has no open blocker, is not already in progress and is not waiting on the author, with an interrupt-marked issue winning over position. The repository SHALL be optional; without one, every registered repository SHALL be considered. When nothing qualifies, the answer SHALL say whether everything ready is blocked, everything is parked, everything eligible is waiting on the author, or the backlog is empty.
 
 #### Scenario: Everything blocked
 - GIVEN every ready issue has an open blocker
@@ -63,3 +63,10 @@ Asking for the next issue SHALL return the highest-ordered issue that is ready, 
 - GIVEN the top issue already has an open pull request
 - WHEN the next issue is requested
 - THEN the following eligible issue is returned
+
+#### Scenario: Waiting on the author
+- GIVEN the top ready issue is labelled needs-author
+- WHEN the next issue is requested
+- THEN the following eligible issue is returned
+- AND once the question is answered the waiting issue is eligible again at its original position
+
