@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Progress reporting answers what happened to the work: what landed, what was dropped, what stalled and what went wrong. It is read from GitHub rather than trusted from hand-kept fields, and it surfaces the failures that otherwise produce no signal. The unit of work is a spec change in a repository that uses specs, and a requirement file in one that does not.
+Progress reporting answers what happened to the work: what landed, what was dropped, what stalled and what went wrong. It is read from GitHub rather than trusted from hand-kept fields, and it surfaces the failures and open questions that otherwise produce no signal. The unit of work is a spec change in a repository that uses specs, and a requirement file in one that does not.
 
 ## Requirements
 
@@ -69,14 +69,23 @@ The system SHALL report each capability's open spec-gap issues, so that the dist
 - WHEN progress is reported
 - THEN the backlog capability shows three open spec gaps
 
+### Requirement: Questions waiting on the author come first
+
+The system SHALL report every open issue labelled `needs-author` across the registered repositories, oldest first, each with its repository, number, title, the question (the comment posted when it was marked), and how long it has waited. This list SHALL sit apart from the groups, because it is made of issues rather than units of work.
+
+#### Scenario: A question overnight
+- GIVEN the worker marked issue 160 as waiting on the author at 02:00
+- WHEN the dashboard is requested at 08:00
+- THEN issue 160 is listed as waiting on the author for six hours, with its question
+
 ### Requirement: One call answers the question
 
-A single cross-repository call SHALL place every unit of work in exactly one group, tested in this order: dropped, awaiting merge, landed, needs attention, unreadable, never linked, stalled, diverged, in flight. Every group SHALL be present even when empty, and the summary SHALL give each group's count, counts by status, and open spec gaps by repository and capability.
+A single cross-repository call SHALL place every unit of work in exactly one group, tested in this order: dropped, awaiting merge, landed, needs attention, unreadable, never linked, stalled, diverged, in flight. Every group SHALL be present even when empty, and the summary SHALL give each group's count, counts by status, open spec gaps by repository and capability, and the number of questions waiting on the author.
 
 #### Scenario: Morning check
 - GIVEN work across three registered repositories, some using specs and some not
 - WHEN the dashboard is requested once
-- THEN it shows what landed, what was dropped, what stalled, what needs attention and the open spec gaps without further calls
+- THEN it shows the questions waiting on the author, and what landed, what was dropped, what stalled, what needs attention and the open spec gaps, without further calls
 
 ### Requirement: Partial results are honest
 
