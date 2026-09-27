@@ -24,6 +24,11 @@ def _decode_text(data: bytes) -> str | None:
         return None
 
 
+def _kind(entry: dict[str, Any]) -> str:
+    """GitHub's type for an entry: ``"file"``, ``"dir"``, ``"symlink"`` or ``"submodule"``."""
+    return entry["type"]
+
+
 async def read_file(repo: str, path: str, ref: str | None = None) -> dict[str, Any]:
     """Return a file's content on the default branch, or at *ref* (a branch, tag or commit).
 
@@ -35,7 +40,7 @@ async def read_file(repo: str, path: str, ref: str | None = None) -> dict[str, A
     entry = await github.get_contents(repo, path, ref=ref)
     if entry is None:
         raise FileNotFoundError(f"{path!r} not found in {repo!r}" + (f" at {ref!r}" if ref else ""))
-    if isinstance(entry, list) or entry.get("type") != "file":
+    if isinstance(entry, list) or _kind(entry) != "file":
         raise ValueError(f"{path!r} in {repo!r} is not a file")
     size = entry["size"]
     if entry.get("encoding") == "base64":
@@ -54,7 +59,8 @@ async def list_directory(repo: str, path: str = "", ref: str | None = None) -> d
     """List a directory's entries on the default branch, or at *ref*; an empty path is the root.
 
     Returns ``{"repo", "path", "ref", "entries": [{"name", "path", "kind"}, ...]}`` where
-    ``kind`` is ``"dir"`` or ``"file"``.
+    ``kind`` is ``"file"``, ``"dir"``, ``"symlink"`` or ``"submodule"``; ``read_file`` reads a
+    ``"file"``, and a ``"symlink"`` whose target is a file in the repository.
     """
     repo = await _resolve_repo(repo, require_registered=True)
     path = path.strip("/")
@@ -73,7 +79,7 @@ async def list_directory(repo: str, path: str = "", ref: str | None = None) -> d
             {
                 "name": e["name"],
                 "path": e["path"],
-                "kind": "dir" if e["type"] == "dir" else "file",
+                "kind": _kind(e),
             }
             for e in entries
         ],

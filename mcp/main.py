@@ -457,8 +457,9 @@ mcp.tool(
     description=(
         "List a directory in a registered repository, from its default branch or from "
         "`ref` (a branch, tag or commit SHA). An empty `path` is the repository root. "
-        "Each entry has `name`, `path` and `kind` (file or dir). Refused for repositories "
-        "that are not registered."
+        "Each entry has `name`, `path` and `kind` (file, dir, symlink or submodule); "
+        "read_file reads a file, and a symlink whose target is a file in the repository. "
+        "Refused for repositories that are not registered."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(contents_tools.list_directory)
