@@ -65,6 +65,11 @@ that is knowingly unfinished, and ready=True to unpark it. Use move_issue to ord
 the backlog by relative placement, and the interrupt flag for the one thing that
 must jump the queue. Call next_issue to ask what to pick up — it returns the top
 ready, unblocked issue, or explains why there is none.
+
+When you cannot tell what the spec intends for an issue, do not guess: call ask_author
+with your question and move on to other work. The issue is labelled needs-author and
+next_issue passes over it, keeping its backlog position, until answer_author posts the
+answer and removes the label.
 """
 
 
@@ -1171,6 +1176,8 @@ async def set_backlog_flags(
 
 
 _IN_PROGRESS_LABEL = "archon:in-progress"
+_NEEDS_AUTHOR_LABEL = "needs-author"
+_NEEDS_AUTHOR_COLOR = "fbca04"
 
 
 class _RepoScan(NamedTuple):
@@ -1180,6 +1187,7 @@ class _RepoScan(NamedTuple):
     blocked: list[dict[str, Any]]
     saw_open: bool
     saw_claimed: bool
+    saw_waiting: bool
 
 
 async def _open_blockers(
@@ -1218,6 +1226,7 @@ async def _scan_repo(
     candidate: dict[str, Any] | None = None
     blocked: list[dict[str, Any]] = []
     saw_claimed = False
+    saw_waiting = False
 
     for item in order:
         # Interrupts lead the order, so keep walking that group even once a candidate
@@ -1228,6 +1237,9 @@ async def _scan_repo(
             continue
         if _IN_PROGRESS_LABEL in item["labels"]:
             saw_claimed = True
+            continue
+        if _NEEDS_AUTHOR_LABEL in item["labels"]:
+            saw_waiting = True
             continue
         blockers = await _open_blockers(repo, item["number"], open_titles, cache)
         if blockers:
@@ -1249,7 +1261,7 @@ async def _scan_repo(
                 "interrupt": item["interrupt"],
             }
 
-    return _RepoScan(candidate, blocked, bool(order), saw_claimed)
+    return _RepoScan(candidate, blocked, bool(order), saw_claimed, saw_waiting)
 
 
 def _describe_blocked(entries: list[dict[str, Any]]) -> str:
@@ -1267,18 +1279,19 @@ def _describe_blocked(entries: list[dict[str, Any]]) -> str:
 async def next_issue(repo: str | None = None) -> dict[str, Any]:
     """Return the issue the worker should pick up next, or explain why there is none.
 
-    Considers only issues that are ready, free of open blockers, and not already
-    carrying the ``archon:in-progress`` label; an interrupt-marked issue wins over
-    position, including across repos. Omitting *repo* considers every registered
+    Considers only issues that are ready, free of open blockers, and carrying neither
+    the ``archon:in-progress`` nor the ``needs-author`` label; an interrupt-marked
+    issue wins over position, including across repos. Omitting *repo* considers every registered
     repo, in which case runners-up are listed under ``also_eligible`` because
     backlog position only orders issues within one repo.
 
     Returns ``issue`` (``None`` when nothing qualifies), a ``reason`` of
-    ``selected`` / ``all_blocked`` / ``all_in_progress`` / ``none_ready`` / ``empty``,
-    a one-sentence ``explanation``, and ``blocked`` — the ready issues passed over
-    because a dependency of theirs is still open, each naming its blockers. An unscoped
-    call skips a repo it cannot read and says so in the explanation, rather than letting
-    one unreachable repo cost the caller every other repo's backlog.
+    ``selected`` / ``all_blocked`` / ``all_waiting`` / ``all_in_progress`` /
+    ``none_ready`` / ``empty``, a one-sentence ``explanation``, and ``blocked`` — the
+    ready issues passed over because a dependency of theirs is still open, each naming
+    its blockers. An unscoped call skips a repo it cannot read and says so in the
+    explanation, rather than letting one unreachable repo cost the caller every other
+    repo's backlog.
     """
     user_id = _require_user_id()
     if repo is not None:
@@ -1337,6 +1350,12 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         explanation = (
             f"Every ready issue is blocked — {_describe_blocked(blocked)}. "
             "Unblocking one is the move here."
+        )
+    elif any(scan.saw_waiting for scan in scans):
+        reason = "all_waiting"
+        explanation = (
+            f"Every ready, unblocked issue not already in progress carries {_NEEDS_AUTHOR_LABEL} "
+            "— answer_author on one makes it eligible again."
         )
     elif any(scan.saw_claimed for scan in scans):
         reason = "all_in_progress"
@@ -1697,6 +1716,55 @@ async def post_comment(repo: str, number: int, body: str) -> dict[str, Any]:
     url = await github.create_issue_comment(repo, number, body)
     if url is None:
         raise FileNotFoundError(f"Issue or pull request #{number} not found in {repo!r}")
+    return {"url": url}
+
+
+async def ask_author(repo: str, number: int, question: str) -> dict[str, Any]:
+    """Post *question* on issue *number*, then label it ``needs-author``.
+
+    The question goes first so the issue is never labelled without it: if labelling
+    fails, the question stays and the failure is raised.
+    """
+    if not question.strip():
+        raise ValueError("question must not be empty")
+    repo = await _resolve_repo(repo, require_registered=True)
+    url = await github.create_issue_comment(repo, number, question)
+    if url is None:
+        raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
+    await github.ensure_label(repo, _NEEDS_AUTHOR_LABEL, _NEEDS_AUTHOR_COLOR)
+    await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
+    return {"url": url}
+
+
+async def answer_author(repo: str, number: int, answer: str) -> dict[str, Any]:
+    """Post *answer* on issue *number* and remove its ``needs-author`` label.
+
+    Refused unless the issue is waiting on the author. Either both land or neither
+    does: if the answer cannot be posted, the label is put back before the failure
+    is raised. If putting it back fails too, a ``RuntimeError`` names both failures.
+    """
+    if not answer.strip():
+        raise ValueError("answer must not be empty")
+    repo = await _resolve_repo(repo, require_registered=True)
+    issue = await github.get_issue(repo, number)
+    if issue is None:
+        raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
+    if _NEEDS_AUTHOR_LABEL not in issue["labels"]:
+        raise ValueError(f"Issue #{number} in {repo!r} is not waiting on the author")
+    await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
+    try:
+        url = await github.create_issue_comment(repo, number, answer)
+        if url is None:
+            raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
+    except Exception as failure:
+        try:
+            await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
+        except Exception as restore_failure:
+            raise RuntimeError(
+                f"Answer to #{number} in {repo!r} failed ({failure!r}) and putting the "
+                f"needs-author label back also failed ({restore_failure!r})"
+            ) from failure
+        raise
     return {"url": url}
 
 

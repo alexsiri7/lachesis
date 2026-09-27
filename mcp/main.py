@@ -300,6 +300,26 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Ask the author a question about an issue in a registered repository when you "
+        "cannot tell what the spec intends: posts the question as a comment and labels "
+        "the issue needs-author (creating the label if missing), so next_issue passes "
+        "over it until it is answered. The question is posted first, so the issue is "
+        "never labelled without it; if labelling then fails, the error is reported "
+        "and the question stays. Returns the question comment's url."
+    ),
+)(req_tools.ask_author)
+
+mcp.tool(
+    description=(
+        "Answer an issue that is waiting on the author: posts the answer as a comment "
+        "and removes the needs-author label, making the issue eligible for pickup again "
+        "at its original backlog position. Both happen or neither does. Refused if the "
+        "issue is not waiting on the author. Returns the answer comment's url."
+    ),
+)(req_tools.answer_author)
+
+mcp.tool(
+    description=(
         "Return the dependency relationships of a GitHub issue: "
         "blocked_by (issues this one depends on) and "
         "blocking (issues that depend on this one). "
@@ -347,10 +367,12 @@ mcp.tool(
 mcp.tool(
     description=(
         "Return the issue to pick up next — the highest-ordered issue that is ready, "
-        "has no open blocker, and is not already in progress. An interrupt-marked "
-        "issue wins over position. `repo` is optional: omit it to consider every "
-        "registered repo. When nothing qualifies the result explains which case it "
-        "is — everything ready is blocked, everything is parked, or the backlog is empty."
+        "has no open blocker, is not already in progress, and is not waiting on the "
+        "author (labelled needs-author). An interrupt-marked issue wins over position. "
+        "`repo` is optional: omit it to consider every registered repo. When nothing "
+        "qualifies the result explains which case it is — everything ready is blocked, "
+        "everything eligible is waiting on the author, everything is parked, or the "
+        "backlog is empty."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.next_issue)

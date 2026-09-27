@@ -38,6 +38,7 @@ from github import (
     list_lachesis_prs,
     list_open_issues,
     list_pull_request_files,
+    remove_label,
     update_file,
     update_issue,
 )
@@ -356,6 +357,30 @@ async def test_add_labels_posts_names_to_issue_labels(httpx_mock: HTTPXMock) -> 
     httpx_mock.add_response(method="POST", url=url, json=[{"name": "spec-change"}])
     await add_labels("owner/repo", 7, ["spec-change"])
     assert json.loads(httpx_mock.get_requests()[0].content) == {"labels": ["spec-change"]}
+
+
+# ---------------------------------------------------------------------------
+# remove_label
+# ---------------------------------------------------------------------------
+
+_NEEDS_AUTHOR_URL = "https://api.github.com/repos/owner/repo/issues/7/labels/needs-author"
+
+
+async def test_remove_label_deletes_the_named_label(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_URL, json=[])
+    await remove_label("owner/repo", 7, "needs-author")
+    assert httpx_mock.get_requests()[0].method == "DELETE"
+
+
+async def test_remove_label_tolerates_a_label_already_gone(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_URL, status_code=404)
+    await remove_label("owner/repo", 7, "needs-author")
+
+
+async def test_remove_label_raises_on_other_failures(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_URL, status_code=500)
+    with pytest.raises(httpx.HTTPStatusError):
+        await remove_label("owner/repo", 7, "needs-author")
 
 
 # ---------------------------------------------------------------------------
