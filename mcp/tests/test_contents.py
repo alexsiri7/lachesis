@@ -31,13 +31,25 @@ def _file(path: str, data: bytes) -> dict:
         "name": path.rsplit("/", 1)[-1],
         "path": path,
         "size": len(data),
+        "download_url": f"https://raw.githubusercontent.com/{_REPO}/main/{path}",
         "encoding": "base64",
         "content": base64.b64encode(data).decode("ascii"),
     }
 
 
 def _entry(path: str, kind: str) -> dict:
-    return {"type": kind, "name": path.rsplit("/", 1)[-1], "path": path}
+    download_url = f"https://raw.githubusercontent.com/{_REPO}/main/{path}"
+    return {
+        "type": kind,
+        "name": path.rsplit("/", 1)[-1],
+        "path": path,
+        "download_url": None if kind == "dir" else download_url,
+    }
+
+
+def _listed_submodule(path: str) -> dict:
+    """A submodule as a directory listing reports it: typed "file", with no download_url."""
+    return {**_entry(path, "file"), "size": 0, "download_url": None}
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +205,12 @@ async def test_list_directory_reports_symlinks_and_submodules_as_read_file_sees_
 ) -> None:
     httpx_mock.add_response(
         url=f"{_CONTENTS}/vendor",
-        json=[_entry("vendor/latest", "symlink"), _entry("vendor/lib", "submodule")],
+        json=[_entry("vendor/latest", "symlink"), _listed_submodule("vendor/lib")],
     )
-    httpx_mock.add_response(url=f"{_CONTENTS}/vendor/lib", json=_entry("vendor/lib", "submodule"))
+    httpx_mock.add_response(
+        url=f"{_CONTENTS}/vendor/lib",
+        json={**_entry("vendor/lib", "submodule"), "download_url": None},
+    )
 
     listing = await list_directory(_REPO, "vendor")
 

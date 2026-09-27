@@ -25,7 +25,11 @@ def _decode_text(data: bytes) -> str | None:
 
 
 def _kind(entry: dict[str, Any]) -> str:
-    """GitHub's type for an entry: ``"file"``, ``"dir"``, ``"symlink"`` or ``"submodule"``."""
+    """An entry's kind: ``"file"``, ``"dir"``, ``"symlink"`` or ``"submodule"``."""
+    # A directory listing types a submodule "file" for backwards compatibility; unlike a
+    # real file it has no download_url. Fetched directly, it is typed "submodule".
+    if entry["type"] == "file" and entry.get("download_url") is None:
+        return "submodule"
     return entry["type"]
 
 
