@@ -303,8 +303,9 @@ mcp.tool(
         "Ask the author a question about an issue in a registered repository when you "
         "cannot tell what the spec intends: posts the question as a comment and labels "
         "the issue needs-author (creating the label if missing), so next_issue passes "
-        "over it until it is answered. Both happen or neither does. Returns the "
-        "question comment's url."
+        "over it until it is answered. The question is posted first, so the issue is "
+        "never labelled without it; if labelling then fails, the error is reported "
+        "and the question stays. Returns the question comment's url."
     ),
 )(req_tools.ask_author)
 

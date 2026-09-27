@@ -1719,35 +1719,20 @@ async def post_comment(repo: str, number: int, body: str) -> dict[str, Any]:
     return {"url": url}
 
 
-async def _waiting_issue(repo: str, number: int) -> tuple[str, bool]:
-    """Resolve *repo* and report whether issue *number* is waiting on the author."""
-    repo = await _resolve_repo(repo, require_registered=True)
-    issue = await github.get_issue(repo, number)
-    if issue is None:
-        raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
-    return repo, _NEEDS_AUTHOR_LABEL in issue["labels"]
-
-
 async def ask_author(repo: str, number: int, question: str) -> dict[str, Any]:
-    """Post *question* on issue *number* and label it ``needs-author``.
+    """Post *question* on issue *number*, then label it ``needs-author``.
 
-    Either both land or neither does: if the question cannot be posted, a label this
-    call added is taken off again before the failure is raised.
+    The question goes first so the issue is never labelled without it: if labelling
+    fails, the question stays and the failure is raised.
     """
     if not question.strip():
         raise ValueError("question must not be empty")
-    repo, waiting = await _waiting_issue(repo, number)
-    if not waiting:
-        await github.ensure_label(repo, _NEEDS_AUTHOR_LABEL, _NEEDS_AUTHOR_COLOR)
-        await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
-    try:
-        url = await github.create_issue_comment(repo, number, question)
-        if url is None:
-            raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
-    except Exception:
-        if not waiting:
-            await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
-        raise
+    repo = await _resolve_repo(repo, require_registered=True)
+    url = await github.create_issue_comment(repo, number, question)
+    if url is None:
+        raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
+    await github.ensure_label(repo, _NEEDS_AUTHOR_LABEL, _NEEDS_AUTHOR_COLOR)
+    await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
     return {"url": url}
 
 
@@ -1756,20 +1741,29 @@ async def answer_author(repo: str, number: int, answer: str) -> dict[str, Any]:
 
     Refused unless the issue is waiting on the author. Either both land or neither
     does: if the answer cannot be posted, the label is put back before the failure
-    is raised.
+    is raised. If putting it back fails too, a ``RuntimeError`` names both failures.
     """
     if not answer.strip():
         raise ValueError("answer must not be empty")
-    repo, waiting = await _waiting_issue(repo, number)
-    if not waiting:
+    repo = await _resolve_repo(repo, require_registered=True)
+    issue = await github.get_issue(repo, number)
+    if issue is None:
+        raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
+    if _NEEDS_AUTHOR_LABEL not in issue["labels"]:
         raise ValueError(f"Issue #{number} in {repo!r} is not waiting on the author")
     await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
     try:
         url = await github.create_issue_comment(repo, number, answer)
         if url is None:
             raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
-    except Exception:
-        await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
+    except Exception as failure:
+        try:
+            await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
+        except Exception as restore_failure:
+            raise RuntimeError(
+                f"Answer to #{number} in {repo!r} failed ({failure!r}) and putting the "
+                f"needs-author label back also failed ({restore_failure!r})"
+            ) from failure
         raise
     return {"url": url}
 

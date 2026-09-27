@@ -1856,36 +1856,29 @@ def _requests(httpx_mock: HTTPXMock) -> list[tuple[str, str]]:
 
 async def test_asking(httpx_mock: HTTPXMock, set_user_id: str) -> None:
     """Scenario: Asking — the question is the latest comment and the label is on."""
-    _mock_issue_160(httpx_mock, [])
+    httpx_mock.add_response(
+        method="POST", url=f"{_ISSUE_160_URL}/comments", json={"html_url": _QUESTION_URL}
+    )
     httpx_mock.add_response(
         method="POST", url="https://api.github.com/repos/alexsiri7/lachesis/labels", status_code=201
     )
     httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", json=[])
-    httpx_mock.add_response(
-        method="POST", url=f"{_ISSUE_160_URL}/comments", json={"html_url": _QUESTION_URL}
-    )
 
     with patch("tools.requirements.db.list_repos", return_value=_REGISTERED):
         result = await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
 
     assert result == {"url": _QUESTION_URL}
     requests = httpx_mock.get_requests()
+    assert json.loads(requests[0].content) == {"body": "Behaviour A or B?"}
     assert json.loads(requests[1].content) == {"name": "needs-author", "color": "fbca04"}
     assert json.loads(requests[2].content) == {"labels": ["needs-author"]}
-    assert json.loads(requests[3].content) == {"body": "Behaviour A or B?"}
 
 
-async def test_asking_takes_the_label_off_when_the_question_fails(
+async def test_asking_does_not_label_when_the_question_fails(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
     """An issue must never carry needs-author without its question."""
-    _mock_issue_160(httpx_mock, [])
-    httpx_mock.add_response(
-        method="POST", url="https://api.github.com/repos/alexsiri7/lachesis/labels", status_code=201
-    )
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", json=[])
     httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
-    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_ON_160, json=[])
 
     with (
         patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
@@ -1893,23 +1886,28 @@ async def test_asking_takes_the_label_off_when_the_question_fails(
     ):
         await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
 
-    assert _requests(httpx_mock)[-1] == ("DELETE", _NEEDS_AUTHOR_ON_160)
+    assert _requests(httpx_mock) == [("POST", f"{_ISSUE_160_URL}/comments")]
 
 
-async def test_asking_again_keeps_the_label_from_the_earlier_question(
+async def test_asking_reports_a_labelling_failure_after_the_question(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """A failed follow-up question leaves the earlier question's label alone."""
-    _mock_issue_160(httpx_mock, ["needs-author"])
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
+    """If labelling fails, the question stays and the failure is raised."""
+    httpx_mock.add_response(
+        method="POST", url=f"{_ISSUE_160_URL}/comments", json={"html_url": _QUESTION_URL}
+    )
+    httpx_mock.add_response(
+        method="POST", url="https://api.github.com/repos/alexsiri7/lachesis/labels", status_code=201
+    )
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", status_code=500)
 
     with (
         patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
         pytest.raises(httpx.HTTPStatusError),
     ):
-        await ask_author("alexsiri7/lachesis", 160, "And C?")
+        await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
 
-    assert [method for method, _ in _requests(httpx_mock)] == ["GET", "POST"]
+    assert "DELETE" not in [method for method, _ in _requests(httpx_mock)]
 
 
 async def test_answering(httpx_mock: HTTPXMock, set_user_id: str) -> None:
@@ -1945,6 +1943,24 @@ async def test_answering_puts_the_label_back_when_the_answer_fails(
     assert json.loads(httpx_mock.get_requests()[-1].content) == {"labels": ["needs-author"]}
 
 
+async def test_answering_names_both_failures_when_the_label_cannot_be_put_back(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_issue_160(httpx_mock, ["needs-author"])
+    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_ON_160, json=[])
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", status_code=502)
+
+    with (
+        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
+        pytest.raises(RuntimeError, match="needs-author label back also failed") as raised,
+    ):
+        await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
+
+    assert isinstance(raised.value.__cause__, httpx.HTTPStatusError)
+    assert raised.value.__cause__.response.status_code == 500
+
+
 async def test_answering_is_refused_when_the_issue_is_not_waiting(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
@@ -1960,13 +1976,15 @@ async def test_answering_is_refused_when_the_issue_is_not_waiting(
 
 
 async def test_asking_raises_when_issue_missing(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    httpx_mock.add_response(method="GET", url=_ISSUE_160_URL, status_code=404)
+    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=404)
 
     with (
         patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
         pytest.raises(FileNotFoundError, match="#160"),
     ):
         await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
+
+    assert len(httpx_mock.get_requests()) == 1
 
 
 # ---------------------------------------------------------------------------
