@@ -2,9 +2,9 @@
 created: '2026-09-26'
 github_issue: 147
 id: '030'
-status: idea
+status: done
 title: 'Specs are the requirements: adopt OpenSpec-format specs and spec changes'
-updated: '2026-09-26'
+updated: '2026-09-28'
 ---
 
 ## Why
