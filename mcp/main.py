@@ -27,6 +27,7 @@ from auth import (
 from settings import settings
 from tools import contents as contents_tools
 from tools import notifications as notify_tools
+from tools import projects as project_tools
 from tools import repos as repo_tools
 from tools import requirements as req_tools
 from tools import specs as spec_tools
@@ -441,6 +442,21 @@ mcp.tool(
         "propose a new spec change instead."
     ),
 )(spec_tools.update_spec_change)
+
+mcp.tool(
+    description=(
+        "Create a new project in one step: a GitHub repository `name` under the author's "
+        "account, its default branch seeded with openspec/specs, and the repository "
+        "registered with Lachesis. `purpose` becomes the repository description. "
+        "`capabilities` maps each initial capability name to its complete spec.md content; "
+        "without any, one capability named after the repository is seeded with `purpose` "
+        "as its Purpose. The repository is private unless `public` is true. Capabilities "
+        "are format-checked as in propose_spec_change and a name already taken in the "
+        "account is refused, both before anything is created; a failure after the "
+        "repository exists deletes it again, leaving nothing behind. The new repository "
+        "is ready for list_capabilities and propose_spec_change straight away."
+    ),
+)(project_tools.create_project)
 
 mcp.tool(
     description=(

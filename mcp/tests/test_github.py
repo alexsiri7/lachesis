@@ -21,6 +21,7 @@ from github import (
     create_issue,
     create_issue_comment,
     create_pull_request,
+    create_repo,
     enable_automerge,
     failure_from_exception,
     find_open_pr,
@@ -1791,3 +1792,29 @@ def test_failure_from_exception_reads_a_server_error_as_transient() -> None:
 def test_failure_from_exception_calls_an_unrecognised_exception_transient() -> None:
     """A cause we cannot name must not read as a permanent verdict about the repo."""
     assert failure_from_exception(FileNotFoundError("gone")) == "transient"
+
+
+# ---------------------------------------------------------------------------
+# create_repo
+# ---------------------------------------------------------------------------
+
+
+async def test_create_repo_raises_on_other_refusals(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="https://api.github.com/user/repos",
+        status_code=422,
+        json={
+            "message": "Repository creation failed.",
+            "errors": [
+                {
+                    "resource": "Repository",
+                    "code": "custom",
+                    "field": "name",
+                    "message": "name is too long (maximum is 100 characters)",
+                }
+            ],
+        },
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await create_repo("x" * 101, description="d", private=True)
