@@ -366,6 +366,24 @@ async def test_an_unfinished_milestone_can_be_dropped(deployment: AsyncMock, rec
     assert view["state"] == "dropped"
 
 
+async def test_a_planned_milestone_is_dropped_without_reading_github(
+    deployment: AsyncMock,
+) -> None:
+    with (
+        patch("tools.milestones.db.get_milestone", return_value=_row(started=False)),
+        _progress() as progress,
+        patch(
+            "tools.milestones.db.drop_milestone", return_value=_row(started=False, dropped=True)
+        ) as drop,
+    ):
+        view = await milestones.drop_milestone("lachesis", 7)
+
+    drop.assert_called_once_with("test-uid", _REPO, 7)
+    assert view["state"] == "dropped"
+    progress.assert_not_called()
+    deployment.assert_not_called()
+
+
 @pytest.mark.parametrize(("row", "match"), [(_row(), "done"), (_row(dropped=True), "dropped")])
 async def test_add_is_refused_when_done_or_dropped(
     deployment: AsyncMock, record_state, row: dict, match: str
