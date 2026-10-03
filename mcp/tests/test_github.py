@@ -1310,6 +1310,35 @@ async def test_get_issue_activity_reads_a_pull_request_linked_in_place_of_an_iss
     assert activity["failure"] is None
 
 
+@pytest.mark.parametrize(
+    ("pull_state", "issue_state", "closed_without_merge"),
+    [("OPEN", "OPEN", False), ("CLOSED", "CLOSED", True)],
+)
+async def test_get_issue_activity_reads_an_unmerged_pull_request_linked_in_place_of_an_issue(
+    httpx_mock: HTTPXMock, pull_state: str, issue_state: str, closed_without_merge: bool
+) -> None:
+    """An open pull request is work in flight; only a closed unmerged one is a false close."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {"i21": None}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "i21"]}],
+        },
+    )
+    pull = {**_pull_node(21, merged=False), "state": pull_state}
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"p21": pull}}}
+    )
+
+    facts = (await get_issue_activity("owner/repo", [21]))["facts"]
+
+    assert facts[21]["state"] == issue_state
+    derived = derive(None, [21], facts, on_pr_branch=False)
+    assert derived["status"] == "in-progress"
+    assert derived["signals"]["closed_without_merge"] is closed_without_merge
+
+
 async def test_get_issue_activity_leaves_out_an_issue_whose_comments_could_not_be_read(
     httpx_mock: HTTPXMock,
 ) -> None:
