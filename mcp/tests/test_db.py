@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -282,6 +283,15 @@ def test_record_event_returns_the_appended_row() -> None:
     }
 
 
+def test_record_event_refuses_an_unknown_kind() -> None:
+    """A mistyped kind would otherwise become a permanent row no kind filter matches."""
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
+        db.record_event("uid", "owner/repo", "question_answerd", "q1")  # type: ignore[arg-type]
+
+    mock.begin.assert_not_called()
+
+
 def test_list_events_reads_after_the_cursor_oldest_first() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock):
@@ -301,5 +311,16 @@ def test_events_migration_refuses_update_delete_and_truncate() -> None:
     from pathlib import Path
 
     migration = (Path(db.__file__).parent / "alembic/versions/008_events.py").read_text()
-    assert "BEFORE UPDATE OR DELETE ON lachesis_events" in migration
-    assert "BEFORE TRUNCATE ON lachesis_events" in migration
+    function = re.search(
+        r"CREATE OR REPLACE FUNCTION lachesis_events_immutable\(\).*?\$\$(.*?)\$\$",
+        migration,
+        re.DOTALL,
+    )
+    assert function is not None
+    assert "RAISE EXCEPTION" in function.group(1)
+    for timing in ("BEFORE UPDATE OR DELETE", "BEFORE TRUNCATE"):
+        trigger = (
+            rf"{timing} ON lachesis_events\s+"
+            r"FOR EACH \w+ EXECUTE FUNCTION lachesis_events_immutable\(\)"
+        )
+        assert re.search(trigger, migration)
