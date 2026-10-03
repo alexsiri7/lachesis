@@ -10,6 +10,7 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
+from derive import derive
 from github import (
     _headers,
     add_issue_dependency,
@@ -1145,7 +1146,7 @@ async def test_get_issue_activity_normalizes_issues_and_their_pull_requests(
 async def test_get_issue_activity_drops_an_issue_that_no_longer_exists(
     httpx_mock: HTTPXMock,
 ) -> None:
-    """A number that is a PR or a deleted issue must not darken its whole repo.
+    """A deleted issue must not darken its whole repo.
 
     GitHub answers 200 with a null node *and* a NOT_FOUND naming that alias, so
     reading the errors without stripping those marks every sibling unavailable.
@@ -1158,11 +1159,284 @@ async def test_get_issue_activity_drops_an_issue_that_no_longer_exists(
             "errors": [{"type": "NOT_FOUND", "path": ["repository", "i99"]}],
         },
     )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {"p99": None}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "p99"]}],
+        },
+    )
 
     activity = await get_issue_activity("owner/repo", [42, 99])
 
     assert list(activity["facts"]) == [42]
     assert activity["failure"] is None
+
+
+def _closed_by_hand(number: int = 42) -> dict:
+    """A closed issue nothing links a merged pull request or closing commit to."""
+    return {
+        "number": number,
+        "state": "CLOSED",
+        "updatedAt": "2026-08-31T18:35:09Z",
+        "labels": {"nodes": []},
+        "timelineItems": {"nodes": [{"closer": None}]},
+        "closedByPullRequestsReferences": {"nodes": []},
+    }
+
+
+def _pull_node(number: int, *, merged: bool = True) -> dict:
+    return {
+        "number": number,
+        "state": "MERGED" if merged else "CLOSED",
+        "merged": merged,
+        "updatedAt": "2026-08-30T10:00:00Z",
+        "mergedAt": "2026-08-30T10:00:00Z" if merged else None,
+        "mergeCommit": {"oid": f"sha{number}"} if merged else None,
+        "isDraft": False,
+        "commits": {"nodes": []},
+    }
+
+
+def _comments_node(number: int, *comments: tuple[str, str]) -> dict:
+    return {
+        "number": number,
+        "comments": {
+            "nodes": [
+                {"authorAssociation": association, "body": body} for association, body in comments
+            ]
+        },
+    }
+
+
+async def test_get_issue_activity_counts_a_merged_pull_request_named_by_the_owner(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """An issue closed by hand lands when someone with write access names its merged PR."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _closed_by_hand()}}}
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {
+                "repository": {
+                    "c42": _comments_node(
+                        42,
+                        ("OWNER", "Delivered by merged PR #384, see #42 and #998"),
+                        ("NONE", "Fixed in #500"),
+                    )
+                }
+            }
+        },
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {"p384": _pull_node(384), "p998": None}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "p998"]}],
+        },
+    )
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    pulls = activity["facts"][42]["pulls"]
+    assert [(pull["number"], pull["merged"]) for pull in pulls] == [(384, True)]
+    assert pulls[0]["merge_commit"] == "sha384"
+    assert activity["failure"] is None
+    lookup = json.loads(httpx_mock.get_requests()[2].content)["query"]
+    assert "p384:" in lookup and "p998:" in lookup
+    assert "p500:" not in lookup and "p42:" not in lookup
+
+
+async def test_get_issue_activity_ignores_a_named_pull_request_that_did_not_merge(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _closed_by_hand()}}}
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"c42": _comments_node(42, ("OWNER", "**PR**: #1008"))}}},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"p1008": _pull_node(1008, merged=False)}}},
+    )
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    assert activity["facts"][42]["pulls"] == []
+
+
+async def test_get_issue_activity_skips_comments_when_every_closed_issue_landed(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The common case costs one request, however many issues are closed."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _activity_node()}}}
+    )
+
+    await get_issue_activity("owner/repo", [42])
+
+    assert len(httpx_mock.get_requests()) == 1
+
+
+async def test_get_issue_activity_reads_a_pull_request_linked_in_place_of_an_issue(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {"i21": None}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "i21"]}],
+        },
+    )
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"p21": _pull_node(21)}}}
+    )
+
+    activity = await get_issue_activity("owner/repo", [21])
+
+    issue = activity["facts"][21]
+    assert issue["state"] == "CLOSED"
+    assert [(pull["number"], pull["merged"]) for pull in issue["pulls"]] == [(21, True)]
+    assert activity["failure"] is None
+
+
+@pytest.mark.parametrize(
+    ("pull_state", "issue_state", "closed_without_merge"),
+    [("OPEN", "OPEN", False), ("CLOSED", "CLOSED", True)],
+)
+async def test_get_issue_activity_reads_an_unmerged_pull_request_linked_in_place_of_an_issue(
+    httpx_mock: HTTPXMock, pull_state: str, issue_state: str, closed_without_merge: bool
+) -> None:
+    """An open pull request is work in flight; only a closed unmerged one is a false close."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {"i21": None}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "i21"]}],
+        },
+    )
+    pull = {**_pull_node(21, merged=False), "state": pull_state}
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"p21": pull}}}
+    )
+
+    facts = (await get_issue_activity("owner/repo", [21]))["facts"]
+
+    assert facts[21]["state"] == issue_state
+    derived = derive(None, [21], facts, on_pr_branch=False)
+    assert derived["status"] == "in-progress"
+    assert derived["signals"]["closed_without_merge"] is closed_without_merge
+
+
+async def test_get_issue_activity_leaves_out_an_issue_whose_comments_could_not_be_read(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Unread landing evidence must not read as none: that is a false closed-without-merge."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _closed_by_hand()}}}
+    )
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    assert activity == {"facts": {}, "failure": "transient"}
+    derived = derive(None, [42], activity["facts"], on_pr_branch=False, failure="transient")
+    assert derived["unavailable_cause"] == "transient"
+    assert derived["signals"]["closed_without_merge"] is False
+
+
+async def test_get_issue_activity_leaves_out_an_issue_whose_named_pull_could_not_be_read(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _closed_by_hand()}}}
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"c42": _comments_node(42, ("OWNER", "Done in #384"))}}},
+    )
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    assert activity == {"facts": {}, "failure": "transient"}
+
+
+async def test_get_issue_activity_keeps_an_issue_a_readable_named_pull_landed(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """One unreadable mention does not unsettle an issue another mention already landed."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _closed_by_hand()}}}
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"c42": _comments_node(42, ("OWNER", "#384, also #999"))}}},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {"p384": _pull_node(384), "p999": None}},
+            "errors": [{"type": "INTERNAL"}],
+        },
+    )
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    assert [pull["number"] for pull in activity["facts"][42]["pulls"]] == [384]
+    assert activity["failure"] == "transient"
+
+
+async def test_get_issue_activity_leaves_out_an_unlanded_issue_once_rate_limited(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A batch that read before the quota ran out cannot have its comments checked."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {
+                "repository": {"i1": _closed_by_hand(1), "i2": {**_activity_node(), "number": 2}}
+            }
+        },
+    )
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=429, json={})
+
+    activity = await get_issue_activity("owner/repo", [1, 2, *range(3, 27)])
+
+    assert list(activity["facts"]) == [2]
+    assert activity["failure"] == "rate_limited"
+    assert len(httpx_mock.get_requests()) == 2
+
+
+async def test_get_issue_activity_does_not_reask_numbers_of_a_failed_chunk(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A null node from a batch that failed says nothing about whether the issue exists."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"i42": None}}, "errors": [{"type": "INTERNAL"}]},
+    )
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    assert len(httpx_mock.get_requests()) == 1
+    assert activity == {"facts": {}, "failure": "transient"}
 
 
 async def test_get_issue_activity_batches_large_issue_sets(httpx_mock: HTTPXMock) -> None:

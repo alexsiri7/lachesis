@@ -68,13 +68,25 @@ Every unit of work SHALL carry the time its pull request or issues last moved, n
 
 ### Requirement: Silent failures are named
 
-The system SHALL report explicitly: issues closed with no merged pull request; a pull request failing checks, with since when; all issues closed while a requirement file is recorded in progress; and a unit with no issues, distinguishing one awaiting its own pull request from one that never had any.
+The system SHALL report explicitly: issues closed with no merged pull request; a pull request failing checks, with since when; all issues closed while a requirement file is recorded in progress; and a unit with no issues, distinguishing one awaiting its own pull request from one that never had any. An issue SHALL count as closed with a merged pull request when GitHub links a merged pull request to it, when a commit closed it, or when a comment on it by someone with write access to the repository names a pull request that merged. A linked number that is a pull request rather than an issue SHALL stand for that pull request.
 
 #### Scenario: Merged spec change with no issues
 - GIVEN a spec change that merged ten days ago
 - AND no issue names it
 - WHEN progress is reported
 - THEN it is flagged as having no issues
+
+#### Scenario: Issue closed by hand naming the merged pull request
+- GIVEN issue 370 closed with no linked pull request
+- AND the repository owner commented that merged pull request 384 delivered it
+- WHEN progress is reported
+- THEN issue 370 counts as closed with a merged pull request
+- AND its unit is not flagged as closed without a merged pull request
+
+#### Scenario: A pull request linked in place of an issue
+- GIVEN a requirement file whose linked number 21 is a merged pull request
+- WHEN it is listed
+- THEN its derived status is "done"
 
 ### Requirement: Spec gaps are visible per capability
 

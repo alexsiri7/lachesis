@@ -1561,6 +1561,14 @@ async def test_get_dashboard_keeps_deriving_around_a_number_that_is_not_an_issue
                 "errors": [{"type": "NOT_FOUND", "path": ["repository", "i99"]}],
             },
         )
+        httpx_mock.add_response(
+            method="POST",
+            url=_GRAPHQL_URL,
+            json={
+                "data": {"repository": {"p99": None}},
+                "errors": [{"type": "NOT_FOUND", "path": ["repository", "p99"]}],
+            },
+        )
         result = await get_dashboard()
 
     derived = {req["id"]: req["derived"] for req in result["repos"][0]["requirements"]}

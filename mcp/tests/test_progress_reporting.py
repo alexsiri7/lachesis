@@ -19,7 +19,7 @@ from auth import current_db_user_id
 from derive import IssueFacts, derive, derive_spec_change
 from groups import Candidate, group_requirements
 from landing import SpecChangeCandidate
-from tools.requirements import get_dashboard
+from tools.requirements import get_dashboard, list_requirements
 from tools.specs import list_spec_changes, read_spec_progress
 
 _GRAPHQL_URL = "https://api.github.com/graphql"
@@ -72,21 +72,22 @@ def _spec_change_item(
     return item
 
 
+def _merged_pull_node(number: int) -> dict:
+    """A GraphQL pull request node as the issue-activity query returns it."""
+    return {
+        "number": number,
+        "state": "MERGED",
+        "merged": True,
+        "updatedAt": _stamp(2),
+        "mergedAt": _stamp(2),
+        "isDraft": False,
+        "commits": {"nodes": []},
+    }
+
+
 def _issue_node(number: int, *, state: str = "OPEN", merged_pr: int | None = None) -> dict:
     """A GraphQL issue node as the issue-activity query returns it."""
-    pulls = []
-    if merged_pr is not None:
-        pulls.append(
-            {
-                "number": merged_pr,
-                "state": "MERGED",
-                "merged": True,
-                "updatedAt": _stamp(2),
-                "mergedAt": _stamp(2),
-                "isDraft": False,
-                "commits": {"nodes": []},
-            }
-        )
+    pulls = [] if merged_pr is None else [_merged_pull_node(merged_pr)]
     return {
         "number": number,
         "state": state,
@@ -110,6 +111,30 @@ def _mock_issue_activity(httpx_mock: HTTPXMock, *nodes: dict) -> None:
         method="POST",
         url=_GRAPHQL_URL,
         json={"data": {"repository": {f"i{node['number']}": node for node in nodes}}},
+    )
+
+
+def _mock_comments(httpx_mock: HTTPXMock, **comments: list[tuple[str, str]]) -> None:
+    """Answer the comment read for closed issues with nothing merged, keyed ``c<number>``."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {
+                "repository": {
+                    alias: {
+                        "number": int(alias[1:]),
+                        "comments": {
+                            "nodes": [
+                                {"authorAssociation": association, "body": body}
+                                for association, body in nodes
+                            ]
+                        },
+                    }
+                    for alias, nodes in comments.items()
+                }
+            }
+        },
     )
 
 
@@ -320,6 +345,7 @@ async def test_a_spec_change_whose_every_issue_closed_unmerged_is_dropped(
     _mock_issue_activity(
         httpx_mock, _issue_node(201, state="CLOSED"), _issue_node(202, state="CLOSED")
     )
+    _mock_comments(httpx_mock, c201=[], c202=[])
 
     [change] = await list_spec_changes("owner/repo", include_inactive=True)
 
@@ -343,6 +369,7 @@ async def test_a_spec_change_with_one_issue_closed_unmerged_needs_attention(
         _issue_node(201, state="CLOSED", merged_pr=301),
         _issue_node(202, state="CLOSED"),
     )
+    _mock_comments(httpx_mock, c202=[])
 
     [change] = await list_spec_changes("owner/repo")
 
@@ -353,6 +380,41 @@ async def test_a_spec_change_with_one_issue_closed_unmerged_needs_attention(
         stale_after_days=14,
     )
     assert _group_of(grouped, spec_change=152) == "needs_attention"
+
+
+async def test_issue_closed_by_hand_naming_the_merged_pull_request(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_uses_specs(httpx_mock)
+    httpx_mock.add_response(
+        json=[
+            _issue_item(201, body=_reference(152), state="closed"),
+            _issue_item(202, body=_reference(152), state="closed"),
+            _spec_change_item(152, merged_at=_stamp(5)),
+        ]
+    )
+    _mock_issue_activity(
+        httpx_mock,
+        _issue_node(201, state="CLOSED", merged_pr=301),
+        _issue_node(202, state="CLOSED"),
+    )
+    _mock_comments(httpx_mock, c202=[("OWNER", "Already delivered by merged PR #302.")])
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"p302": _merged_pull_node(302)}}},
+    )
+
+    [change] = await list_spec_changes("owner/repo")
+
+    assert change["derived"]["status"] == "done"
+    assert change["derived"]["signals"]["closed_without_merge"] is False
+    grouped = group_requirements(
+        [Candidate("owner/repo", change, change["derived"]["linked_issues"])],
+        now=_NOW,
+        stale_after_days=14,
+    )
+    assert _group_of(grouped, spec_change=152) == "landed"
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +738,31 @@ def _mock_requirement_repo(httpx_mock: HTTPXMock, node: dict) -> None:
     _mock_issue_activity(httpx_mock, node)
 
 
+async def test_a_pull_request_linked_in_place_of_an_issue(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json=[{"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"}]
+    )
+    httpx_mock.add_response(json=_file_content(_REQUIREMENT_MD.replace("42", "21")))
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {"i21": None}},
+            "errors": [{"type": "NOT_FOUND", "path": ["repository", "i21"]}],
+        },
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"p21": _merged_pull_node(21)}}},
+    )
+
+    [requirement] = await list_requirements("owner/repo")
+
+    assert requirement["derived"]["status"] == "done"
+
+
 async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
     repos = [{"repo_name": "owner/specs"}, {"repo_name": "owner/quiet"}, {"repo_name": "owner/app"}]
     with (
@@ -703,6 +790,7 @@ async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
         stalled["updatedAt"] = _stamp(40)
         _mock_requirement_repo(httpx_mock, stalled)
         _mock_requirement_repo(httpx_mock, _issue_node(42, state="CLOSED"))
+        _mock_comments(httpx_mock, c42=[])
 
         question = "Should a parked issue keep its position?"
         _mock_waiting(
