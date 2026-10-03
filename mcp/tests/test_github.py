@@ -10,6 +10,7 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
+from derive import derive
 from github import (
     _headers,
     add_issue_dependency,
@@ -1307,6 +1308,90 @@ async def test_get_issue_activity_reads_a_pull_request_linked_in_place_of_an_iss
     assert issue["state"] == "CLOSED"
     assert [(pull["number"], pull["merged"]) for pull in issue["pulls"]] == [(21, True)]
     assert activity["failure"] is None
+
+
+async def test_get_issue_activity_leaves_out_an_issue_whose_comments_could_not_be_read(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Unread landing evidence must not read as none: that is a false closed-without-merge."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _closed_by_hand()}}}
+    )
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    assert activity == {"facts": {}, "failure": "transient"}
+    derived = derive(None, [42], activity["facts"], on_pr_branch=False, failure="transient")
+    assert derived["unavailable_cause"] == "transient"
+    assert derived["signals"]["closed_without_merge"] is False
+
+
+async def test_get_issue_activity_leaves_out_an_issue_whose_named_pull_could_not_be_read(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _closed_by_hand()}}}
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"c42": _comments_node(42, ("OWNER", "Done in #384"))}}},
+    )
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    assert activity == {"facts": {}, "failure": "transient"}
+
+
+async def test_get_issue_activity_keeps_an_issue_a_readable_named_pull_landed(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """One unreadable mention does not unsettle an issue another mention already landed."""
+    httpx_mock.add_response(
+        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _closed_by_hand()}}}
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"c42": _comments_node(42, ("OWNER", "#384, also #999"))}}},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {"p384": _pull_node(384), "p999": None}},
+            "errors": [{"type": "INTERNAL"}],
+        },
+    )
+
+    activity = await get_issue_activity("owner/repo", [42])
+
+    assert [pull["number"] for pull in activity["facts"][42]["pulls"]] == [384]
+    assert activity["failure"] == "transient"
+
+
+async def test_get_issue_activity_leaves_out_an_unlanded_issue_once_rate_limited(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A batch that read before the quota ran out cannot have its comments checked."""
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {
+                "repository": {"i1": _closed_by_hand(1), "i2": {**_activity_node(), "number": 2}}
+            }
+        },
+    )
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=429, json={})
+
+    activity = await get_issue_activity("owner/repo", [1, 2, *range(3, 27)])
+
+    assert list(activity["facts"]) == [2]
+    assert activity["failure"] == "rate_limited"
+    assert len(httpx_mock.get_requests()) == 2
 
 
 async def test_get_issue_activity_does_not_reask_numbers_of_a_failed_chunk(

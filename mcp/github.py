@@ -1281,6 +1281,9 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
     request only when it applies: a closed issue with nothing merged has its
     trusted comments read for a named pull request that merged, and a number
     that is a pull request rather than an issue stands for that pull request.
+    A closed issue whose comments or named pull requests could not be read is
+    left out of ``facts`` like any unread issue: kept, it would read as closed
+    with nothing merged.
 
     Unlike the rest of this module this never raises when GitHub cannot be read:
     a caller reporting derived status degrades to saying so rather than failing
@@ -1294,29 +1297,28 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
     async with httpx.AsyncClient(timeout=10.0) as http:
         issues, absent, failure = await _read_numbers(http, repo, numbers, _issue_activity_query)
         facts = {number: _normalize_issue(node) for number, node in issues.items()}
-        if failure not in (None, "transient"):
-            return {"facts": facts, "failure": failure}
-
-        named: dict[int, list[int]] = {}
         unlanded = [
             n for n, issue in facts.items() if issue["state"] == "CLOSED" and not landed(issue)
         ]
-        if unlanded:
+        commented: dict[int, dict[str, Any]] = {}
+        if unlanded and failure in (None, "transient"):
             commented, _, comments_failure = await _read_numbers(
                 http, repo, unlanded, _issue_comments_query
             )
-            named = {
-                n: mentions for n, node in commented.items() if (mentions := _named_pulls(node))
-            }
             if comments_failure is not None:
                 failure = _worse(failure, comments_failure)
+        named = {n: mentions for n, node in commented.items() if (mentions := _named_pulls(node))}
 
         lookup = sorted((set(absent) | {m for ms in named.values() for m in ms}) - set(facts))
-        if not lookup or failure not in (None, "transient"):
-            return {"facts": facts, "failure": failure}
-        found, _, pulls_failure = await _read_numbers(http, repo, lookup, _pull_lookup_query)
-        if pulls_failure is not None:
-            failure = _worse(failure, pulls_failure)
+        found: dict[int, dict[str, Any]] = {}
+        unread = set(lookup)
+        if lookup and failure in (None, "transient"):
+            found, not_pulls, pulls_failure = await _read_numbers(
+                http, repo, lookup, _pull_lookup_query
+            )
+            unread -= set(found) | set(not_pulls)
+            if pulls_failure is not None:
+                failure = _worse(failure, pulls_failure)
 
     pulls = {number: _normalize_pull(node) for number, node in found.items()}
     for number in absent:
@@ -1327,6 +1329,11 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
         facts[number]["pulls"].extend(
             pulls[m] for m in mentions if m in pulls and pulls[m]["merged"] and m not in linked
         )
+    unsettled = [n for n in unlanded if n not in commented] + [
+        n for n, mentions in named.items() if not landed(facts[n]) and unread.intersection(mentions)
+    ]
+    for number in unsettled:
+        del facts[number]
     return {"facts": facts, "failure": failure}
 
 
