@@ -11,6 +11,7 @@ from typing import Any, NamedTuple, cast
 
 import frontmatter
 import httpx
+import yaml
 
 import db
 import github
@@ -127,6 +128,43 @@ async def _resolve_repo(repo: str, *, require_registered: bool = False) -> str:
     if require_registered:
         raise ValueError(f"Repository {normalized!r} is not registered")
     return normalized
+
+
+class _QuotedId(str):
+    """A requirement id YAML must write quoted.
+
+    Bare, YAML 1.1 reads ``020`` as the octal int 16, and ``008`` as a string
+    only because it is not valid octal.
+    """
+
+
+class _RequirementDumper(yaml.SafeDumper):
+    pass
+
+
+_RequirementDumper.add_representer(
+    _QuotedId,
+    lambda dumper, value: dumper.represent_scalar("tag:yaml.org,2002:str", value, style="'"),
+)
+
+
+def _requirement_id(path: str, post: frontmatter.Post) -> str:
+    """The id of the requirement file at *path*, as written.
+
+    The filename's numeric prefix wins over the frontmatter: it is what
+    :func:`_locate_requirement` resolves by, and an id YAML already read as an
+    int cannot be turned back into its zero-padded text.
+    """
+    prefix = path.rsplit("/", 1)[-1].split("-", 1)[0]
+    if prefix.isdigit():
+        return prefix
+    return str(post["id"])
+
+
+def _dump_requirement(path: str, post: frontmatter.Post) -> str:
+    """Serialize the requirement file at *path* with its id quoted."""
+    post["id"] = _QuotedId(_requirement_id(path, post))
+    return frontmatter.dumps(post, Dumper=_RequirementDumper)
 
 
 async def _locate_requirement(repo: str, id: str) -> tuple[str, str, str, dict[str, Any] | None]:
@@ -504,7 +542,7 @@ async def list_requirements(repo: str, include_inactive: bool = False) -> list[d
     landing_candidates: list[landing.Candidate] = []
     for path, (content, pr_info) in copies.items():
         post = frontmatter.loads(content)
-        req_id = post["id"]
+        req_id = _requirement_id(path, post)
         if pr_info is not None and req_id in seen_ids:
             continue
         seen_ids.add(req_id)
@@ -624,7 +662,7 @@ async def create_requirement(repo: str, title: str, why: str, what: str) -> dict
         created=today,
         updated=today,
     )
-    content = frontmatter.dumps(post)
+    content = _dump_requirement(path, post)
 
     # 6. Create file in GitHub — with branch protection fallback
     branch_name = f"lachesis/req-{id_str}-{slug}"
@@ -774,11 +812,11 @@ async def update_requirement(repo: str, id: str, fields: dict[str, Any]) -> dict
         post.content = body
         post["updated"] = date.today().isoformat()
 
-        updated_content = frontmatter.dumps(post)
+        updated_content = _dump_requirement(path, post)
         await github.update_file(
             repo, path, updated_content, sha, f"chore: update requirement {id}", branch=branch
         )
-        return cast(str, updated_content)
+        return updated_content
 
     written = await _write_requirement(repo, id, f"Update requirement {id}", write)
     return {"content": written.result, "pr": _pr_field(written.pr)}
@@ -844,7 +882,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> dict[
         post.content = body
 
         # Serialize and write back
-        updated_content = frontmatter.dumps(post)
+        updated_content = _dump_requirement(path, post)
         await github.update_file(
             repo,
             path,
@@ -853,7 +891,7 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> dict[
             f"chore: link issues to requirement {id}",
             branch=branch,
         )
-        return cast(str, updated_content)
+        return updated_content
 
     written = await _write_requirement(repo, id, f"Link issues to requirement {id}", write)
     return {"content": written.result, "pr": _pr_field(written.pr)}
@@ -1557,7 +1595,7 @@ async def get_dashboard(
             landing_candidates: list[landing.Candidate] = []
             for path, (content, pr_info) in copies.items():
                 post = frontmatter.loads(content)
-                req_id = post["id"]
+                req_id = _requirement_id(path, post)
                 if pr_info is not None and req_id in seen_ids:
                     continue
                 seen_ids.add(req_id)
