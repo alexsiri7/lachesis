@@ -511,6 +511,7 @@ def test_list_notes_reads_a_milestones_notes_oldest_first() -> None:
 
     assert notes == [{"id": 1}, {"id": 2}]
     (call,) = mock.connect.return_value.execute.call_args_list
+    assert "(issue = :issue OR milestone = :milestone)" in str(call[0][0])
     assert "ORDER BY id" in str(call[0][0])
     assert call[0][1] == {
         "user_id": "uid",
