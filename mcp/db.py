@@ -11,6 +11,8 @@ Tables (all namespaced lachesis_):
   lachesis_notifications  — one row per requirement already notified (dedupe)
   lachesis_events         — append-only log of changes to the factory's records
   lachesis_questions      — questions for the author and the issues each one blocks
+  lachesis_milestones     — milestones and when the author started or dropped them
+  lachesis_milestone_spec_changes — the spec changes each milestone groups, one milestone each
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -837,3 +839,271 @@ def list_notes(
     params = {"user_id": user_id, "repo_name": repo_name, "issue": issue, "milestone": milestone}
     with _engine().connect() as conn:
         return [dict(row) for row in conn.execute(sql, params).mappings().all()]
+
+
+# ---------------------------------------------------------------------------
+# lachesis_milestones
+# ---------------------------------------------------------------------------
+
+MilestoneState = Literal["planned", "active", "verifying", "done", "dropped"]
+
+_MILESTONE_SELECT = """
+    SELECT m.id, m.repo_name, m.title, m.goal, m.created_at, m.started_at, m.dropped_at,
+           COALESCE(
+               (SELECT array_agg(s.spec_change ORDER BY s.spec_change)
+                FROM lachesis_milestone_spec_changes s
+                WHERE s.milestone_id = m.id),
+               CAST('{}' AS integer[])
+           ) AS spec_changes
+    FROM lachesis_milestones m
+    WHERE m.user_id = :user_id AND m.repo_name = :repo_name
+"""
+
+
+def _select_milestone(
+    conn: Connection, user_id: str, repo_name: str, milestone_id: int
+) -> dict[str, Any] | None:
+    sql = text(_MILESTONE_SELECT + " AND m.id = :id")
+    params = {"user_id": user_id, "repo_name": repo_name, "id": milestone_id}
+    row = conn.execute(sql, params).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _require_milestone(
+    conn: Connection, user_id: str, repo_name: str, milestone_id: int
+) -> dict[str, Any]:
+    row = _select_milestone(conn, user_id, repo_name, milestone_id)
+    if row is None:
+        raise ValueError(f"Milestone {milestone_id} not found in {repo_name}")
+    return row
+
+
+def _add_spec_change(
+    conn: Connection, user_id: str, repo_name: str, milestone_id: int, spec_change: int
+) -> None:
+    """Put *spec_change* in the milestone, refusing one already in any milestone.
+
+    The check names the milestone holding it; the unique constraint backs it
+    against a concurrent add.
+    """
+    held_sql = text(
+        """
+        SELECT m.id, m.title, m.dropped_at
+        FROM lachesis_milestone_spec_changes s
+        JOIN lachesis_milestones m ON m.id = s.milestone_id
+        WHERE s.user_id = :user_id AND s.repo_name = :repo_name
+          AND s.spec_change = :spec_change
+        """
+    )
+    insert_sql = text(
+        """
+        INSERT INTO lachesis_milestone_spec_changes (milestone_id, user_id, repo_name, spec_change)
+        SELECT id, user_id, repo_name, :spec_change
+        FROM lachesis_milestones
+        WHERE id = :id AND user_id = :user_id AND repo_name = :repo_name
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "id": milestone_id,
+        "spec_change": spec_change,
+    }
+    held = conn.execute(held_sql, params).mappings().first()
+    if held is not None:
+        if held["id"] == milestone_id:
+            raise ValueError(f"#{spec_change} is already in milestone {milestone_id}")
+        dropped = " (dropped)" if held["dropped_at"] is not None else ""
+        raise ValueError(
+            f"#{spec_change} is already in milestone {held['id']} ({held['title']}){dropped}; "
+            "a spec change belongs to at most one milestone"
+        )
+    conn.execute(insert_sql, params)
+    _insert_event(
+        conn, user_id, repo_name, "milestone_spec_change_added", f"{milestone_id}:{spec_change}"
+    )
+
+
+def create_milestone(
+    user_id: str, repo_name: str, title: str, goal: str, spec_changes: list[int]
+) -> dict[str, Any]:
+    """Store a planned milestone holding *spec_changes*, with its events, in one transaction."""
+    sql = text(
+        """
+        INSERT INTO lachesis_milestones (user_id, repo_name, title, goal)
+        VALUES (:user_id, :repo_name, :title, :goal)
+        RETURNING id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "title": title, "goal": goal}
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+        if row is None:
+            raise RuntimeError(f"create_milestone returned no row for {repo_name!r}")
+        milestone_id = row["id"]
+        _insert_event(conn, user_id, repo_name, "milestone_created", str(milestone_id))
+        for spec_change in spec_changes:
+            _add_spec_change(conn, user_id, repo_name, milestone_id, spec_change)
+        return _require_milestone(conn, user_id, repo_name, milestone_id)
+
+
+def get_milestone(user_id: str, repo_name: str, milestone_id: int) -> dict[str, Any] | None:
+    """Return milestone *milestone_id* in *repo_name* with its spec changes, or ``None``."""
+    with _engine().connect() as conn:
+        return _select_milestone(conn, user_id, repo_name, milestone_id)
+
+
+def list_milestones(user_id: str, repo_name: str) -> list[dict[str, Any]]:
+    """Return every milestone in *repo_name* with its spec changes, oldest first."""
+    sql = text(_MILESTONE_SELECT + " ORDER BY m.id")
+    params = {"user_id": user_id, "repo_name": repo_name}
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, params).mappings().all()]
+
+
+def start_milestone(user_id: str, repo_name: str, milestone_id: int) -> dict[str, Any]:
+    """Start a planned milestone and record ``milestone_started``.
+
+    Raises ``ValueError`` unless the milestone is in *repo_name* and planned.
+    """
+    sql = text(
+        """
+        UPDATE lachesis_milestones
+        SET started_at = now()
+        WHERE user_id = :user_id AND repo_name = :repo_name AND id = :id
+          AND started_at IS NULL AND dropped_at IS NULL
+        RETURNING id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "id": milestone_id}
+    with _engine().begin() as conn:
+        if conn.execute(sql, params).mappings().first() is None:
+            row = _require_milestone(conn, user_id, repo_name, milestone_id)
+            why = "dropped" if row["dropped_at"] is not None else "already started"
+            raise ValueError(f"Milestone {milestone_id} is {why}; only a planned one can start")
+        _insert_event(conn, user_id, repo_name, "milestone_started", str(milestone_id))
+        return _require_milestone(conn, user_id, repo_name, milestone_id)
+
+
+def drop_milestone(user_id: str, repo_name: str, milestone_id: int) -> dict[str, Any]:
+    """Drop a milestone and record ``milestone_dropped``. Its spec changes stay in it.
+
+    Raises ``ValueError`` unless the milestone is in *repo_name* and not dropped.
+    Refusing a done milestone is the caller's: done is read from the work.
+    """
+    sql = text(
+        """
+        UPDATE lachesis_milestones
+        SET dropped_at = now()
+        WHERE user_id = :user_id AND repo_name = :repo_name AND id = :id
+          AND dropped_at IS NULL
+        RETURNING id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "id": milestone_id}
+    with _engine().begin() as conn:
+        if conn.execute(sql, params).mappings().first() is None:
+            _require_milestone(conn, user_id, repo_name, milestone_id)
+            raise ValueError(f"Milestone {milestone_id} is already dropped")
+        _insert_event(conn, user_id, repo_name, "milestone_dropped", str(milestone_id))
+        return _require_milestone(conn, user_id, repo_name, milestone_id)
+
+
+def _lock_milestone(
+    conn: Connection, user_id: str, repo_name: str, milestone_id: int
+) -> dict[str, Any]:
+    sql = text(
+        """
+        SELECT id, dropped_at
+        FROM lachesis_milestones
+        WHERE user_id = :user_id AND repo_name = :repo_name AND id = :id
+        FOR UPDATE
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "id": milestone_id}
+    row = conn.execute(sql, params).mappings().first()
+    if row is None:
+        raise ValueError(f"Milestone {milestone_id} not found in {repo_name}")
+    return dict(row)
+
+
+def add_milestone_spec_change(
+    user_id: str, repo_name: str, milestone_id: int, spec_change: int
+) -> dict[str, Any]:
+    """Add *spec_change* to a milestone that is not dropped, and record the event.
+
+    Raises ``ValueError`` when the spec change is already in any milestone.
+    Refusing a done milestone is the caller's: done is read from the work.
+    """
+    with _engine().begin() as conn:
+        if _lock_milestone(conn, user_id, repo_name, milestone_id)["dropped_at"] is not None:
+            raise ValueError(f"Milestone {milestone_id} is dropped; spec changes cannot join it")
+        _add_spec_change(conn, user_id, repo_name, milestone_id, spec_change)
+        return _require_milestone(conn, user_id, repo_name, milestone_id)
+
+
+def remove_milestone_spec_change(
+    user_id: str, repo_name: str, milestone_id: int, spec_change: int
+) -> dict[str, Any]:
+    """Take *spec_change* out of a milestone and record the event.
+
+    Refusing a done milestone is the caller's: done is read from the work.
+    """
+    sql = text(
+        """
+        DELETE FROM lachesis_milestone_spec_changes
+        WHERE user_id = :user_id AND repo_name = :repo_name
+          AND milestone_id = :id AND spec_change = :spec_change
+        RETURNING spec_change
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "id": milestone_id,
+        "spec_change": spec_change,
+    }
+    with _engine().begin() as conn:
+        _lock_milestone(conn, user_id, repo_name, milestone_id)
+        if conn.execute(sql, params).mappings().first() is None:
+            raise ValueError(f"#{spec_change} is not in milestone {milestone_id}")
+        _insert_event(
+            conn,
+            user_id,
+            repo_name,
+            "milestone_spec_change_removed",
+            f"{milestone_id}:{spec_change}",
+        )
+        return _require_milestone(conn, user_id, repo_name, milestone_id)
+
+
+def record_milestone_state(
+    user_id: str, repo_name: str, milestone_id: int, state: MilestoneState
+) -> bool:
+    """Record ``milestone_state_changed`` when *state* differs from the last one recorded.
+
+    The event log is the record: its subject is ``"<id>:<state>"``, and a started
+    milestone with none yet was last ``active``, which ``milestone_started``
+    announced. Locking the milestone serialises concurrent reads deriving it.
+    Returns whether an event was recorded.
+    """
+    last_sql = text(
+        """
+        SELECT subject
+        FROM lachesis_events
+        WHERE user_id = :user_id AND repo_name = :repo_name
+          AND kind = 'milestone_state_changed' AND subject LIKE :prefix
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    prefix = f"{milestone_id}:"
+    params = {"user_id": user_id, "repo_name": repo_name, "prefix": prefix + "%"}
+    with _engine().begin() as conn:
+        _lock_milestone(conn, user_id, repo_name, milestone_id)
+        last = conn.execute(last_sql, params).mappings().first()
+        last_state = str(last["subject"]).removeprefix(prefix) if last else "active"
+        if last_state == state:
+            return False
+        _insert_event(conn, user_id, repo_name, "milestone_state_changed", prefix + state)
+        return True

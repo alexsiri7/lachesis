@@ -27,6 +27,7 @@ from auth import (
 from settings import settings
 from tools import contents as contents_tools
 from tools import events as event_tools
+from tools import milestones as milestone_tools
 from tools import notes as note_tools
 from tools import notifications as notify_tools
 from tools import projects as project_tools
@@ -408,6 +409,69 @@ mcp.tool(
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(note_tools.list_notes)
+
+mcp.tool(
+    description=(
+        "Create a milestone in a registered repository that uses specs: a `title`, the "
+        "`goal` it reaches, and the `spec_changes` (pull request numbers) it groups. Each "
+        "must be a spec change in the repository, not dropped, and in no other milestone — "
+        "a spec change belongs to at most one. The milestone starts planned. Its `id` is "
+        "what add_note and ask_question take as `milestone`. Returns the milestone as read."
+    ),
+)(milestone_tools.create_milestone)
+
+mcp.tool(
+    description=(
+        "Start a planned milestone in a registered repository; refused once it has started "
+        "or been dropped. Returns the milestone as read, its state now derived from the work."
+    ),
+)(milestone_tools.start_milestone)
+
+mcp.tool(
+    description=(
+        "Drop a milestone in a registered repository; refused once it is done or already "
+        "dropped. Its spec changes stay in it: remove one to group it elsewhere. Returns the "
+        "milestone as read."
+    ),
+)(milestone_tools.drop_milestone)
+
+mcp.tool(
+    description=(
+        "Add a spec change (pull request number) to a milestone in a registered repository. "
+        "Refused when the milestone is done or dropped, when the number is not a spec change "
+        "or the spec change was dropped, and when it is already in a milestone — the refusal "
+        "names that milestone. Returns the milestone as read."
+    ),
+)(milestone_tools.add_milestone_spec_change)
+
+mcp.tool(
+    description=(
+        "Remove a spec change from a milestone in a registered repository, dropped ones "
+        "included; refused once the milestone is done. Returns the milestone as read."
+    ),
+)(milestone_tools.remove_milestone_spec_change)
+
+mcp.tool(
+    description=(
+        "Return a milestone in a registered repository: its title, goal, spec changes and "
+        "state. State is read from the work, never stored: planned until started; active "
+        "while any spec change has open issues, no issue naming it, or could not be read; "
+        "verifying once everything is closed but some issue closed without merged code or "
+        "production does not yet include the last merge; done once every spec change merged, "
+        "every issue naming one closed by merged code and the production deployment includes "
+        "the last merge; dropped once dropped. A started milestone also returns `work` (each "
+        "spec change's status), `last_merge` and `deployment`."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(milestone_tools.get_milestone)
+
+mcp.tool(
+    description=(
+        "Return every milestone in a registered repository, oldest first, each as "
+        "get_milestone reads it."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(milestone_tools.list_milestones)
 
 mcp.tool(
     description=(

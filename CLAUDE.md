@@ -41,6 +41,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
     __init__.py
     notifications.py ntfy configuration and test-notification tools
     events.py        list_events: follow the append-only event log from a cursor
+    milestones.py    Milestones grouping spec changes: create, start, drop, add and remove spec changes, get and list; state (planned, active, verifying, done, dropped) is derived on every read from the spec changes' issues and the production deployment, never stored
     notes.py         add_note and list_notes: append-only work notes on exactly one issue or milestone; next_issue returns the offered issue's notes
     questions.py     ask_question: record a question for the author and mark the issues it blocks needs-author, pushing it to the author; ask_author asks one about a single issue through it; answer_question records an answer and its outcome, posts it on the blocked issues and releases those no other open question blocks; answer_author answers a single issue through it; list_open_questions is the one queue of open questions across registered repos, oldest first; search_answered_questions finds answered questions by repo and text, with answer and outcome
     contents.py      Read-only repository contents: read_file, list_directory (registered repos only)
