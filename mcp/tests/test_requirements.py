@@ -4947,19 +4947,28 @@ async def test_get_dashboard_reports_no_failed_repos_when_every_repo_was_read(
 async def test_get_dashboard_calls_an_unclassifiable_repo_failure_transient(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
-    """A file without an id fails no HTTP check, so only the catch-all can name it.
+    """A file with no id, in frontmatter or name, fails no HTTP check, so only the catch-all
+    can name it.
 
     It fails on the second file, which also pins how far the counts are a floor:
     ``total`` keeps what was tallied before the failure, the listings keep none of it.
     """
+    unnumbered = {"name": "data-export.md", "path": "requirements/data-export.md"}
     with patch(
         "tools.requirements.db.list_repos",
         return_value=[{"repo_name": "owner/repo"}],
     ):
-        httpx_mock.add_response(json=_TWO_FILES_RESP)
+        httpx_mock.add_response(json=[{"name": _NAME, "path": _PATH}, unnumbered])
         httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
         httpx_mock.add_response(
-            json=_make_second_file_response(_SAMPLE_MD.replace('id: "001"\n', ""), "sha2")
+            json={
+                **unnumbered,
+                "content": base64.b64encode(_SAMPLE_MD.replace('id: "001"\n', "").encode()).decode(
+                    "ascii"
+                ),
+                "sha": "sha2",
+                "type": "file",
+            }
         )
         httpx_mock.add_response(json=[])  # list_lachesis_prs → the files are parsed after it
         result = await get_dashboard()
@@ -4991,3 +5000,106 @@ async def test_get_dashboard_does_not_call_a_listed_repo_failed(
 
     assert [req["id"] for req in result["repos"][0]["requirements"]] == ["001"]
     assert result["summary"]["failed_repos"] == []
+
+
+# ---------------------------------------------------------------------------
+# Unquoted zero-padded ids — YAML 1.1 reads "id: 020" as the octal int 16
+# ---------------------------------------------------------------------------
+
+_OCTAL_LOOKING_NAME = "020-self-registration.md"
+_OCTAL_LOOKING_PATH = f"requirements/{_OCTAL_LOOKING_NAME}"
+_OCTAL_LOOKING_MD = _SAMPLE_MD.replace('id: "001"', "id: 020").replace(
+    "User authentication", "Self registration"
+)
+
+
+def _octal_looking_file_response(sha: str = "sha2") -> dict:
+    return {
+        "name": _OCTAL_LOOKING_NAME,
+        "path": _OCTAL_LOOKING_PATH,
+        "content": base64.b64encode(_OCTAL_LOOKING_MD.encode()).decode("ascii"),
+        "sha": sha,
+        "type": "file",
+    }
+
+
+_WITH_OCTAL_LOOKING_RESP = [
+    {"name": _NAME, "path": _PATH},
+    {"name": _OCTAL_LOOKING_NAME, "path": _OCTAL_LOOKING_PATH},
+]
+
+
+async def test_list_requirements_reads_an_unquoted_zero_padded_id_as_written(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """An unquoted 'id: 020' is listed as "020", the file's own prefix, not as 16."""
+    httpx_mock.add_response(json=_WITH_OCTAL_LOOKING_RESP)
+    httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+    httpx_mock.add_response(json=_octal_looking_file_response())
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+
+    result = await list_requirements("owner/repo")
+
+    assert [req["id"] for req in result] == ["001", "020"]
+
+
+async def test_get_dashboard_succeeds_unfiltered_beside_an_unquoted_zero_padded_id(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """Sorting an unquoted 'id: 020' among string ids does not take the dashboard down."""
+    with patch(
+        "tools.requirements.db.list_repos",
+        return_value=[{"repo_name": "owner/repo"}],
+    ):
+        httpx_mock.add_response(json=_WITH_OCTAL_LOOKING_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(json=_octal_looking_file_response())
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        result = await get_dashboard()
+
+    assert [req["id"] for req in result["repos"][0]["requirements"]] == ["001", "020"]
+    assert [req["id"] for req in result["groups"]["never_linked"]] == ["001", "020"]
+
+
+async def test_update_requirement_rewrites_an_unquoted_zero_padded_id_quoted(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The next write repairs 'id: 020' instead of preserving it as 16."""
+    httpx_mock.add_response(json=[])  # find_open_pr → no open PRs
+    httpx_mock.add_response(json=[{"name": _OCTAL_LOOKING_NAME, "path": _OCTAL_LOOKING_PATH}])
+    httpx_mock.add_response(json=_octal_looking_file_response())
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    result = await update_requirement("owner/repo", "020", {"title": "Renamed"})
+
+    assert "id: '020'" in result["content"]
+    assert frontmatter.loads(result["content"])["id"] == "020"
+
+
+async def test_link_issues_rewrites_an_unquoted_zero_padded_id_quoted(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Linking issues repairs 'id: 020' instead of preserving it as 16."""
+    httpx_mock.add_response(json=[])  # find_open_pr → no open PRs
+    httpx_mock.add_response(json=[{"name": _OCTAL_LOOKING_NAME, "path": _OCTAL_LOOKING_PATH}])
+    httpx_mock.add_response(json=_octal_looking_file_response())
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    result = await link_issues("owner/repo", "020", _ISSUES)
+
+    assert "id: '020'" in result["content"]
+    assert frontmatter.loads(result["content"])["id"] == "020"
+
+
+async def test_create_requirement_writes_an_id_yaml_would_not_quote_quoted(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """'008' is not octal, so YAML leaves it bare unless told; a bare id parses inconsistently."""
+    httpx_mock.add_response(json=[{"name": "007-deploy.md", "path": "requirements/007-deploy.md"}])
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    await create_requirement("owner/repo", "New Feature", "Why", "What")
+
+    body = json.loads(httpx_mock.get_requests()[2].content)
+    assert "id: '008'" in base64.b64decode(body["content"]).decode()
