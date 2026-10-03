@@ -25,7 +25,7 @@ import json
 import logging
 from datetime import datetime
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from sqlalchemy import Engine, create_engine, text
 
@@ -506,6 +506,8 @@ EventKind = Literal[
 
 def record_event(user_id: str, repo_name: str, kind: EventKind, subject: str) -> dict[str, Any]:
     """Append an event naming *subject* in *repo_name*. Events are never changed afterwards."""
+    if kind not in get_args(EventKind):
+        raise ValueError(f"kind must be one of {', '.join(get_args(EventKind))}, got {kind!r}")
     sql = text(
         """
         INSERT INTO lachesis_events (user_id, repo_name, kind, subject)
