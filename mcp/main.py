@@ -27,6 +27,7 @@ from auth import (
 from settings import settings
 from tools import contents as contents_tools
 from tools import events as event_tools
+from tools import notes as note_tools
 from tools import notifications as notify_tools
 from tools import projects as project_tools
 from tools import questions as question_tools
@@ -370,6 +371,25 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Leave a note on the work in a registered repository: on exactly one `issue` "
+        "(number) or `milestone`, never neither or both. `role` names who is writing, "
+        "such as implementer or reviewer; `type` is one of handoff, finding, progress, "
+        "decision, report. Leave a handoff note whenever you stop working on an issue. "
+        "Notes are never edited or deleted — a correction is a new note. "
+        "Returns the stored note with its id and time."
+    ),
+)(note_tools.add_note)
+
+mcp.tool(
+    description=(
+        "Return the notes on exactly one `issue` (number) or `milestone` in a registered "
+        "repository, oldest first, each with its role, type, text and time."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(note_tools.list_notes)
+
+mcp.tool(
+    description=(
         "Return the dependency relationships of a GitHub issue: "
         "blocked_by (issues this one depends on) and "
         "blocking (issues that depend on this one). "
@@ -419,6 +439,7 @@ mcp.tool(
         "Return the issue to pick up next — the highest-ordered issue that is ready, "
         "has no open blocker, is not already in progress, and is not waiting on the "
         "author (labelled needs-author). An interrupt-marked issue wins over position. "
+        "The offered issue's notes are returned with it under `notes`, oldest first. "
         "`repo` is optional: omit it to consider every registered repo. When nothing "
         "qualifies the result explains which case it is — everything ready is blocked, "
         "everything eligible is waiting on the author, everything is parked, or the "

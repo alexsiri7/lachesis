@@ -76,6 +76,13 @@ maturity or an improvement — or one that blocks several issues, call ask_quest
 answer_question records the author's answer to a question by id, with its outcome, and
 releases every issue it blocked that no other open question still blocks.
 
+Agents do not message each other: they leave notes on the work. When you stop working on
+an issue, finished or not, call add_note on it with type handoff, saying what you did and
+what is left, so the next agent starts from what you knew. Use finding, progress, decision
+and report notes for the rest. Notes are never edited; a correction is a new note.
+next_issue returns the offered issue's notes with it, oldest first; list_notes reads the
+notes on any issue or milestone.
+
 When a session with the author starts, call get_dashboard before anything else and raise
 every question in its waiting_on_author list with the author first, oldest first. That
 list only holds questions that block an issue; one asked with ask_question that blocks
@@ -1332,7 +1339,8 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     repo, in which case runners-up are listed under ``also_eligible`` because
     backlog position only orders issues within one repo.
 
-    Returns ``issue`` (``None`` when nothing qualifies), a ``reason`` of
+    Returns ``issue`` (``None`` when nothing qualifies) with its ``notes`` oldest
+    first when one is selected, a ``reason`` of
     ``selected`` / ``all_blocked`` / ``all_waiting`` / ``all_in_progress`` /
     ``none_ready`` / ``empty``, a one-sentence ``explanation``, and ``blocked`` — the
     ready issues passed over because a dependency of theirs is still open, each naming
@@ -1381,6 +1389,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         )
         result = {
             "issue": chosen,
+            "notes": db.list_notes(user_id, chosen["repo"], issue=chosen["number"]),
             "reason": "selected",
             "explanation": explanation + caveat,
             "blocked": blocked,

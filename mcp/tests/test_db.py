@@ -456,3 +456,100 @@ def test_answers_migration_allows_exactly_the_outcomes() -> None:
     check = re.search(r"\"outcome IN \((.*?)\)\"", migration)
     assert check is not None
     assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.OutcomeKind))
+
+
+def test_record_note_stores_the_note_and_its_event_in_one_transaction() -> None:
+    row = {"id": 4, "repo_name": "owner/repo", "issue": 160, "type": "handoff"}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.record_note(
+            "uid", "owner/repo", "implementer", "handoff", "Half done.", issue=160
+        )
+
+    assert result == row
+    mock.begin.assert_called_once()
+    note_call, event_call = mock.begin.return_value.execute.call_args_list
+    assert "INSERT INTO lachesis_notes" in str(note_call[0][0])
+    assert note_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "issue": 160,
+        "milestone": None,
+        "role": "implementer",
+        "type": "handoff",
+        "text": "Half done.",
+    }
+    assert event_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "kind": "note_added",
+        "subject": "4",
+    }
+
+
+@pytest.mark.parametrize("subject", [{}, {"issue": 160, "milestone": "m1"}])
+def test_record_note_refuses_anything_but_exactly_one_subject(subject: dict) -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="exactly one"):
+        db.record_note("uid", "owner/repo", "implementer", "handoff", "Half done.", **subject)
+
+    mock.begin.assert_not_called()
+
+
+def test_record_note_refuses_an_unknown_type() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="type"):
+        db.record_note("uid", "owner/repo", "implementer", "handof", "x", issue=1)  # type: ignore[arg-type]
+
+    mock.begin.assert_not_called()
+
+
+def test_list_notes_reads_a_milestones_notes_oldest_first() -> None:
+    mock = _mock_engine([{"id": 1}, {"id": 2}])
+    with patch("db._engine", return_value=mock):
+        notes = db.list_notes("uid", "owner/repo", milestone="m1")
+
+    assert notes == [{"id": 1}, {"id": 2}]
+    (call,) = mock.connect.return_value.execute.call_args_list
+    assert "(issue = :issue OR milestone = :milestone)" in str(call[0][0])
+    assert "ORDER BY id" in str(call[0][0])
+    assert call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "issue": None,
+        "milestone": "m1",
+    }
+
+
+def _notes_migration() -> str:
+    from pathlib import Path
+
+    return (Path(db.__file__).parent / "alembic/versions/011_notes.py").read_text()
+
+
+def test_notes_migration_refuses_update_delete_and_truncate() -> None:
+    """Scenario: Editing refused — immutability lives in the database itself."""
+    migration = _notes_migration()
+    function = re.search(
+        r"CREATE OR REPLACE FUNCTION lachesis_notes_immutable\(\).*?\$\$(.*?)\$\$",
+        migration,
+        re.DOTALL,
+    )
+    assert function is not None
+    assert "RAISE EXCEPTION" in function.group(1)
+    for timing in ("BEFORE UPDATE OR DELETE", "BEFORE TRUNCATE"):
+        trigger = (
+            rf"{timing} ON lachesis_notes\s+"
+            r"FOR EACH \w+ EXECUTE FUNCTION lachesis_notes_immutable\(\)"
+        )
+        assert re.search(trigger, migration)
+
+
+def test_notes_migration_allows_exactly_the_note_types_on_one_subject() -> None:
+    from typing import get_args
+
+    migration = _notes_migration()
+    check = re.search(r"\"type IN \((.*?)\)\"", migration)
+    assert check is not None
+    assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.NoteType))
+    assert '"(issue IS NULL) <> (milestone IS NULL)"' in migration
