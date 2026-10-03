@@ -6,9 +6,15 @@ from typing import Any, get_args
 
 import db
 import github
+import landing
+import notify
 
 from .repos import _require_user_id
 from .requirements import _NEEDS_AUTHOR_COLOR, _NEEDS_AUTHOR_LABEL, _resolve_repo
+
+# ntfy turns a message over 4096 bytes into an attachment; the full question
+# stays in its record and on any issue it names.
+_QUESTION_MAX_CHARS = 1000
 
 
 def _comment_body(question: str, context: str, options: list[str]) -> str:
@@ -18,6 +24,27 @@ def _comment_body(question: str, context: str, options: list[str]) -> str:
     if options:
         parts.append("Options:\n" + "\n".join(f"- {option}" for option in options))
     return "\n\n".join(parts)
+
+
+async def _tell_author(
+    user_id: str,
+    repo: str,
+    question: str,
+    kind: db.QuestionKind,
+    blocked: list[int],
+    issue: int | None,
+) -> None:
+    title = f"{kind.replace('_', ' ').capitalize()} question on {repo}"
+    if blocked:
+        title += " blocking " + ", ".join(f"#{number}" for number in blocked)
+    linked = blocked[0] if blocked else issue
+    await notify.send(
+        user_id,
+        title=title,
+        body=landing._clip(question, _QUESTION_MAX_CHARS),
+        click=f"https://github.com/{repo}/issues/{linked}" if linked is not None else None,
+        tags=["question"],
+    )
 
 
 async def ask_question(
@@ -36,9 +63,10 @@ async def ask_question(
     """Record a question for the author and mark every issue it *blocks* as waiting.
 
     Each blocked issue gets the question as a comment, then the question is
-    recorded, then each blocked issue is labelled ``needs-author``. That order
-    keeps an issue from ever being labelled without both its question comment
-    and its record; a failure part-way is raised and leaves what already landed.
+    recorded, then the author is sent a push (best effort, never raises), then
+    each blocked issue is labelled ``needs-author``. That order keeps an issue
+    from ever being labelled without both its question comment and its record;
+    a failure part-way is raised and leaves what already landed.
 
     Returns ``{"id", "comments": [{"issue", "url"}, ...]}``.
     """
@@ -80,6 +108,8 @@ async def ask_question(
         issue=issue,
         blocks=blocked,
     )
+
+    await _tell_author(user_id, repo, question, kind, blocked, issue)
 
     if blocked:
         await github.ensure_label(repo, _NEEDS_AUTHOR_LABEL, _NEEDS_AUTHOR_COLOR)

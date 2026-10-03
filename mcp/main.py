@@ -316,7 +316,9 @@ mcp.tool(
         "over it until it is answered. The question is posted first, so the issue is "
         "never labelled without it; if labelling then fails, the error is reported "
         "and the question stays. The question is also recorded as a clarification "
-        "question blocking the issue. Returns the question comment's url."
+        "question blocking the issue, and the author is sent a push notification "
+        "naming the repository, question and kind, if notifications are configured. "
+        "Returns the question comment's url."
     ),
 )(question_tools.ask_author)
 
@@ -331,7 +333,9 @@ mcp.tool(
         "needs-author label, so next_issue passes over it. The question is recorded "
         "after its comments are posted and before any label is added, so an issue is "
         "never labelled without its question; a failure part-way is reported and "
-        "leaves what already happened. The question outlives the issues it names. "
+        "leaves what already happened. Once recorded, the author is sent a push "
+        "notification naming the repository, question and kind, if notifications are "
+        "configured. The question outlives the issues it names. "
         "Returns the question id and the url of each comment."
     ),
 )(question_tools.ask_question)

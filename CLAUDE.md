@@ -35,13 +35,13 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   db.py            SQLAlchemy persistence layer (user identity, repo registry)
   web.py           Web dashboard route handlers and Jinja2 setup
   notify.py        Best-effort ntfy delivery (never raises into a caller)
-  landing.py       Detects landed requirements, spec changes and questions waiting on the author on read, and fires their notification
+  landing.py       Detects landed requirements and spec changes on read, and fires their notification
   spec_reference.py Writes and parses the spec reference block at the end of an issue body
   tools/
     __init__.py
     notifications.py ntfy configuration and test-notification tools
     events.py        list_events: follow the append-only event log from a cursor
-    questions.py     ask_question: record a question for the author and mark the issues it blocks needs-author; ask_author asks one about a single issue through it
+    questions.py     ask_question: record a question for the author and mark the issues it blocks needs-author, pushing it to the author; ask_author asks one about a single issue through it
     contents.py      Read-only repository contents: read_file, list_directory (registered repos only)
     projects.py      create_project: create a GitHub repository, seed its openspec/specs and register it, rolling back on failure
     specs.py         Spec tools: read (list_capabilities, get_capability), change (propose_spec_change, update_spec_change, with format checking), and the uses_specs detection helper
