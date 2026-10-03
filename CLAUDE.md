@@ -41,6 +41,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
     __init__.py
     notifications.py ntfy configuration and test-notification tools
     contents.py      Read-only repository contents: read_file, list_directory (registered repos only)
+    projects.py      create_project: create a GitHub repository, seed its openspec/specs and register it, rolling back on failure
     specs.py         Spec tools: read (list_capabilities, get_capability), change (propose_spec_change, update_spec_change, with format checking), and the uses_specs detection helper
     requirements.py  All 12 MCP tool implementations (includes read-only get_initial_instructions, get_github_issue, get_comments, get_dependencies; write tools add_dependency, post_comment, ask_author, answer_author, update_github_issue)
   templates/
@@ -59,7 +60,7 @@ railway.toml
 ## Environment variables
 
 See `.env.example`. Key ones:
-- `GITHUB_PAT` — server-side GitHub token with `repo` scope
+- `GITHUB_PAT` — server-side GitHub token with `repo` scope, plus `delete_repo` so a failed `create_project` can delete the repository it created
 - `ALLOWED_EMAIL` — the single authorized Google account email
 - `SECRET_KEY` — JWT signing key
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (**both required**; register `{MCP_BASE_URL}/oauth/callback` as an authorized redirect URI in the Google OAuth Console)

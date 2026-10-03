@@ -870,6 +870,54 @@ async def list_blocked_by_numbers(repo: str, issue_number: int) -> list[int] | N
     return [item["number"] for item in resp.json()]
 
 
+async def create_repo(name: str, *, description: str, private: bool) -> dict[str, Any]:
+    """Create *name* under the PAT owner's account, initialised with a README.
+
+    Returns the raw GitHub repository response.  Raises :class:`FileExistsError`
+    when the account already has a repository of that name, which GitHub refuses
+    before creating anything.
+    """
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        resp = await http.post(
+            f"{_BASE_URL}/user/repos",
+            headers=_headers(),
+            json={
+                "name": name,
+                "description": description,
+                "private": private,
+                "auto_init": True,
+            },
+        )
+    if resp.status_code == 422 and any(
+        error.get("field") == "name" and "already exists" in error.get("message", "")
+        for error in resp.json().get("errors", [])
+    ):
+        raise FileExistsError(f"A repository named {name!r} already exists in the account")
+    if not resp.is_success:
+        logger.warning(
+            "github.create_repo failed name=%s status=%s body=%s",
+            name,
+            resp.status_code,
+            resp.text[:_ERROR_BODY_CHARS],
+        )
+    resp.raise_for_status()
+    return resp.json()  # type: ignore[no-any-return]
+
+
+async def delete_repo(repo: str) -> None:
+    """Delete *repo*. The PAT needs the ``delete_repo`` scope."""
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        resp = await http.delete(f"{_BASE_URL}/repos/{repo}", headers=_headers())
+    if not resp.is_success:
+        logger.warning(
+            "github.delete_repo failed repo=%s status=%s body=%s",
+            repo,
+            resp.status_code,
+            resp.text[:_ERROR_BODY_CHARS],
+        )
+    resp.raise_for_status()
+
+
 async def get_repo_settings(repo: str) -> dict[str, Any]:
     """Return merge/automerge settings for *repo*.
 

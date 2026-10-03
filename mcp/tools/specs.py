@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
@@ -195,8 +196,10 @@ def spec_problems(capability: str, spec: str) -> list[str]:
     return problems
 
 
-def _check_capabilities(capabilities: dict[str, str | None]) -> None:
-    """Refuse a spec change listing every malformed capability name and content at once."""
+def _check_capabilities(
+    capabilities: Mapping[str, str | None], refusal: str = "Spec change refused"
+) -> None:
+    """Refuse with *refusal*, listing every malformed capability name and content at once."""
     problems: list[str] = []
     for name, spec in capabilities.items():
         if not _CAPABILITY_NAME.fullmatch(name):
@@ -205,7 +208,7 @@ def _check_capabilities(capabilities: dict[str, str | None]) -> None:
             problems.extend(spec_problems(name, spec))
     if problems:
         raise ValueError(
-            "Spec change refused; fix every problem and retry:\n"
+            f"{refusal}; fix every problem and retry:\n"
             + "\n".join(f"- {problem}" for problem in problems)
         )
 
