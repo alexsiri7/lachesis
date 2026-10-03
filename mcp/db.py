@@ -9,6 +9,7 @@ Tables (all namespaced lachesis_):
   lachesis_backlog        — per-repo backlog overrides (position, ready, interrupt)
   lachesis_ntfy_config    — per-account ntfy server, topic and token
   lachesis_notifications  — one row per requirement already notified (dedupe)
+  lachesis_events         — append-only log of changes to the factory's records
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -24,7 +25,7 @@ import json
 import logging
 from datetime import datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal, get_args
 
 from sqlalchemy import Engine, create_engine, text
 
@@ -484,3 +485,75 @@ def claim_notification(user_id: str, repo_name: str, requirement_id: str) -> boo
     with _engine().begin() as conn:
         result = conn.execute(sql, params)
         return result.mappings().first() is not None
+
+
+# ---------------------------------------------------------------------------
+# lachesis_events
+# ---------------------------------------------------------------------------
+
+EventKind = Literal[
+    "question_asked",
+    "question_answered",
+    "note_added",
+    "milestone_created",
+    "milestone_started",
+    "milestone_dropped",
+    "milestone_state_changed",
+    "milestone_spec_change_added",
+    "milestone_spec_change_removed",
+]
+
+
+def record_event(user_id: str, repo_name: str, kind: EventKind, subject: str) -> dict[str, Any]:
+    """Append an event naming *subject* in *repo_name*. Events are never changed afterwards."""
+    if kind not in get_args(EventKind):
+        raise ValueError(f"kind must be one of {', '.join(get_args(EventKind))}, got {kind!r}")
+    sql = text(
+        """
+        INSERT INTO lachesis_events (user_id, repo_name, kind, subject)
+        VALUES (:user_id, :repo_name, :kind, :subject)
+        RETURNING id, repo_name, kind, subject, created_at
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "kind": kind, "subject": subject}
+    with _engine().begin() as conn:
+        result = conn.execute(sql, params)
+        row = result.mappings().first()
+    if row is None:
+        raise RuntimeError(f"record_event returned no row for {repo_name!r} {kind}")
+    return dict(row)
+
+
+def list_events(
+    user_id: str,
+    after: int,
+    limit: int,
+    repo_name: str | None = None,
+    kind: EventKind | None = None,
+) -> list[dict[str, Any]]:
+    """Return up to *limit* events with an id above *after*, oldest first.
+
+    A filter passed as ``None`` matches every value.
+    """
+    sql = text(
+        """
+        SELECT id, repo_name, kind, subject, created_at
+        FROM lachesis_events
+        WHERE user_id = :user_id
+          AND id > :after
+          AND (CAST(:repo_name AS text) IS NULL OR repo_name = :repo_name)
+          AND (CAST(:kind AS text) IS NULL OR kind = :kind)
+        ORDER BY id
+        LIMIT :limit
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "after": after,
+        "limit": limit,
+        "repo_name": repo_name,
+        "kind": kind,
+    }
+    with _engine().connect() as conn:
+        result = conn.execute(sql, params)
+        return [dict(row) for row in result.mappings().all()]

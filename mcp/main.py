@@ -26,6 +26,7 @@ from auth import (
 )
 from settings import settings
 from tools import contents as contents_tools
+from tools import events as event_tools
 from tools import notifications as notify_tools
 from tools import projects as project_tools
 from tools import repos as repo_tools
@@ -497,6 +498,19 @@ mcp.tool(
         "without waiting for a real one. Reports whether delivery succeeded."
     ),
 )(notify_tools.send_test_notification)
+
+mcp.tool(
+    description=(
+        "Follow the event log: every question asked or answered, note added, and "
+        "milestone created, started, dropped, changing state, or gaining or losing a "
+        "spec change. Returns the events after cursor `after` (0 reads from the "
+        "beginning), oldest first, up to `limit` (at most 500), optionally filtered by "
+        "`repo` (owner/repo) and `kind`. Pass the returned `cursor` as `after` on the "
+        "next read; when nothing new has happened, `events` is empty and `cursor` is "
+        "unchanged. Events are never changed or deleted."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(event_tools.list_events)
 
 mcp.tool(
     description=(

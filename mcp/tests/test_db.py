@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -264,3 +265,62 @@ def test_engine_pool_is_small_for_the_shared_database():
     assert kwargs["pool_pre_ping"] is True
     # No schema pinning: the role's search_path resolves the tables.
     assert "connect_args" not in kwargs
+
+
+def test_record_event_returns_the_appended_row() -> None:
+    row = {"id": 7, "repo_name": "owner/repo", "kind": "question_answered", "subject": "q1"}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.record_event("uid", "owner/repo", "question_answered", "q1")
+
+    assert result == row
+    params = mock.begin.return_value.execute.call_args[0][1]
+    assert params == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "kind": "question_answered",
+        "subject": "q1",
+    }
+
+
+def test_record_event_refuses_an_unknown_kind() -> None:
+    """A mistyped kind would otherwise become a permanent row no kind filter matches."""
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
+        db.record_event("uid", "owner/repo", "question_answerd", "q1")  # type: ignore[arg-type]
+
+    mock.begin.assert_not_called()
+
+
+def test_list_events_reads_after_the_cursor_oldest_first() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        db.list_events("uid", 3, 100, repo_name="owner/repo", kind="note_added")
+
+    sql = " ".join(str(mock.connect.return_value.execute.call_args[0][0]).split())
+    assert "id > :after" in sql
+    assert "ORDER BY id LIMIT :limit" in sql
+    params = mock.connect.return_value.execute.call_args[0][1]
+    assert params["after"] == 3
+    assert params["repo_name"] == "owner/repo"
+    assert params["kind"] == "note_added"
+
+
+def test_events_migration_refuses_update_delete_and_truncate() -> None:
+    """Immutability lives in the database, not only in the absence of a db.py writer."""
+    from pathlib import Path
+
+    migration = (Path(db.__file__).parent / "alembic/versions/008_events.py").read_text()
+    function = re.search(
+        r"CREATE OR REPLACE FUNCTION lachesis_events_immutable\(\).*?\$\$(.*?)\$\$",
+        migration,
+        re.DOTALL,
+    )
+    assert function is not None
+    assert "RAISE EXCEPTION" in function.group(1)
+    for timing in ("BEFORE UPDATE OR DELETE", "BEFORE TRUNCATE"):
+        trigger = (
+            rf"{timing} ON lachesis_events\s+"
+            r"FOR EACH \w+ EXECUTE FUNCTION lachesis_events_immutable\(\)"
+        )
+        assert re.search(trigger, migration)
