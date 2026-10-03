@@ -18,7 +18,6 @@ from auth import current_db_user_id
 from tools.requirements import (
     _MAX_WRITE_ATTEMPTS,
     add_dependency,
-    answer_author,
     create_github_issues,
     create_requirement,
     delete_requirement,
@@ -1838,99 +1837,6 @@ async def test_comments_refused_for_unregistered_repository(call, set_user_id: s
         pytest.raises(ValueError, match="'someone/else' is not registered"),
     ):
         await call()
-
-
-# ---------------------------------------------------------------------------
-# answer_author
-# ---------------------------------------------------------------------------
-
-_ISSUE_160_URL = "https://api.github.com/repos/alexsiri7/lachesis/issues/160"
-_NEEDS_AUTHOR_ON_160 = f"{_ISSUE_160_URL}/labels/needs-author"
-_QUESTION_URL = "https://github.com/alexsiri7/lachesis/issues/160#issuecomment-3"
-
-
-def _mock_issue_160(httpx_mock: HTTPXMock, labels: list[str]) -> None:
-    httpx_mock.add_response(
-        method="GET",
-        url=_ISSUE_160_URL,
-        json={
-            "number": 160,
-            "id": 1160,
-            "title": "Issue 160",
-            "state": "open",
-            "labels": [{"name": name} for name in labels],
-            "html_url": "https://github.com/alexsiri7/lachesis/issues/160",
-        },
-    )
-
-
-def _requests(httpx_mock: HTTPXMock) -> list[tuple[str, str]]:
-    return [(r.method, str(r.url)) for r in httpx_mock.get_requests()]
-
-
-async def test_answering(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    """Scenario: Answering — the answer is the latest comment and the label is gone."""
-    _mock_issue_160(httpx_mock, ["needs-author"])
-    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_ON_160, json=[])
-    httpx_mock.add_response(
-        method="POST", url=f"{_ISSUE_160_URL}/comments", json={"html_url": _QUESTION_URL}
-    )
-
-    with patch("tools.requirements.db.list_repos", return_value=_REGISTERED):
-        result = await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
-
-    assert result == {"url": _QUESTION_URL}
-    assert json.loads(httpx_mock.get_requests()[-1].content) == {"body": "Behaviour A."}
-
-
-async def test_answering_puts_the_label_back_when_the_answer_fails(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """An issue must never lose needs-author without its answer."""
-    _mock_issue_160(httpx_mock, ["needs-author"])
-    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_ON_160, json=[])
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", json=[])
-
-    with (
-        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
-        pytest.raises(httpx.HTTPStatusError),
-    ):
-        await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
-
-    assert json.loads(httpx_mock.get_requests()[-1].content) == {"labels": ["needs-author"]}
-
-
-async def test_answering_names_both_failures_when_the_label_cannot_be_put_back(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    _mock_issue_160(httpx_mock, ["needs-author"])
-    httpx_mock.add_response(method="DELETE", url=_NEEDS_AUTHOR_ON_160, json=[])
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", status_code=502)
-
-    with (
-        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
-        pytest.raises(RuntimeError, match="needs-author label back also failed") as raised,
-    ):
-        await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
-
-    assert isinstance(raised.value.__cause__, httpx.HTTPStatusError)
-    assert raised.value.__cause__.response.status_code == 500
-
-
-async def test_answering_is_refused_when_the_issue_is_not_waiting(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    _mock_issue_160(httpx_mock, [])
-
-    with (
-        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
-        pytest.raises(ValueError, match="not waiting on the author"),
-    ):
-        await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
-
-    assert [method for method, _ in _requests(httpx_mock)] == ["GET"]
 
 
 # ---------------------------------------------------------------------------

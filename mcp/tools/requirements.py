@@ -70,9 +70,11 @@ ready, unblocked issue, or explains why there is none.
 When you cannot tell what the spec intends for an issue, do not guess: call ask_author
 with your question and move on to other work. The issue is labelled needs-author and
 next_issue passes over it, keeping its backlog position, until answer_author posts the
-answer and removes the label.
+answer and removes the label, once no other open question blocks the issue.
 For any other decision only the author can make — a spec contradiction, large work,
 maturity or an improvement — or one that blocks several issues, call ask_question.
+answer_question records the author's answer to a question by id, with its outcome, and
+releases every issue it blocked that no other open question still blocks.
 
 When a session with the author starts, call get_dashboard before anything else and raise
 every question in its waiting_on_author list with the author first, oldest first. That
@@ -1796,38 +1798,6 @@ async def post_comment(repo: str, number: int, body: str) -> dict[str, Any]:
     url = await github.create_issue_comment(repo, number, body)
     if url is None:
         raise FileNotFoundError(f"Issue or pull request #{number} not found in {repo!r}")
-    return {"url": url}
-
-
-async def answer_author(repo: str, number: int, answer: str) -> dict[str, Any]:
-    """Post *answer* on issue *number* and remove its ``needs-author`` label.
-
-    Refused unless the issue is waiting on the author. Either both land or neither
-    does: if the answer cannot be posted, the label is put back before the failure
-    is raised. If putting it back fails too, a ``RuntimeError`` names both failures.
-    """
-    if not answer.strip():
-        raise ValueError("answer must not be empty")
-    repo = await _resolve_repo(repo, require_registered=True)
-    issue = await github.get_issue(repo, number)
-    if issue is None:
-        raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
-    if _NEEDS_AUTHOR_LABEL not in issue["labels"]:
-        raise ValueError(f"Issue #{number} in {repo!r} is not waiting on the author")
-    await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
-    try:
-        url = await github.create_issue_comment(repo, number, answer)
-        if url is None:
-            raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
-    except Exception as failure:
-        try:
-            await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
-        except Exception as restore_failure:
-            raise RuntimeError(
-                f"Answer to #{number} in {repo!r} failed ({failure!r}) and putting the "
-                f"needs-author label back also failed ({restore_failure!r})"
-            ) from failure
-        raise
     return {"url": url}
 
 
