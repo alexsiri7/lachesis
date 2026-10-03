@@ -40,6 +40,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   tools/
     __init__.py
     notifications.py ntfy configuration and test-notification tools
+    events.py        list_events: follow the append-only event log from a cursor
     contents.py      Read-only repository contents: read_file, list_directory (registered repos only)
     projects.py      create_project: create a GitHub repository, seed its openspec/specs and register it, rolling back on failure
     specs.py         Spec tools: read (list_capabilities, get_capability), change (propose_spec_change, update_spec_change, with format checking), and the uses_specs detection helper
