@@ -434,6 +434,20 @@ def test_answer_question_refuses_an_unknown_outcome() -> None:
     mock.begin.assert_not_called()
 
 
+def test_open_questions_blocking_counts_only_unanswered_questions_on_the_issue() -> None:
+    mock = _mock_engine([{"id": 3}, {"id": 9}])
+    with patch("db._engine", return_value=mock):
+        ids = db.open_questions_blocking("uid", "owner/repo", 160)
+
+    assert ids == [3, 9]
+    (call,) = mock.connect.return_value.execute.call_args_list
+    sql = str(call[0][0])
+    assert "answered_at IS NULL" in sql
+    assert ":issue = ANY(blocks)" in sql
+    assert "ORDER BY id" in sql
+    assert call[0][1] == {"user_id": "uid", "repo_name": "owner/repo", "issue": 160}
+
+
 def test_answers_migration_allows_exactly_the_outcomes() -> None:
     from pathlib import Path
     from typing import get_args
