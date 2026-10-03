@@ -670,6 +670,43 @@ def open_questions_blocking(user_id: str, repo_name: str, issue: int) -> list[in
         return [row["id"] for row in conn.execute(sql, params).mappings().all()]
 
 
+def list_open_questions(user_id: str) -> list[dict[str, Any]]:
+    """Return the open questions in every repo *user_id* has registered, oldest first."""
+    sql = text(
+        f"""
+        SELECT {_QUESTION_COLUMNS}
+        FROM lachesis_questions
+        WHERE user_id = :user_id AND answered_at IS NULL
+          AND repo_name IN (SELECT repo_name FROM lachesis_repos WHERE user_id = :user_id)
+        ORDER BY created_at, id
+        """
+    )
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
+
+
+def search_answered_questions(user_id: str, repo_name: str, query: str) -> list[dict[str, Any]]:
+    """Return the answered questions in *repo_name* matching *query*, newest answer first.
+
+    Every word of *query* must match, by English stem, somewhere in the question,
+    its context or its answer.
+    """
+    sql = text(
+        f"""
+        SELECT {_QUESTION_COLUMNS}
+        FROM lachesis_questions
+        WHERE user_id = :user_id AND repo_name = :repo_name
+          AND answered_at IS NOT NULL
+          AND to_tsvector('english', question || ' ' || context || ' ' || answer)
+              @@ plainto_tsquery('english', :query)
+        ORDER BY answered_at DESC, id DESC
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "query": query}
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, params).mappings().all()]
+
+
 def answer_question(
     user_id: str,
     repo_name: str,

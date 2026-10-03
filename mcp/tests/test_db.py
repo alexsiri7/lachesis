@@ -448,6 +448,39 @@ def test_open_questions_blocking_counts_only_unanswered_questions_on_the_issue()
     assert call[0][1] == {"user_id": "uid", "repo_name": "owner/repo", "issue": 160}
 
 
+def test_list_open_questions_reads_open_questions_in_registered_repos_oldest_first() -> None:
+    rows = [{"id": 3, "repo_name": "owner/repo"}, {"id": 9, "repo_name": "owner/other"}]
+    mock = _mock_engine(rows)
+    with patch("db._engine", return_value=mock):
+        result = db.list_open_questions("uid")
+
+    assert result == rows
+    mock.begin.assert_not_called()
+    (call,) = mock.connect.return_value.execute.call_args_list
+    sql = str(call[0][0])
+    assert "answered_at IS NULL" in sql
+    assert "SELECT repo_name FROM lachesis_repos WHERE user_id = :user_id" in sql
+    assert "ORDER BY created_at, id" in sql
+    assert call[0][1] == {"user_id": "uid"}
+
+
+def test_search_answered_questions_matches_answered_questions_by_text() -> None:
+    rows = [{"id": 4, "answer": "Yes.", "outcome": "standing_rule"}]
+    mock = _mock_engine(rows)
+    with patch("db._engine", return_value=mock):
+        result = db.search_answered_questions("uid", "owner/repo", "priority labels")
+
+    assert result == rows
+    mock.begin.assert_not_called()
+    (call,) = mock.connect.return_value.execute.call_args_list
+    sql = str(call[0][0])
+    assert "answered_at IS NOT NULL" in sql
+    assert "question || ' ' || context || ' ' || answer" in sql
+    assert "plainto_tsquery('english', :query)" in sql
+    assert "ORDER BY answered_at DESC, id DESC" in sql
+    assert call[0][1] == {"user_id": "uid", "repo_name": "owner/repo", "query": "priority labels"}
+
+
 def test_answers_migration_allows_exactly_the_outcomes() -> None:
     from pathlib import Path
     from typing import get_args

@@ -42,7 +42,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
     notifications.py ntfy configuration and test-notification tools
     events.py        list_events: follow the append-only event log from a cursor
     notes.py         add_note and list_notes: append-only work notes on exactly one issue or milestone; next_issue returns the offered issue's notes
-    questions.py     ask_question: record a question for the author and mark the issues it blocks needs-author, pushing it to the author; ask_author asks one about a single issue through it; answer_question records an answer and its outcome, posts it on the blocked issues and releases those no other open question blocks; answer_author answers a single issue through it
+    questions.py     ask_question: record a question for the author and mark the issues it blocks needs-author, pushing it to the author; ask_author asks one about a single issue through it; answer_question records an answer and its outcome, posts it on the blocked issues and releases those no other open question blocks; answer_author answers a single issue through it; list_open_questions is the one queue of open questions across registered repos, oldest first; search_answered_questions finds answered questions by repo and text, with answer and outcome
     contents.py      Read-only repository contents: read_file, list_directory (registered repos only)
     projects.py      create_project: create a GitHub repository, seed its openspec/specs and register it, rolling back on failure
     specs.py         Spec tools: read (list_capabilities, get_capability), change (propose_spec_change, update_spec_change, with format checking), and the uses_specs detection helper

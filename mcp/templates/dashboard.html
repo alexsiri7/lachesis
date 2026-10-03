@@ -2,15 +2,35 @@
 {% block title %}Dashboard – Lachesis{% endblock %}
 {% block content %}
 <h1 class="text-xl font-bold mb-6">Requirements Dashboard</h1>
-{% if waiting_on_author or waiting_on_author_unreadable %}
+{% if open_questions or waiting_on_author or waiting_on_author_unreadable %}
 <section class="mb-8 bg-white rounded-lg border border-yellow-300 p-5">
-  <h2 class="font-semibold text-base mb-4">Waiting on you ({{ waiting_on_author | length }})</h2>
+  <h2 class="font-semibold text-base mb-4">Waiting on you ({{ open_questions | length + waiting_on_author | length }})</h2>
   {% if waiting_on_author_unreadable %}
   <p class="text-xs text-gray-500 mb-3">
     There may be more: could not search {{ waiting_on_author_unreadable | join(", ") }}.
   </p>
   {% endif %}
   <ul class="space-y-3">
+    {% for q in open_questions %}
+    <li class="text-sm">
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-gray-400 shrink-0">{{ q.repo_name }}</span>
+        <span class="flex-1">
+          {{ q.kind | replace("_", " ") }} question
+          {%- if q.capability %} on {{ q.capability }}{% endif %}
+          {%- if q.spec_change %} on spec change #{{ q.spec_change }}{% endif %}
+          {%- if q.milestone %} on milestone {{ q.milestone }}{% endif %}
+          {%- if q.issue %} on issue #{{ q.issue }}{% endif %}
+          {%- if q.blocks %}, blocking
+            {%- for n in q.blocks %} <a href="https://github.com/{{ q.repo_name }}/issues/{{ n }}" target="_blank"
+               class="font-mono text-gray-400 hover:underline">#{{ n }}</a>{% endfor %}
+          {%- endif %}
+        </span>
+        <span class="text-xs text-gray-500 shrink-0">waiting {{ q.waited }}</span>
+      </div>
+      <pre class="mt-1 ml-2 pl-3 border-l border-gray-100 whitespace-pre-wrap font-sans text-gray-700">{{ q.question }}</pre>
+    </li>
+    {% endfor %}
     {% for issue in waiting_on_author %}
     <li class="text-sm">
       <div class="flex items-center gap-3">
