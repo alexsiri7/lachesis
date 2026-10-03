@@ -586,3 +586,154 @@ def test_notes_migration_allows_exactly_the_note_types_on_one_subject() -> None:
     assert check is not None
     assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.NoteType))
     assert '"(issue IS NULL) <> (milestone IS NULL)"' in migration
+
+
+def _sequenced_engine(firsts: list[dict | None]) -> MagicMock:
+    """Return an engine whose successive execute() calls each yield one row from *firsts*."""
+    mock = _mock_engine([])
+    results = []
+    for row in firsts:
+        result = MagicMock()
+        result.mappings.return_value.first.return_value = row
+        results.append(result)
+    mock.begin.return_value.execute.side_effect = results
+    return mock
+
+
+def _events(mock: MagicMock) -> list[tuple[str, str]]:
+    return [
+        (call[0][1]["kind"], call[0][1]["subject"])
+        for call in mock.begin.return_value.execute.call_args_list
+        if "INSERT INTO lachesis_events" in str(call[0][0])
+    ]
+
+
+_MILESTONE = {"id": 7, "title": "B", "spec_changes": [170, 172]}
+
+
+def test_create_milestone_stores_it_its_spec_changes_and_events_in_one_transaction() -> None:
+    event = {"id": 1}
+    mock = _sequenced_engine([{"id": 7}, event, None, None, event, None, None, event, _MILESTONE])
+    with patch("db._engine", return_value=mock):
+        result = db.create_milestone("uid", "owner/repo", "B", "Goal", [170, 172])
+
+    assert result == _MILESTONE
+    mock.begin.assert_called_once()
+    calls = mock.begin.return_value.execute.call_args_list
+    assert "INSERT INTO lachesis_milestones" in str(calls[0][0][0])
+    inserts = [c for c in calls if "INSERT INTO lachesis_milestone_spec_changes" in str(c[0][0])]
+    assert [c[0][1]["spec_change"] for c in inserts] == [170, 172]
+    assert _events(mock) == [
+        ("milestone_created", "7"),
+        ("milestone_spec_change_added", "7:170"),
+        ("milestone_spec_change_added", "7:172"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("dropped_at", "match"),
+    [(None, r"already in milestone 3 \(A\);"), ("t", r"already in milestone 3 \(A\) \(dropped\)")],
+)
+def test_adding_a_spec_change_held_by_another_milestone_names_it(
+    dropped_at: str | None, match: str
+) -> None:
+    mock = _sequenced_engine(
+        [{"id": 7, "dropped_at": None}, {"id": 3, "title": "A", "dropped_at": dropped_at}]
+    )
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match=match):
+        db.add_milestone_spec_change("uid", "owner/repo", 7, 170)
+
+    calls = mock.begin.return_value.execute.call_args_list
+    assert "FOR UPDATE" in str(calls[0][0][0])
+    assert not any("INSERT" in str(c[0][0]) for c in calls)
+
+
+def test_a_dropped_milestone_takes_no_spec_changes() -> None:
+    mock = _sequenced_engine([{"id": 7, "dropped_at": "t"}])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="dropped"):
+        db.add_milestone_spec_change("uid", "owner/repo", 7, 170)
+
+
+def test_removing_a_spec_change_records_the_event() -> None:
+    mock = _sequenced_engine(
+        [{"id": 7, "dropped_at": None}, {"spec_change": 170}, {"id": 1}, _MILESTONE]
+    )
+    with patch("db._engine", return_value=mock):
+        db.remove_milestone_spec_change("uid", "owner/repo", 7, 170)
+
+    assert _events(mock) == [("milestone_spec_change_removed", "7:170")]
+
+
+def test_removing_a_spec_change_not_in_the_milestone_is_refused() -> None:
+    mock = _sequenced_engine([{"id": 7, "dropped_at": None}, None])
+    with (
+        patch("db._engine", return_value=mock),
+        pytest.raises(ValueError, match="not in milestone 7"),
+    ):
+        db.remove_milestone_spec_change("uid", "owner/repo", 7, 170)
+
+    assert _events(mock) == []
+
+
+@pytest.mark.parametrize(
+    ("row", "match"),
+    [
+        ({"id": 7, "dropped_at": None}, "already started"),
+        ({"id": 7, "dropped_at": "t"}, "is dropped"),
+        (None, "not found"),
+    ],
+)
+def test_only_a_planned_milestone_starts(row: dict | None, match: str) -> None:
+    mock = _sequenced_engine([None, row])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match=match):
+        db.start_milestone("uid", "owner/repo", 7)
+
+    assert _events(mock) == []
+
+
+def test_starting_a_milestone_records_the_event() -> None:
+    mock = _sequenced_engine([{"id": 7}, {"id": 1}, _MILESTONE])
+    with patch("db._engine", return_value=mock):
+        db.start_milestone("uid", "owner/repo", 7)
+
+    assert _events(mock) == [("milestone_started", "7")]
+
+
+def test_dropping_a_milestone_records_the_event() -> None:
+    mock = _sequenced_engine([{"id": 7}, {"id": 1}, _MILESTONE])
+    with patch("db._engine", return_value=mock):
+        db.drop_milestone("uid", "owner/repo", 7)
+
+    assert _events(mock) == [("milestone_dropped", "7")]
+
+
+@pytest.mark.parametrize(
+    ("last", "state", "recorded"),
+    [
+        (None, "active", False),
+        (None, "verifying", True),
+        ({"subject": "7:active"}, "verifying", True),
+        ({"subject": "7:verifying"}, "verifying", False),
+        ({"subject": "7:done"}, "verifying", True),
+    ],
+)
+def test_record_milestone_state_records_only_a_change(
+    last: dict | None, state: db.MilestoneState, recorded: bool
+) -> None:
+    mock = _sequenced_engine([{"id": 7, "dropped_at": None}, last, {"id": 1}])
+    with patch("db._engine", return_value=mock):
+        assert db.record_milestone_state("uid", "owner/repo", 7, state) is recorded
+
+    lock, read = mock.begin.return_value.execute.call_args_list[:2]
+    assert "FOR UPDATE" in str(lock[0][0])
+    assert read[0][1]["prefix"] == "7:%"
+    assert _events(mock) == ([("milestone_state_changed", f"7:{state}")] if recorded else [])
+
+
+def test_milestones_migration_stores_no_state_and_one_milestone_per_spec_change() -> None:
+    from pathlib import Path
+
+    migration = (Path(db.__file__).parent / "alembic/versions/012_milestones.py").read_text()
+    assert 'down_revision: str | None = "011"' in migration
+    assert re.search(r'UniqueConstraint\(\s*"user_id",\s*"repo_name",\s*"spec_change",', migration)
+    assert not re.search(r'sa\.Column\("(state|status)"', migration)
