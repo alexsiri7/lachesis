@@ -94,15 +94,15 @@ The system SHALL return the comments on any issue or pull request in a registere
 
 ### Requirement: Questions wait on the author
 
-Anyone working an issue SHALL be able to mark it as waiting on the author by posting the question as a comment in the same call that labels the issue `needs-author`. Answering SHALL post the answer as a comment and remove the label in one call. Marking and answering SHALL each be a single operation, so an issue is never labelled without its question or left labelled after its answer.
+Anyone working an issue SHALL be able to mark it as waiting on the author by asking a question as described in questions; the same operation SHALL post the question as a comment and label the issue `needs-author`. Answering SHALL post the answer as a comment, and SHALL remove the label once no other open question blocks the issue. Asking and answering SHALL each be a single operation, so an issue is never labelled without its question or left labelled after its last answer.
 
 #### Scenario: Asking
 - GIVEN the worker cannot tell what the spec intends for issue 160
 - WHEN it asks the author through the system
 - THEN issue 160 carries the question as its latest comment and the needs-author label
+- AND an open question record blocks issue 160
 
 #### Scenario: Answering
-- GIVEN issue 160 is waiting on the author
+- GIVEN issue 160 is waiting on one open question
 - WHEN the answer is posted through the system
 - THEN the answer is the latest comment and the needs-author label is gone
-
