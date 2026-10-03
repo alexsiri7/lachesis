@@ -75,7 +75,9 @@ For any other decision only the author can make — a spec contradiction, large 
 maturity or an improvement — or one that blocks several issues, call ask_question.
 
 When a session with the author starts, call get_dashboard before anything else and raise
-every question in its waiting_on_author list with the author first, oldest first.
+every question in its waiting_on_author list with the author first, oldest first. That
+list only holds questions that block an issue; one asked with ask_question that blocks
+nothing is not listed there.
 """
 
 

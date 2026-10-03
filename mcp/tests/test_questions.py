@@ -270,6 +270,30 @@ async def test_asking_reports_a_labelling_failure_after_the_question(
     record_question.assert_called_once()
 
 
+async def test_a_labelling_failure_part_way_leaves_earlier_labels(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question
+) -> None:
+    """Labelling the second issue fails: the first keeps its label and the failure is raised."""
+    _mock_comment(httpx_mock, 160)
+    _mock_comment(httpx_mock, 161)
+    _mock_labelling(httpx_mock, 160)
+    httpx_mock.add_response(method="POST", url=f"{_ISSUES_URL}/161/labels", status_code=500)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await ask_question(
+            "alexsiri7/lachesis", "Split this work?", "large_work", "archon", blocks=[160, 161]
+        )
+
+    assert _requests(httpx_mock) == [
+        ("POST", f"{_ISSUES_URL}/160/comments"),
+        ("POST", f"{_ISSUES_URL}/161/comments"),
+        ("POST", _LABELS_URL),
+        ("POST", f"{_ISSUES_URL}/160/labels"),
+        ("POST", f"{_ISSUES_URL}/161/labels"),
+    ]
+    record_question.assert_called_once()
+
+
 async def test_asking_raises_when_issue_missing(
     httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question
 ) -> None:
