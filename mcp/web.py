@@ -227,11 +227,18 @@ async def web_index(request: Request) -> Response:
 
     now = datetime.now(UTC)
     waiting = await waiting_on_author([row["repo_name"] for row in repos_raw])
+    open_questions = db.list_open_questions(lachesis_uid)
+    asked = {(q["repo_name"], number) for q in open_questions for number in q["blocks"]}
     return _render(
         "dashboard.html",
         user_email=user.get("email"),
+        open_questions=[
+            {**q, "waited": _waited(q["created_at"].isoformat(), now)} for q in open_questions
+        ],
         waiting_on_author=[
-            {**issue, "waited": _waited(issue["waiting_since"], now)} for issue in waiting.issues
+            {**issue, "waited": _waited(issue["waiting_since"], now)}
+            for issue in waiting.issues
+            if (issue["repo"], issue["number"]) not in asked
         ],
         waiting_on_author_unreadable=waiting.unreadable,
         repos=repos_data,

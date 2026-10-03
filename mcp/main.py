@@ -371,6 +371,27 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Return every open question for the author across the registered repositories, "
+        "oldest first — the one queue the author's assistant and agents both read. Each "
+        "has its id, repo_name, question, context, options, kind, asker, what it is "
+        "about (capability, spec_change, milestone, issue), the issues it blocks, "
+        "created_at and waiting_hours. Answer one with answer_question."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(question_tools.list_open_questions)
+
+mcp.tool(
+    description=(
+        "Search the answered questions in a registered repository for text: every word "
+        "must match, by stem, in the question, its context or its answer. Newest answer "
+        "first; each match carries its answer, answerer, answered_at and outcome. Search "
+        "before asking a question, and act on a matching answer instead of asking again."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(question_tools.search_answered_questions)
+
+mcp.tool(
+    description=(
         "Leave a note on the work in a registered repository: on exactly one `issue` "
         "(number) or `milestone`, never neither or both. `role` names who is writing, "
         "such as implementer or reviewer; `type` is one of handoff, finding, progress, "

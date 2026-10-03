@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -17,6 +18,8 @@ from tools.questions import (
     answer_question,
     ask_author,
     ask_question,
+    list_open_questions,
+    search_answered_questions,
 )
 
 _REAL_SEND = notify.send
@@ -686,3 +689,72 @@ async def test_answering_is_refused_when_the_issue_is_not_waiting(
 
     assert [method for method, _ in _requests(httpx_mock)] == ["GET"]
     blocking.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# One queue of open questions; questions are not asked twice
+# ---------------------------------------------------------------------------
+
+
+async def test_reading_the_queue(set_user_id: str) -> None:
+    """Scenario: Reading the queue — every open question, oldest first, with its kind,
+    what it is about, the issues it blocks and how long it has waited."""
+    now = datetime.now(UTC)
+    rows = [
+        {
+            "id": 3,
+            "repo_name": "alexsiri7/lachesis",
+            "kind": "spec_contradiction",
+            "capability": "questions",
+            "blocks": [160],
+            "created_at": now - timedelta(hours=30, minutes=1),
+        },
+        {
+            "id": 9,
+            "repo_name": "alexsiri7/kindred",
+            "kind": "maturity",
+            "capability": None,
+            "blocks": [],
+            "created_at": now - timedelta(hours=2, minutes=1),
+        },
+    ]
+    with patch("tools.questions.db.list_open_questions", return_value=rows) as queue:
+        result = await list_open_questions()
+
+    queue.assert_called_once_with("test-uid")
+    assert [q["id"] for q in result] == [3, 9]
+    assert [q["waiting_hours"] for q in result] == [30, 2]
+    assert result[0]["kind"] == "spec_contradiction"
+    assert result[0]["blocks"] == [160]
+
+
+async def test_already_answered(set_user_id: str, registered: None) -> None:
+    """Scenario: Already answered — searching returns the question with its answer and
+    outcome."""
+    answered = {
+        "id": 4,
+        "question": "May the backlog use priority labels?",
+        "answer": "Yes, as a standing rule.",
+        "outcome": "standing_rule",
+    }
+    with patch("tools.questions.db.search_answered_questions", return_value=[answered]) as search:
+        result = await search_answered_questions("lachesis", " priority labels ")
+
+    search.assert_called_once_with("test-uid", "alexsiri7/lachesis", "priority labels")
+    assert result == [answered]
+
+
+async def test_searching_for_nothing_is_refused(set_user_id: str, registered: None) -> None:
+    with patch("tools.questions.db.search_answered_questions") as search:
+        with pytest.raises(ValueError, match="text must not be empty"):
+            await search_answered_questions("lachesis", "   ")
+    search.assert_not_called()
+
+
+async def test_searching_is_refused_for_an_unregistered_repository(
+    set_user_id: str, registered: None
+) -> None:
+    with patch("tools.questions.db.search_answered_questions") as search:
+        with pytest.raises(ValueError, match="'someone/else' is not registered"):
+            await search_answered_questions("someone/else", "priority labels")
+    search.assert_not_called()

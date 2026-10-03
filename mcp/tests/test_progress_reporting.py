@@ -944,6 +944,7 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     monkeypatch.setattr("web.github.list_files", AsyncMock(return_value=[]))
     monkeypatch.setattr("web.uses_specs", AsyncMock(return_value=True))
     monkeypatch.setattr("web.github.list_waiting_issues", AsyncMock(return_value=[]))
+    monkeypatch.setattr("web.db.list_open_questions", MagicMock(return_value=[]))
     built = derive_spec_change(
         "merged", None, [1, 2, 3], {n: _facts(n, state="CLOSED", merged=True) for n in (1, 2, 3)}
     )
@@ -979,7 +980,12 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     assert "3 open" in resp.text
 
 
-async def _web_dashboard(monkeypatch: pytest.MonkeyPatch, list_waiting_issues: AsyncMock) -> str:
+async def _web_dashboard(
+    monkeypatch: pytest.MonkeyPatch,
+    list_waiting_issues: AsyncMock,
+    open_questions: list[dict[str, Any]] | None = None,
+    repos: list[str] | None = None,
+) -> str:
     from jose import jwt as jose_jwt
 
     from main import app
@@ -987,10 +993,14 @@ async def _web_dashboard(monkeypatch: pytest.MonkeyPatch, list_waiting_issues: A
 
     monkeypatch.setattr("web.settings.secret_key", "test-secret")
     monkeypatch.setattr("web.settings.allowed_email", "user@example.com")
-    monkeypatch.setattr("web.db.list_repos", MagicMock(return_value=[{"repo_name": "owner/repo"}]))
+    monkeypatch.setattr(
+        "web.db.list_repos",
+        MagicMock(return_value=[{"repo_name": name} for name in repos or ["owner/repo"]]),
+    )
     monkeypatch.setattr("web.github.list_files", AsyncMock(return_value=[]))
     monkeypatch.setattr("web.uses_specs", AsyncMock(return_value=False))
     monkeypatch.setattr("web.github.list_waiting_issues", list_waiting_issues)
+    monkeypatch.setattr("web.db.list_open_questions", MagicMock(return_value=open_questions or []))
     token = jose_jwt.encode(
         {"sub": "google-sub", "email": "user@example.com", "lachesis_uid": "uid", "exp": 2**31},
         "test-secret",
@@ -1031,6 +1041,83 @@ async def test_the_web_view_lists_the_questions_waiting_on_the_author_first(
     assert "Does a parked issue keep its position?" in page
     assert "waiting 6h" in page
     assert page.index("Waiting on you") < page.index("No requirements found.")
+
+
+async def test_the_web_view_lists_open_questions_then_issues_no_question_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def waiting(number: int, title: str) -> dict[str, Any]:
+        return {
+            "number": number,
+            "title": title,
+            "url": f"https://github.com/owner/repo/issues/{number}",
+            "question": None,
+            "waiting_since": "2026-09-01T00:00:00Z",
+        }
+
+    question = {
+        "id": 7,
+        "repo_name": "owner/repo",
+        "question": "May the backlog use priority labels?",
+        "kind": "large_work",
+        "capability": "backlog",
+        "spec_change": None,
+        "milestone": None,
+        "issue": None,
+        "blocks": [160],
+        "created_at": datetime.now(UTC) - timedelta(hours=30),
+    }
+    page = await _web_dashboard(
+        monkeypatch,
+        AsyncMock(return_value=[waiting(160, "Park issues"), waiting(99, "Labelled by hand")]),
+        open_questions=[question],
+    )
+
+    assert "Waiting on you (2)" in page
+    assert "May the backlog use priority labels?" in page
+    assert "large work question on backlog" in page
+    assert "waiting 1d" in page
+    assert "owner/repo#99" in page
+    assert "Park issues" not in page
+    assert page.index("May the backlog use priority labels?") < page.index("owner/repo#99")
+
+
+async def test_the_web_view_keeps_an_issue_whose_number_a_question_blocks_in_another_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def waiting_in(repo: str, label: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "number": 160,
+                "title": f"Park issues in {repo}",
+                "url": f"https://github.com/{repo}/issues/160",
+                "question": None,
+                "waiting_since": "2026-09-01T00:00:00Z",
+            }
+        ]
+
+    question = {
+        "id": 7,
+        "repo_name": "owner/repo-a",
+        "question": "May the backlog use priority labels?",
+        "kind": "large_work",
+        "capability": "backlog",
+        "spec_change": None,
+        "milestone": None,
+        "issue": None,
+        "blocks": [160],
+        "created_at": datetime.now(UTC) - timedelta(hours=30),
+    }
+    page = await _web_dashboard(
+        monkeypatch,
+        AsyncMock(side_effect=waiting_in),
+        open_questions=[question],
+        repos=["owner/repo-a", "owner/repo-b"],
+    )
+
+    assert "Waiting on you (2)" in page
+    assert "Park issues in owner/repo-b" in page
+    assert "Park issues in owner/repo-a" not in page
 
 
 async def test_the_web_view_says_when_a_repository_could_not_be_searched_for_questions(

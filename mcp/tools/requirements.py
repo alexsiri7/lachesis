@@ -67,6 +67,9 @@ the backlog by relative placement, and the interrupt flag for the one thing that
 must jump the queue. Call next_issue to ask what to pick up — it returns the top
 ready, unblocked issue, or explains why there is none.
 
+Before asking anything, call search_answered_questions with the repository and the words
+of your question. If an answer already settles it, act on that answer instead of asking
+again.
 When you cannot tell what the spec intends for an issue, do not guess: call ask_author
 with your question and move on to other work. The issue is labelled needs-author and
 next_issue passes over it, keeping its backlog position, until answer_author posts the
@@ -83,10 +86,11 @@ and report notes for the rest. Notes are never edited; a correction is a new not
 next_issue returns the offered issue's notes with it, oldest first; list_notes reads the
 notes on any issue or milestone.
 
-When a session with the author starts, call get_dashboard before anything else and raise
-every question in its waiting_on_author list with the author first, oldest first. That
-list only holds questions that block an issue; one asked with ask_question that blocks
-nothing is not listed there.
+When a session with the author starts,
+call list_open_questions and get_dashboard before anything else. Raise every open
+question with the author first, oldest first — the same queue agents read — then every
+issue in get_dashboard's waiting_on_author list that none of those questions blocks: it
+was labelled needs-author with no question recorded.
 """
 
 

@@ -711,8 +711,19 @@ async def test_session_start_with_the_author(httpx_mock: HTTPXMock, specs: bool 
         (_mock_spec_repo if specs else _mock_not_spec_repo)(httpx_mock)
     guidance = await get_initial_instructions(_REPO if specs is not None else None)
 
-    assert "call get_dashboard before anything else" in guidance
+    assert "call list_open_questions and get_dashboard before anything else" in guidance
     assert "waiting_on_author" in guidance
+
+
+@pytest.mark.parametrize("specs", [True, False, None])
+async def test_guidance_says_search_first(httpx_mock: HTTPXMock, specs: bool | None) -> None:
+    """Scenario: Guidance says search first"""
+    if specs is not None:
+        (_mock_spec_repo if specs else _mock_not_spec_repo)(httpx_mock)
+    guidance = await get_initial_instructions(_REPO if specs is not None else None)
+
+    assert "search_answered_questions" in guidance
+    assert guidance.index("search_answered_questions") < guidance.index("ask_author")
 
 
 # Issue fields the guidance names alongside the tools.

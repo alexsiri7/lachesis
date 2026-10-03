@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, get_args
 
 import db
@@ -186,6 +187,33 @@ async def answer_question(
         "comments": comments,
         "released": answered["released"],
     }
+
+
+async def list_open_questions() -> list[dict[str, Any]]:
+    """Return the open questions across every registered repository, oldest first.
+
+    Each is its record — kind, what it is about, the issues it ``blocks`` — with
+    ``waiting_hours``: whole hours since it was asked.
+    """
+    user_id = _require_user_id()
+    now = datetime.now(UTC)
+    return [
+        {**row, "waiting_hours": int((now - row["created_at"]).total_seconds() // 3600)}
+        for row in db.list_open_questions(user_id)
+    ]
+
+
+async def search_answered_questions(repo: str, text: str) -> list[dict[str, Any]]:
+    """Return the answered questions in *repo* matching *text*, newest answer first.
+
+    Each carries its answer, answerer, ``answered_at`` and outcome.
+    """
+    text = text.strip()
+    if not text:
+        raise ValueError("text must not be empty")
+    user_id = _require_user_id()
+    repo = await _resolve_repo(repo, require_registered=True)
+    return db.search_answered_questions(user_id, repo, text)
 
 
 async def answer_author(repo: str, number: int, answer: str) -> dict[str, Any]:
