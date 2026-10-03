@@ -29,6 +29,7 @@ from tools import contents as contents_tools
 from tools import events as event_tools
 from tools import notifications as notify_tools
 from tools import projects as project_tools
+from tools import questions as question_tools
 from tools import repos as repo_tools
 from tools import requirements as req_tools
 from tools import specs as spec_tools
@@ -314,9 +315,26 @@ mcp.tool(
         "the issue needs-author (creating the label if missing), so next_issue passes "
         "over it until it is answered. The question is posted first, so the issue is "
         "never labelled without it; if labelling then fails, the error is reported "
-        "and the question stays. Returns the question comment's url."
+        "and the question stays. The question is also recorded as a clarification "
+        "question blocking the issue. Returns the question comment's url."
     ),
-)(req_tools.ask_author)
+)(question_tools.ask_author)
+
+mcp.tool(
+    description=(
+        "Ask the author a question in a registered repository and record it. kind is "
+        "one of spec_contradiction, large_work, maturity, improvement, clarification; "
+        "asker names who is asking; context is what the author needs to answer; options "
+        "are optional suggested answers. The question is about the repository and "
+        "optionally a capability, spec_change (pull request number), milestone or "
+        "issue. Every issue in blocks gets the question as a comment and the "
+        "needs-author label, so next_issue passes over it. The question is recorded "
+        "after its comments are posted and before any label is added, so an issue is "
+        "never labelled without its question; a failure part-way is reported and "
+        "leaves what already happened. The question outlives the issues it names. "
+        "Returns the question id and the url of each comment."
+    ),
+)(question_tools.ask_question)
 
 mcp.tool(
     description=(
