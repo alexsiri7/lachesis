@@ -19,7 +19,6 @@ from tools.requirements import (
     _MAX_WRITE_ATTEMPTS,
     add_dependency,
     answer_author,
-    ask_author,
     create_github_issues,
     create_requirement,
     delete_requirement,
@@ -1842,7 +1841,7 @@ async def test_comments_refused_for_unregistered_repository(call, set_user_id: s
 
 
 # ---------------------------------------------------------------------------
-# ask_author / answer_author
+# answer_author
 # ---------------------------------------------------------------------------
 
 _ISSUE_160_URL = "https://api.github.com/repos/alexsiri7/lachesis/issues/160"
@@ -1867,62 +1866,6 @@ def _mock_issue_160(httpx_mock: HTTPXMock, labels: list[str]) -> None:
 
 def _requests(httpx_mock: HTTPXMock) -> list[tuple[str, str]]:
     return [(r.method, str(r.url)) for r in httpx_mock.get_requests()]
-
-
-async def test_asking(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    """Scenario: Asking — the question is the latest comment and the label is on."""
-    httpx_mock.add_response(
-        method="POST", url=f"{_ISSUE_160_URL}/comments", json={"html_url": _QUESTION_URL}
-    )
-    httpx_mock.add_response(
-        method="POST", url="https://api.github.com/repos/alexsiri7/lachesis/labels", status_code=201
-    )
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", json=[])
-
-    with patch("tools.requirements.db.list_repos", return_value=_REGISTERED):
-        result = await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
-
-    assert result == {"url": _QUESTION_URL}
-    requests = httpx_mock.get_requests()
-    assert json.loads(requests[0].content) == {"body": "Behaviour A or B?"}
-    assert json.loads(requests[1].content) == {"name": "needs-author", "color": "fbca04"}
-    assert json.loads(requests[2].content) == {"labels": ["needs-author"]}
-
-
-async def test_asking_does_not_label_when_the_question_fails(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """An issue must never carry needs-author without its question."""
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=500)
-
-    with (
-        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
-        pytest.raises(httpx.HTTPStatusError),
-    ):
-        await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
-
-    assert _requests(httpx_mock) == [("POST", f"{_ISSUE_160_URL}/comments")]
-
-
-async def test_asking_reports_a_labelling_failure_after_the_question(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """If labelling fails, the question stays and the failure is raised."""
-    httpx_mock.add_response(
-        method="POST", url=f"{_ISSUE_160_URL}/comments", json={"html_url": _QUESTION_URL}
-    )
-    httpx_mock.add_response(
-        method="POST", url="https://api.github.com/repos/alexsiri7/lachesis/labels", status_code=201
-    )
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/labels", status_code=500)
-
-    with (
-        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
-        pytest.raises(httpx.HTTPStatusError),
-    ):
-        await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
-
-    assert "DELETE" not in [method for method, _ in _requests(httpx_mock)]
 
 
 async def test_answering(httpx_mock: HTTPXMock, set_user_id: str) -> None:
@@ -1988,18 +1931,6 @@ async def test_answering_is_refused_when_the_issue_is_not_waiting(
         await answer_author("alexsiri7/lachesis", 160, "Behaviour A.")
 
     assert [method for method, _ in _requests(httpx_mock)] == ["GET"]
-
-
-async def test_asking_raises_when_issue_missing(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    httpx_mock.add_response(method="POST", url=f"{_ISSUE_160_URL}/comments", status_code=404)
-
-    with (
-        patch("tools.requirements.db.list_repos", return_value=_REGISTERED),
-        pytest.raises(FileNotFoundError, match="#160"),
-    ):
-        await ask_author("alexsiri7/lachesis", 160, "Behaviour A or B?")
-
-    assert len(httpx_mock.get_requests()) == 1
 
 
 # ---------------------------------------------------------------------------

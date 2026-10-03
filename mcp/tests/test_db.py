@@ -324,3 +324,64 @@ def test_events_migration_refuses_update_delete_and_truncate() -> None:
             r"FOR EACH \w+ EXECUTE FUNCTION lachesis_events_immutable\(\)"
         )
         assert re.search(trigger, migration)
+
+
+def test_record_question_stores_the_question_and_its_event_in_one_transaction() -> None:
+    row = {"id": 7, "repo_name": "owner/repo", "question": "A or B?", "blocks": [160]}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.record_question(
+            "uid",
+            "owner/repo",
+            "A or B?",
+            "spec_contradiction",
+            "archon",
+            context="why it matters",
+            options=["A", "B"],
+            capability="backlog",
+            blocks=[160],
+        )
+
+    assert result == row
+    mock.begin.assert_called_once()
+    question_call, event_call = mock.begin.return_value.execute.call_args_list
+    assert "INSERT INTO lachesis_questions" in str(question_call[0][0])
+    assert question_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "question": "A or B?",
+        "context": "why it matters",
+        "options": ["A", "B"],
+        "kind": "spec_contradiction",
+        "asker": "archon",
+        "capability": "backlog",
+        "spec_change": None,
+        "milestone": None,
+        "issue": None,
+        "blocks": [160],
+    }
+    assert "INSERT INTO lachesis_events" in str(event_call[0][0])
+    assert event_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "kind": "question_asked",
+        "subject": "7",
+    }
+
+
+def test_record_question_refuses_an_unknown_kind() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
+        db.record_question("uid", "owner/repo", "A or B?", "clarifcation", "archon")  # type: ignore[arg-type]
+
+    mock.begin.assert_not_called()
+
+
+def test_questions_migration_allows_exactly_the_question_kinds() -> None:
+    from pathlib import Path
+    from typing import get_args
+
+    migration = (Path(db.__file__).parent / "alembic/versions/009_questions.py").read_text()
+    check = re.search(r"\"kind IN \((.*?)\)\"", migration.replace('"\n            "', ""))
+    assert check is not None
+    assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.QuestionKind))

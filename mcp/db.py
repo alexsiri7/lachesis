@@ -10,6 +10,7 @@ Tables (all namespaced lachesis_):
   lachesis_ntfy_config    — per-account ntfy server, topic and token
   lachesis_notifications  — one row per requirement already notified (dedupe)
   lachesis_events         — append-only log of changes to the factory's records
+  lachesis_questions      — questions for the author and the issues each one blocks
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -27,7 +28,7 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Any, Literal, get_args
 
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Connection, Engine, create_engine, text
 
 from settings import settings
 
@@ -508,6 +509,13 @@ def record_event(user_id: str, repo_name: str, kind: EventKind, subject: str) ->
     """Append an event naming *subject* in *repo_name*. Events are never changed afterwards."""
     if kind not in get_args(EventKind):
         raise ValueError(f"kind must be one of {', '.join(get_args(EventKind))}, got {kind!r}")
+    with _engine().begin() as conn:
+        return _insert_event(conn, user_id, repo_name, kind, subject)
+
+
+def _insert_event(
+    conn: Connection, user_id: str, repo_name: str, kind: EventKind, subject: str
+) -> dict[str, Any]:
     sql = text(
         """
         INSERT INTO lachesis_events (user_id, repo_name, kind, subject)
@@ -516,9 +524,7 @@ def record_event(user_id: str, repo_name: str, kind: EventKind, subject: str) ->
         """
     )
     params = {"user_id": user_id, "repo_name": repo_name, "kind": kind, "subject": subject}
-    with _engine().begin() as conn:
-        result = conn.execute(sql, params)
-        row = result.mappings().first()
+    row = conn.execute(sql, params).mappings().first()
     if row is None:
         raise RuntimeError(f"record_event returned no row for {repo_name!r} {kind}")
     return dict(row)
@@ -557,3 +563,70 @@ def list_events(
     with _engine().connect() as conn:
         result = conn.execute(sql, params)
         return [dict(row) for row in result.mappings().all()]
+
+
+# ---------------------------------------------------------------------------
+# lachesis_questions
+# ---------------------------------------------------------------------------
+
+QuestionKind = Literal[
+    "spec_contradiction",
+    "large_work",
+    "maturity",
+    "improvement",
+    "clarification",
+]
+
+
+def record_question(
+    user_id: str,
+    repo_name: str,
+    question: str,
+    kind: QuestionKind,
+    asker: str,
+    *,
+    context: str = "",
+    options: list[str] | None = None,
+    capability: str | None = None,
+    spec_change: int | None = None,
+    milestone: str | None = None,
+    issue: int | None = None,
+    blocks: list[int] | None = None,
+) -> dict[str, Any]:
+    """Store a question and its ``question_asked`` event in one transaction."""
+    if kind not in get_args(QuestionKind):
+        raise ValueError(f"kind must be one of {', '.join(get_args(QuestionKind))}, got {kind!r}")
+    sql = text(
+        """
+        INSERT INTO lachesis_questions (
+            user_id, repo_name, question, context, options, kind, asker,
+            capability, spec_change, milestone, issue, blocks
+        )
+        VALUES (
+            :user_id, :repo_name, :question, :context, :options, :kind, :asker,
+            :capability, :spec_change, :milestone, :issue, :blocks
+        )
+        RETURNING id, repo_name, question, context, options, kind, asker,
+                  capability, spec_change, milestone, issue, blocks, created_at
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "question": question,
+        "context": context,
+        "options": options or [],
+        "kind": kind,
+        "asker": asker,
+        "capability": capability,
+        "spec_change": spec_change,
+        "milestone": milestone,
+        "issue": issue,
+        "blocks": blocks or [],
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+        if row is None:
+            raise RuntimeError(f"record_question returned no row for {repo_name!r}")
+        _insert_event(conn, user_id, repo_name, "question_asked", str(row["id"]))
+    return dict(row)

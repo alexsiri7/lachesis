@@ -71,6 +71,8 @@ When you cannot tell what the spec intends for an issue, do not guess: call ask_
 with your question and move on to other work. The issue is labelled needs-author and
 next_issue passes over it, keeping its backlog position, until answer_author posts the
 answer and removes the label.
+For any other decision only the author can make — a spec contradiction, large work,
+maturity or an improvement — or one that blocks several issues, call ask_question.
 
 When a session with the author starts, call get_dashboard before anything else and raise
 every question in its waiting_on_author list with the author first, oldest first.
@@ -1793,23 +1795,6 @@ async def post_comment(repo: str, number: int, body: str) -> dict[str, Any]:
     url = await github.create_issue_comment(repo, number, body)
     if url is None:
         raise FileNotFoundError(f"Issue or pull request #{number} not found in {repo!r}")
-    return {"url": url}
-
-
-async def ask_author(repo: str, number: int, question: str) -> dict[str, Any]:
-    """Post *question* on issue *number*, then label it ``needs-author``.
-
-    The question goes first so the issue is never labelled without it: if labelling
-    fails, the question stays and the failure is raised.
-    """
-    if not question.strip():
-        raise ValueError("question must not be empty")
-    repo = await _resolve_repo(repo, require_registered=True)
-    url = await github.create_issue_comment(repo, number, question)
-    if url is None:
-        raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
-    await github.ensure_label(repo, _NEEDS_AUTHOR_LABEL, _NEEDS_AUTHOR_COLOR)
-    await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
     return {"url": url}
 
 
