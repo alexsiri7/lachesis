@@ -5076,6 +5076,21 @@ async def test_update_requirement_rewrites_an_unquoted_zero_padded_id_quoted(
     assert frontmatter.loads(result["content"])["id"] == "020"
 
 
+async def test_link_issues_rewrites_an_unquoted_zero_padded_id_quoted(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Linking issues repairs 'id: 020' instead of preserving it as 16."""
+    httpx_mock.add_response(json=[])  # find_open_pr → no open PRs
+    httpx_mock.add_response(json=[{"name": _OCTAL_LOOKING_NAME, "path": _OCTAL_LOOKING_PATH}])
+    httpx_mock.add_response(json=_octal_looking_file_response())
+    httpx_mock.add_response(json={"content": {}, "commit": {}})
+
+    result = await link_issues("owner/repo", "020", _ISSUES)
+
+    assert "id: '020'" in result["content"]
+    assert frontmatter.loads(result["content"])["id"] == "020"
+
+
 async def test_create_requirement_writes_an_id_yaml_would_not_quote_quoted(
     httpx_mock: HTTPXMock,
 ) -> None:
