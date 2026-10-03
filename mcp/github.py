@@ -6,12 +6,13 @@ import asyncio
 import base64
 import logging
 import re
+from collections.abc import Callable
 from typing import Any, Literal, TypedDict
 from urllib.parse import quote
 
 import httpx
 
-from derive import ActivityFailure, BlockerFacts, CheckFacts, IssueFacts, PullFacts
+from derive import ActivityFailure, BlockerFacts, CheckFacts, IssueFacts, PullFacts, landed
 from settings import settings
 
 logger = logging.getLogger(__name__)
@@ -948,6 +949,33 @@ async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> Non
 
 _ISSUE_ACTIVITY_CHUNK = 25
 
+_PULL_FRAGMENT = """
+fragment pull on PullRequest {
+  number
+  state
+  merged
+  updatedAt
+  mergedAt
+  mergeCommit { oid }
+  isDraft
+  commits(last: 1) {
+    nodes {
+      commit {
+        statusCheckRollup {
+          contexts(first: 20) {
+            nodes {
+              __typename
+              ... on CheckRun { conclusion completedAt }
+              ... on StatusContext { state createdAt }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
 _ISSUE_ACTIVITY_FRAGMENT = """
 fragment activity on Issue {
   number
@@ -962,44 +990,39 @@ fragment activity on Issue {
     nodes { ... on ClosedEvent { closer { __typename } } }
   }
   closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
-    nodes {
-      number
-      state
-      merged
-      updatedAt
-      mergedAt
-      mergeCommit { oid }
-      isDraft
-      commits(last: 1) {
-        nodes {
-          commit {
-            statusCheckRollup {
-              contexts(first: 20) {
-                nodes {
-                  __typename
-                  ... on CheckRun { conclusion completedAt }
-                  ... on StatusContext { state createdAt }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+    nodes { ...pull }
   }
 }
 """
 
 
-def _issue_activity_query(numbers: list[int]) -> str:
-    aliases = "\n".join(f"    i{n}: issue(number: {n}) {{ ...activity }}" for n in numbers)
+def _aliased_query(aliases: str) -> str:
     return (
         "query($owner: String!, $name: String!) {\n"
         "  repository(owner: $owner, name: $name) {\n"
         f"{aliases}\n"
         "  }\n"
-        "}\n" + _ISSUE_ACTIVITY_FRAGMENT
+        "}\n"
     )
+
+
+def _issue_activity_query(numbers: list[int]) -> str:
+    aliases = "\n".join(f"    i{n}: issue(number: {n}) {{ ...activity }}" for n in numbers)
+    return _aliased_query(aliases) + _ISSUE_ACTIVITY_FRAGMENT + _PULL_FRAGMENT
+
+
+def _issue_comments_query(numbers: list[int]) -> str:
+    aliases = "\n".join(
+        f"    c{n}: issue(number: {n}) {{ number comments(last: 20) "
+        "{ nodes { body authorAssociation } } }"
+        for n in numbers
+    )
+    return _aliased_query(aliases)
+
+
+def _pull_lookup_query(numbers: list[int]) -> str:
+    aliases = "\n".join(f"    p{n}: pullRequest(number: {n}) {{ ...pull }}" for n in numbers)
+    return _aliased_query(aliases) + _PULL_FRAGMENT
 
 
 def _normalize_checks(pull: dict[str, Any]) -> list[CheckFacts]:
@@ -1065,7 +1088,43 @@ def _normalize_issue(issue: dict[str, Any]) -> IssueFacts:
     }
 
 
-_ISSUE_ALIAS = re.compile(r"i\d+")
+_TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+_PULL_MENTION = re.compile(r"(?<![\w/])#(\d+)\b")
+
+
+def _named_pulls(node: dict[str, Any]) -> list[int]:
+    """Return the numbers an issue's trusted comments name, other than its own.
+
+    Only people with write access are trusted: they could close the issue or
+    mark its requirement done by hand anyway, whereas anyone can comment.
+    """
+    named = {
+        int(match)
+        for comment in (node.get("comments") or {}).get("nodes") or []
+        if comment.get("authorAssociation") in _TRUSTED_ASSOCIATIONS
+        for match in _PULL_MENTION.findall(comment.get("body") or "")
+    }
+    named.discard(node["number"])
+    return sorted(named)
+
+
+def _issue_from_pull(pull: PullFacts) -> IssueFacts:
+    """Stand *pull* in for an issue: a requirement that recorded a pull request's
+    number in place of an issue's is tracking that pull request."""
+    return {
+        "number": pull["number"],
+        "state": "OPEN" if pull["state"] == "OPEN" else "CLOSED",
+        "updated_at": pull["updated_at"],
+        "labels": [],
+        "closed_by_commit": False,
+        "closed_at": pull["merged_at"],
+        "blocked_by": [],
+        "pulls": [pull],
+    }
+
+
+_NODE_ALIAS = re.compile(r"[icp]\d+")
 
 _FAILURE_RANK: dict[ActivityFailure, int] = {"rate_limited": 0, "inaccessible": 1, "transient": 2}
 
@@ -1084,19 +1143,20 @@ def _worse(current: ActivityFailure | None, candidate: ActivityFailure) -> Activ
     return min(current, candidate, key=_FAILURE_RANK.__getitem__)
 
 
-def _missing_issue(error: dict[str, Any]) -> bool:
-    """True when an error means only "no such issue", which the null node already says.
+def _missing_node(error: dict[str, Any]) -> bool:
+    """True when an error means only "nothing of that kind here", which the null node says.
 
-    GitHub reports a number that is a pull request, or an issue since deleted or
-    transferred, as a ``NOT_FOUND`` under that issue's own alias.  A repo it
-    cannot see is a ``NOT_FOUND`` at ``["repository"]``, which this leaves alone.
+    GitHub reports a number that is not an issue (``i``, or ``c`` for an issue's
+    comments) or not a pull request (``p``) as a ``NOT_FOUND`` under that
+    number's own alias.  A repo it cannot see is a ``NOT_FOUND`` at
+    ``["repository"]``, which this leaves alone.
     """
     path = error.get("path") or []
     return (
         error.get("type") == "NOT_FOUND"
         and len(path) == 2
         and path[0] == "repository"
-        and bool(_ISSUE_ALIAS.fullmatch(str(path[1])))
+        and bool(_NODE_ALIAS.fullmatch(str(path[1])))
     )
 
 
@@ -1106,7 +1166,7 @@ def _graphql_failure(errors: list[dict[str, Any]]) -> ActivityFailure | None:
     Dropping those first is load-bearing: classified the other way round, one
     linked number that is a pull request marks its whole repo unreadable.
     """
-    remaining = [error for error in errors if not _missing_issue(error)]
+    remaining = [error for error in errors if not _missing_node(error)]
     if not remaining:
         return None
     types = {error.get("type") for error in remaining}
@@ -1142,44 +1202,71 @@ def failure_from_exception(exc: BaseException) -> ActivityFailure:
     return "transient"
 
 
-async def _read_issue_chunk(
-    http: httpx.AsyncClient, repo: str, chunk: list[int]
-) -> tuple[dict[int, IssueFacts], ActivityFailure | None]:
-    """Read one aliased batch, returning the issues it yielded and what it could not."""
+async def _read_chunk(
+    http: httpx.AsyncClient, repo: str, query: str
+) -> tuple[dict[str, Any] | None, ActivityFailure | None]:
+    """Run one aliased query, returning its alias-to-node mapping and what went wrong."""
     owner, _, name = repo.partition("/")
     try:
         resp = await http.post(
             "https://api.github.com/graphql",
             headers=_headers(),
-            json={
-                "query": _issue_activity_query(chunk),
-                "variables": {"owner": owner, "name": name},
-            },
+            json={"query": query, "variables": {"owner": owner, "name": name}},
         )
     except httpx.RequestError as exc:
-        logger.warning("github.get_issue_activity unreachable repo=%s error=%r", repo, exc)
-        return {}, "transient"
+        logger.warning("github.issue_activity unreachable repo=%s error=%r", repo, exc)
+        return None, "transient"
     if not resp.is_success:
         refused = _response_failure(resp)
         logger.warning(
-            "github.get_issue_activity failed repo=%s status=%s cause=%s",
+            "github.issue_activity failed repo=%s status=%s cause=%s",
             repo,
             resp.status_code,
             refused,
         )
-        return {}, refused
+        return None, refused
     data = resp.json()
     errors = data.get("errors") or []
     failure = _graphql_failure(errors)
     if failure is not None:
         logger.warning(
-            "github.get_issue_activity graphql errors repo=%s cause=%s: %s", repo, failure, errors
+            "github.issue_activity graphql errors repo=%s cause=%s: %s", repo, failure, errors
         )
     repository = (data.get("data") or {}).get("repository")
     if repository is None:
-        logger.warning("github.get_issue_activity: no repository for repo=%s", repo)
-        return {}, _worse(failure, "inaccessible")
-    return {node["number"]: _normalize_issue(node) for node in repository.values() if node}, failure
+        logger.warning("github.issue_activity: no repository for repo=%s", repo)
+        return None, _worse(failure, "inaccessible")
+    return repository, failure
+
+
+async def _read_numbers(
+    http: httpx.AsyncClient,
+    repo: str,
+    numbers: list[int],
+    build_query: Callable[[list[int]], str],
+) -> tuple[dict[int, dict[str, Any]], list[int], ActivityFailure | None]:
+    """Read *numbers* in aliased batches: the nodes found, the numbers that are
+    certainly absent, and the worst failure.
+
+    Only a batch that read cleanly can say a number is absent; one that failed
+    says nothing about its numbers.
+    """
+    nodes: dict[int, dict[str, Any]] = {}
+    absent: list[int] = []
+    failure: ActivityFailure | None = None
+    for start in range(0, len(numbers), _ISSUE_ACTIVITY_CHUNK):
+        chunk = numbers[start : start + _ISSUE_ACTIVITY_CHUNK]
+        repository, chunk_failure = await _read_chunk(http, repo, build_query(chunk))
+        for alias, node in (repository or {}).items():
+            if node:
+                nodes[node["number"]] = node
+            elif chunk_failure is None:
+                absent.append(int(alias[1:]))
+        if chunk_failure is not None:
+            failure = _worse(failure, chunk_failure)
+            if chunk_failure != "transient":
+                break
+    return nodes, absent, failure
 
 
 async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
@@ -1187,7 +1274,13 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
 
     Issues are fetched in aliased batches, so a whole repo's requirements cost a
     request or two instead of one per requirement, and an empty *numbers* costs
-    none.  Issues that no longer exist are absent from ``facts``.
+    none.  Numbers that are neither an issue nor a pull request are absent from
+    ``facts``.
+
+    Two kinds of landing GitHub does not link are looked up too, each costing a
+    request only when it applies: a closed issue with nothing merged has its
+    trusted comments read for a named pull request that merged, and a number
+    that is a pull request rather than an issue stands for that pull request.
 
     Unlike the rest of this module this never raises when GitHub cannot be read:
     a caller reporting derived status degrades to saying so rather than failing
@@ -1198,17 +1291,42 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
     """
     if not numbers:
         return {"facts": {}, "failure": None}
-    facts: dict[int, IssueFacts] = {}
-    failure: ActivityFailure | None = None
     async with httpx.AsyncClient(timeout=10.0) as http:
-        for start in range(0, len(numbers), _ISSUE_ACTIVITY_CHUNK):
-            chunk = numbers[start : start + _ISSUE_ACTIVITY_CHUNK]
-            read, chunk_failure = await _read_issue_chunk(http, repo, chunk)
-            facts.update(read)
-            if chunk_failure is not None:
-                failure = _worse(failure, chunk_failure)
-                if chunk_failure != "transient":
-                    break
+        issues, absent, failure = await _read_numbers(http, repo, numbers, _issue_activity_query)
+        facts = {number: _normalize_issue(node) for number, node in issues.items()}
+        if failure not in (None, "transient"):
+            return {"facts": facts, "failure": failure}
+
+        named: dict[int, list[int]] = {}
+        unlanded = [
+            n for n, issue in facts.items() if issue["state"] == "CLOSED" and not landed(issue)
+        ]
+        if unlanded:
+            commented, _, comments_failure = await _read_numbers(
+                http, repo, unlanded, _issue_comments_query
+            )
+            named = {
+                n: mentions for n, node in commented.items() if (mentions := _named_pulls(node))
+            }
+            if comments_failure is not None:
+                failure = _worse(failure, comments_failure)
+
+        lookup = sorted((set(absent) | {m for ms in named.values() for m in ms}) - set(facts))
+        if not lookup or failure not in (None, "transient"):
+            return {"facts": facts, "failure": failure}
+        found, _, pulls_failure = await _read_numbers(http, repo, lookup, _pull_lookup_query)
+        if pulls_failure is not None:
+            failure = _worse(failure, pulls_failure)
+
+    pulls = {number: _normalize_pull(node) for number, node in found.items()}
+    for number in absent:
+        if number in pulls:
+            facts[number] = _issue_from_pull(pulls[number])
+    for number, mentions in named.items():
+        linked = {pull["number"] for pull in facts[number]["pulls"]}
+        facts[number]["pulls"].extend(
+            pulls[m] for m in mentions if m in pulls and pulls[m]["merged"] and m not in linked
+        )
     return {"facts": facts, "failure": failure}
 
 

@@ -127,7 +127,7 @@ def linked_issue_numbers(post: frontmatter.Post) -> list[int]:
     return numbers
 
 
-def _landed(issue: IssueFacts) -> bool:
+def landed(issue: IssueFacts) -> bool:
     """True when the issue was closed by code that merged.
 
     A squash merge closes its issue through the squash commit, which leaves
@@ -286,7 +286,7 @@ def derive(
     closed = [issue for issue in issues if issue["state"] == "CLOSED"]
     status: DerivedStatus
     if len(closed) == len(issues):
-        if all(_landed(issue) for issue in issues):
+        if all(landed(issue) for issue in issues):
             status = "done"
         else:
             status = "in-progress"
@@ -301,7 +301,7 @@ def derive(
     else:
         status = "idea"
     signals["checks_failing_since"] = _checks_failing_since(issues)
-    landed = status == "done"
+    is_done = status == "done"
 
     return {
         "status": status,
@@ -313,8 +313,8 @@ def derive(
             and PROGRESS_RANK[recorded] != PROGRESS_RANK[status]
         ),
         "last_activity": _last_activity(issues),
-        "landed_at": _landed_at(issues) if landed else None,
-        "landed_commit": _landed_commit(issues) if landed else None,
+        "landed_at": _landed_at(issues) if is_done else None,
+        "landed_commit": _landed_commit(issues) if is_done else None,
         "linked_issues": numbers,
         "blocked_by": _blocking_issues(issues),
         "signals": signals,
@@ -362,7 +362,7 @@ def spec_change_dropped(
     if (
         issues
         and len(issues) == len(numbers)
-        and all(issue["state"] == "CLOSED" and not _landed(issue) for issue in issues)
+        and all(issue["state"] == "CLOSED" and not landed(issue) for issue in issues)
     ):
         return "every issue naming it closed without a merged pull request"
     return None
