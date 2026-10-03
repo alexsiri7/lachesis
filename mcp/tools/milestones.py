@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, NamedTuple
 
+import httpx
+
 import db
 import github
+from derive import landed
+from spec_reference import SpecReference
 
 from .repos import _require_user_id
 from .requirements import _resolve_repo
-from .specs import _not_using_specs, read_spec_progress, spec_change_status, uses_specs
+from .specs import (
+    SpecProgress,
+    _not_using_specs,
+    read_spec_progress,
+    spec_change_requirements,
+    spec_change_status,
+    uses_specs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +145,12 @@ async def _view(
     return view
 
 
-async def _entries(repo: str) -> Entries:
-    progress = await read_spec_progress(repo)
+def _entries_of(progress: SpecProgress) -> Entries:
     return {c.entry["spec_change"]: c.entry for c in progress.landing_candidates}
+
+
+async def _entries(repo: str) -> Entries:
+    return _entries_of(await read_spec_progress(repo))
 
 
 def _require_milestone(user_id: str, repo: str, milestone: int) -> dict[str, Any]:
@@ -256,3 +271,138 @@ async def list_milestones(repo: str) -> list[dict[str, Any]]:
     rows = db.list_milestones(user_id, repo)
     entries = await _entries(repo) if any(_is_started(row) for row in rows) else {}
     return [await _view(user_id, repo, row, entries) for row in rows]
+
+
+def _normalized(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _names(ref: SpecReference, spec_change: int, capability: str, requirement: str) -> bool:
+    """Whether *ref* names *requirement* of *capability* in *spec_change*."""
+    return (
+        ref.spec_change == spec_change
+        and ref.capability == capability
+        and ref.requirement is not None
+        and _normalized(ref.requirement) == _normalized(requirement)
+    )
+
+
+async def _requirements_without_issues(
+    repo: str, spec_changes: list[int], references: dict[int, SpecReference]
+) -> tuple[list[dict[str, Any]], set[int]]:
+    """Return the requirements *spec_changes* add or change that no issue names.
+
+    Also returns the spec changes whose requirements could not be read.
+    """
+    results = await asyncio.gather(
+        *(spec_change_requirements(repo, number) for number in spec_changes),
+        return_exceptions=True,
+    )
+    gaps: list[dict[str, Any]] = []
+    unreadable: set[int] = set()
+    for number, result in zip(spec_changes, results, strict=True):
+        if isinstance(result, BaseException) and not isinstance(result, httpx.HTTPError):
+            raise result
+        if result is None or isinstance(result, BaseException):
+            logger.warning(
+                "could not read the requirements of spec change %s in %s: %r",
+                number,
+                repo,
+                result,
+            )
+            unreadable.add(number)
+            continue
+        gaps.extend(
+            {
+                "spec_change": number,
+                "capability": capability,
+                "requirement": requirement,
+                "change": change,
+            }
+            for capability, requirement, change in result
+            if not any(_names(ref, number, capability, requirement) for ref in references.values())
+        )
+    return gaps, unreadable
+
+
+async def _not_in_production(repo: str, entry: dict[str, Any]) -> dict[str, Any] | None:
+    derived = entry["derived"]
+    commit = derived["landed_commit"]
+    if derived["status"] != "done" or commit is None:
+        return None
+    deployment = await github.get_production_deployment(repo, commit)
+    if deployment is not None and deployment["state"] == "success":
+        return None
+    return {"spec_change": entry["spec_change"], "commit": commit, "deployment": deployment}
+
+
+def _blocking_questions(
+    user_id: str, repo: str, milestone: int, spec_changes: list[int], issues: set[int]
+) -> list[dict[str, Any]]:
+    return [
+        question
+        for question in db.list_open_questions(user_id)
+        if question["repo_name"] == repo
+        and (
+            issues.intersection(question["blocks"])
+            or question["milestone"] == str(milestone)
+            or question["spec_change"] in spec_changes
+        )
+    ]
+
+
+async def review_milestone(repo: str, milestone: int) -> dict[str, Any]:
+    """Return started *milestone* in *repo* as read, with what it is missing.
+
+    ``gaps`` holds the requirements its spec changes add or change that no issue
+    names, the issues closed without a merged pull request, the spec changes merged
+    but not yet in production, and the open questions blocking its work.  Gaps are
+    only claimed about what was read: ``unreadable`` lists the spec changes that
+    could not be, which are never clean.
+    """
+    user_id = _require_user_id()
+    repo = await _resolve_repo(repo, require_registered=True)
+    row = _require_milestone(user_id, repo, milestone)
+    if not _is_started(row):
+        state = "dropped" if row["dropped_at"] is not None else "planned"
+        raise ValueError(f"Milestone {milestone} is {state}; only a started milestone is reviewed")
+    progress = await read_spec_progress(repo)
+    entries = _entries_of(progress)
+    view = await _view(user_id, repo, row, entries)
+    spec_changes: list[int] = view["spec_changes"]
+
+    unreadable: set[int] = set()
+    read: list[dict[str, Any]] = []
+    for number in spec_changes:
+        entry = entries.get(number)
+        if entry is None or spec_change_status(entry) == "unreadable":
+            unreadable.add(number)
+        else:
+            read.append(entry)
+
+    issues = {n for n, ref in progress.references.items() if ref.spec_change in spec_changes}
+    closed_without_merge = [
+        {"issue": n, "spec_change": entry["spec_change"]}
+        for entry in read
+        for n in sorted(entry["derived"]["linked_issues"])
+        if (facts := progress.facts.get(n)) is not None
+        and facts["state"] == "CLOSED"
+        and not landed(facts)
+    ]
+    lagging = await asyncio.gather(*(_not_in_production(repo, entry) for entry in read))
+    requirements, unread = await _requirements_without_issues(
+        repo,
+        [entry["spec_change"] for entry in read if entry["state"] != "closed"],
+        progress.references,
+    )
+    unreadable |= unread
+    return {
+        **view,
+        "gaps": {
+            "requirements_without_issues": requirements,
+            "issues_closed_without_merge": closed_without_merge,
+            "merges_not_in_production": [gap for gap in lagging if gap is not None],
+            "open_questions": _blocking_questions(user_id, repo, milestone, spec_changes, issues),
+        },
+        "unreadable": [number for number in spec_changes if number in unreadable],
+    }

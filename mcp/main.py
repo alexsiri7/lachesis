@@ -475,6 +475,21 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Review a started milestone in a registered repository and return its `gaps`: "
+        "`requirements_without_issues` (requirements its spec changes add or change that no "
+        "issue names — an issue names one through the Requirement line of its spec "
+        "reference), `issues_closed_without_merge`, `merges_not_in_production` (spec changes "
+        "done but not yet in a successful production deployment) and `open_questions` "
+        "(blocking its issues, or asked about the milestone or its spec changes). Spec "
+        "changes that could not be read are listed in `unreadable` and never reported as "
+        "clean. Refused for a planned or dropped milestone. Also returns the milestone as "
+        "get_milestone reads it."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(milestone_tools.review_milestone)
+
+mcp.tool(
+    description=(
         "Return the dependency relationships of a GitHub issue: "
         "blocked_by (issues this one depends on) and "
         "blocking (issues that depend on this one). "

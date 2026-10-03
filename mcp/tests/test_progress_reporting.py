@@ -19,6 +19,7 @@ from auth import current_db_user_id
 from derive import IssueFacts, derive, derive_spec_change
 from groups import Candidate, group_requirements
 from landing import SpecChangeCandidate
+from spec_reference import SpecReference
 from tools.requirements import get_dashboard, list_requirements
 from tools.specs import list_spec_changes, read_spec_progress
 
@@ -515,6 +516,21 @@ async def test_audit_results(httpx_mock: HTTPXMock) -> None:
     assert progress.spec_gaps == {"backlog": 3, "issues": 1}
 
 
+async def test_progress_keeps_the_reference_of_each_issue_naming_a_spec_change(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        json=[
+            _issue_item(1, body=_reference(20, "milestones") + "\nRequirement: Review"),
+            _issue_item(2, body=_reference(None, "backlog"), labels=("spec-gap",)),
+        ]
+    )
+
+    progress = await read_spec_progress("owner/repo")
+
+    assert progress.references == {1: SpecReference(20, "milestones", "Review")}
+
+
 async def test_every_page_of_issues_is_read(httpx_mock: HTTPXMock) -> None:
     first_page = [_issue_item(n, body="No reference.") for n in range(1000, 1100)]
     httpx_mock.add_response(json=first_page)
@@ -957,7 +973,9 @@ async def test_the_web_view_lists_spec_changes_with_status_and_issue_count(
     }
     monkeypatch.setattr(
         "web.read_spec_progress",
-        AsyncMock(return_value=SpecProgress({"backlog": 3}, [SpecChangeCandidate("", change)])),
+        AsyncMock(
+            return_value=SpecProgress({"backlog": 3}, [SpecChangeCandidate("", change)], {}, {})
+        ),
     )
     token = jose_jwt.encode(
         {"sub": "google-sub", "email": "user@example.com", "lachesis_uid": "uid", "exp": 2**31},

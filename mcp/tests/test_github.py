@@ -30,6 +30,7 @@ from github import (
     get_issue,
     get_issue_activity,
     get_issue_dependencies,
+    get_merge_base,
     get_production_deployment,
     get_pull_request,
     get_repo_settings,
@@ -1008,6 +1009,39 @@ async def test_list_pull_request_files_raises_on_http_error(httpx_mock: HTTPXMoc
     httpx_mock.add_response(status_code=500)
     with pytest.raises(httpx.HTTPStatusError):
         await list_pull_request_files("owner/repo", 7)
+
+
+# ---------------------------------------------------------------------------
+# get_merge_base
+# ---------------------------------------------------------------------------
+
+_PULLS_7 = "https://api.github.com/repos/owner/repo/pulls/7"
+
+
+async def test_get_merge_base_returns_the_merge_base_and_head(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=_PULLS_7, json={"base": {"sha": "b1"}, "head": {"sha": "h1"}})
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/compare/b1...h1",
+        json={"merge_base_commit": {"sha": "mb"}},
+    )
+
+    assert await get_merge_base("owner/repo", 7) == ("mb", "h1")
+
+
+async def test_get_merge_base_of_a_missing_pull_request(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=_PULLS_7, status_code=404)
+
+    assert await get_merge_base("owner/repo", 7) is None
+
+
+async def test_get_merge_base_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=_PULLS_7, json={"base": {"sha": "b1"}, "head": {"sha": "h1"}})
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/compare/b1...h1", status_code=500
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_merge_base("owner/repo", 7)
 
 
 # ---------------------------------------------------------------------------

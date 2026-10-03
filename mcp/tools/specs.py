@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import httpx
 
@@ -20,7 +20,7 @@ from derive import (
     derive_spec_change,
     spec_change_dropped,
 )
-from spec_reference import parse_reference
+from spec_reference import SpecReference, parse_reference
 
 from .requirements import (
     _MAX_WRITE_ATTEMPTS,
@@ -49,6 +49,9 @@ _SCENARIO = re.compile(r"^#### Scenario:", re.MULTILINE)
 _NORMATIVE = re.compile(r"\b(?:SHALL|MUST)\b")
 _FENCE_OPENING = re.compile(r" {0,3}(?:(`{3,})[^`]*|(~{3,}).*)")
 _FENCE_CLOSING = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
+_SPEC_PATH = re.compile(rf"{SPECS_DIR}/({_CAPABILITY_NAME.pattern})/spec\.md")
+
+RequirementChange = Literal["added", "changed"]
 
 
 async def uses_specs(repo: str) -> bool:
@@ -196,6 +199,72 @@ def spec_problems(capability: str, spec: str) -> list[str]:
     return problems
 
 
+def requirement_texts(spec: str) -> dict[str, str]:
+    """Map each requirement in *spec*'s Requirements section to its text, in document order.
+
+    Trailing whitespace on a line and blank lines around the text are not part of it.
+    """
+    section = _REQUIREMENTS_SECTION.search(spec)
+    if section is None:
+        return {}
+    return {
+        block.group(1): "\n".join(line.rstrip() for line in block.group(2).strip().splitlines())
+        for block in _REQUIREMENT_BLOCK.finditer(section.group(1))
+    }
+
+
+def changed_requirements(
+    before: str | None, after: str | None
+) -> list[tuple[str, RequirementChange]]:
+    """Return the requirements *after* adds to or changes from *before*, in *after*'s order.
+
+    ``None`` is a spec that does not exist.  Removed requirements are not returned, and a
+    renamed one is added under its new name.
+    """
+    old = requirement_texts(before or "")
+    changes: list[tuple[str, RequirementChange]] = []
+    for name, text in requirement_texts(after or "").items():
+        if name not in old:
+            changes.append((name, "added"))
+        elif old[name] != text:
+            changes.append((name, "changed"))
+    return changes
+
+
+async def _spec_at(repo: str, path: str, ref: str) -> str | None:
+    try:
+        return (await github.get_raw_file(repo, path, ref=ref)).decode("utf-8")
+    except FileNotFoundError:
+        return None
+
+
+async def spec_change_requirements(
+    repo: str, number: int
+) -> list[tuple[str, str, RequirementChange]] | None:
+    """Return the requirements spec change *number* adds or changes, or ``None`` if it is gone.
+
+    Each is ``(capability, requirement, change)``, read by comparing every capability's
+    spec at the pull request's merge base and head.  A failed GitHub read raises.
+    """
+    commits = await github.get_merge_base(repo, number)
+    if commits is None:
+        return None
+    base, head = commits
+    capabilities = sorted(
+        match.group(1)
+        for path in set(await github.list_pull_request_files(repo, number))
+        if (match := _SPEC_PATH.fullmatch(path))
+    )
+    changes: list[tuple[str, str, RequirementChange]] = []
+    for capability in capabilities:
+        path = _spec_path(capability)
+        before, after = await asyncio.gather(_spec_at(repo, path, base), _spec_at(repo, path, head))
+        changes.extend(
+            (capability, name, change) for name, change in changed_requirements(before, after)
+        )
+    return changes
+
+
 def _check_capabilities(
     capabilities: Mapping[str, str | None], refusal: str = "Spec change refused"
 ) -> None:
@@ -340,11 +409,15 @@ class SpecProgress(NamedTuple):
     """A spec repository's spec changes, each derived, and its open spec gaps by capability.
 
     ``landing_candidates`` pairs every spec change's entry with its pull request's
-    description, which the entry itself does not carry.
+    description, which the entry itself does not carry.  ``references`` holds the
+    reference block of every issue naming a spec change, by issue number, and
+    ``facts`` the facts read for those issues, partial or empty when the read failed.
     """
 
     spec_gaps: dict[str, int]
     landing_candidates: list[landing.SpecChangeCandidate]
+    references: dict[int, SpecReference]
+    facts: dict[int, IssueFacts]
 
 
 def _spec_change_entry(
@@ -411,6 +484,7 @@ async def read_spec_progress(repo: str) -> SpecProgress:
     """
     items = await github.list_all_issues(repo)
     naming: dict[int, list[int]] = {}
+    references: dict[int, SpecReference] = {}
     spec_gaps: dict[str, int] = {}
     for item in items:
         if item["is_pull_request"]:
@@ -419,6 +493,7 @@ async def read_spec_progress(repo: str) -> SpecProgress:
         if ref is None:
             continue
         if ref.spec_change is not None:
+            references[item["number"]] = ref
             naming.setdefault(ref.spec_change, []).append(item["number"])
         elif item["state"] == "open" and SPEC_GAP_LABEL in item["labels"]:
             spec_gaps[ref.capability] = spec_gaps.get(ref.capability, 0) + 1
@@ -449,6 +524,8 @@ async def read_spec_progress(repo: str) -> SpecProgress:
             )
             for pull in pulls
         ],
+        references,
+        facts,
     )
 
 

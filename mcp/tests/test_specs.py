@@ -14,9 +14,11 @@ from pytest_httpx import HTTPXMock
 import main
 from tools.requirements import create_requirement, get_initial_instructions
 from tools.specs import (
+    changed_requirements,
     get_capability,
     list_capabilities,
     propose_spec_change,
+    spec_change_requirements,
     spec_problems,
     update_spec_change,
     uses_specs,
@@ -362,6 +364,102 @@ def test_format_check_reports_every_problem_at_once() -> None:
         "not only in its heading or scenarios",
         "backlog: requirement 'Issues are ordered' has no '#### Scenario:' heading",
     ]
+
+
+# ---------------------------------------------------------------------------
+# What a spec change adds or changes
+# ---------------------------------------------------------------------------
+
+_PARKING = "The system SHALL let an issue be parked."
+
+
+def test_an_added_requirement() -> None:
+    before = _BACKLOG_SPEC[: _BACKLOG_SPEC.index("### Requirement: Issues can be parked")]
+
+    assert changed_requirements(before, _BACKLOG_SPEC) == [("Issues can be parked", "added")]
+
+
+def test_a_changed_statement_or_scenario_is_a_change() -> None:
+    statement = _BACKLOG_SPEC.replace(_PARKING, "The system SHALL let any issue be parked.")
+    scenario = _BACKLOG_SPEC.replace("THEN it is skipped", "THEN it is skipped by next_issue")
+
+    assert changed_requirements(_BACKLOG_SPEC, statement) == [("Issues can be parked", "changed")]
+    assert changed_requirements(_BACKLOG_SPEC, scenario) == [("Issues can be parked", "changed")]
+
+
+def test_trailing_whitespace_and_blank_lines_are_no_change() -> None:
+    after = _BACKLOG_SPEC.replace(_PARKING, _PARKING + "  ").replace("\n### ", "\n\n### ")
+
+    assert changed_requirements(_BACKLOG_SPEC, after) == []
+
+
+def test_a_removed_requirement_is_not_reported() -> None:
+    after = _BACKLOG_SPEC[: _BACKLOG_SPEC.index("### Requirement: Issues can be parked")]
+
+    assert changed_requirements(_BACKLOG_SPEC, after) == []
+
+
+def test_every_requirement_of_a_new_capability_is_added() -> None:
+    assert changed_requirements(None, _BACKLOG_SPEC) == [
+        ("Issues are ordered", "added"),
+        ("Issues can be parked", "added"),
+    ]
+
+
+def _mock_spec_change_commits(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{_API}/pulls/12", json={"base": {"sha": "b1"}, "head": {"sha": "h1"}}
+    )
+    httpx_mock.add_response(
+        url=f"{_API}/compare/b1...h1", json={"merge_base_commit": {"sha": "mb"}}
+    )
+
+
+async def test_spec_change_requirements_compares_merge_base_with_head(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_change_commits(httpx_mock)
+    httpx_mock.add_response(
+        url=f"{_API}/pulls/12/files?per_page=100",
+        json=[{"filename": _ISSUES_PATH}, {"filename": _BACKLOG_PATH}, {"filename": "README.md"}],
+    )
+    before = _BACKLOG_SPEC[: _BACKLOG_SPEC.index("### Requirement: Issues can be parked")]
+    after = _BACKLOG_SPEC.replace("THEN the order changes", "THEN the order is kept")
+    for path, ref, text in [
+        (_BACKLOG_PATH, "mb", before),
+        (_BACKLOG_PATH, "h1", after),
+        (_ISSUES_PATH, "h1", _ISSUES_SPEC),
+    ]:
+        httpx_mock.add_response(url=f"{_API}/contents/{path}?ref={ref}", text=text)
+    httpx_mock.add_response(url=f"{_API}/contents/{_ISSUES_PATH}?ref=mb", status_code=404)
+
+    changes = await spec_change_requirements(_REPO, 12)
+
+    assert changes == [
+        ("backlog", "Issues are ordered", "changed"),
+        ("backlog", "Issues can be parked", "added"),
+        ("issues", "Issues are created", "added"),
+    ]
+
+
+async def test_spec_change_requirements_of_a_missing_pull_request(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=f"{_API}/pulls/12", status_code=404)
+
+    assert await spec_change_requirements(_REPO, 12) is None
+
+
+async def test_spec_change_requirements_raises_when_a_spec_cannot_be_read(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_change_commits(httpx_mock)
+    httpx_mock.add_response(
+        url=f"{_API}/pulls/12/files?per_page=100", json=[{"filename": _BACKLOG_PATH}]
+    )
+    httpx_mock.add_response(url=f"{_API}/contents/{_BACKLOG_PATH}?ref=mb", status_code=500)
+    httpx_mock.add_response(url=f"{_API}/contents/{_BACKLOG_PATH}?ref=h1", text=_BACKLOG_SPEC)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await spec_change_requirements(_REPO, 12)
 
 
 # ---------------------------------------------------------------------------
