@@ -451,6 +451,13 @@ def _repo_without_specs():
 
 
 @pytest.fixture(autouse=True)
+def _no_notes():
+    """Notes travelling with next_issue are covered by their own test below."""
+    with patch("tools.requirements.db.list_notes", return_value=[]) as mock:
+        yield mock
+
+
+@pytest.fixture(autouse=True)
 def _nobody_waiting_on_the_author():
     """Questions waiting on the author are covered in test_progress_reporting.py."""
     with patch("tools.requirements.github.list_waiting_issues", AsyncMock(return_value=[])):
@@ -3079,6 +3086,15 @@ async def test_stuck_on_intent() -> None:
     assert "answer_author" in result
 
 
+async def test_guidance_says_to_leave_a_handoff_note() -> None:
+    """Agents talk through notes on the work, so stopping on an issue leaves one."""
+    result = await get_initial_instructions()
+
+    assert "add_note" in result
+    assert "handoff" in result
+    assert "When you stop working on" in result
+
+
 # ---------------------------------------------------------------------------
 # Backlog ordering — get_backlog, move_issue, set_backlog_flags
 # ---------------------------------------------------------------------------
@@ -3549,6 +3565,26 @@ async def test_next_issue_returns_the_top_ready_unblocked_issue(
     assert result["issue"]["number"] == 2
     assert result["issue"]["repo"] == "owner/repo"
     assert result["blocked"] == []
+
+
+async def test_next_issue_returns_the_offered_issues_notes_oldest_first(
+    httpx_mock: HTTPXMock, set_user_id: str, _no_notes: MagicMock
+) -> None:
+    """Scenario: Picking up after a crash — the earlier run's handoff note comes along."""
+    _mock_open_issues(httpx_mock, [160])
+    _mock_blocked_by(httpx_mock, 160, [])
+    notes = [
+        {"id": 1, "issue": 160, "role": "implementer", "type": "progress", "text": "Started."},
+        {"id": 4, "issue": 160, "role": "implementer", "type": "handoff", "text": "Half done."},
+    ]
+    _no_notes.return_value = notes
+
+    with _patch_backlog(_FakeBacklog()):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 160
+    assert result["notes"] == notes
+    _no_notes.assert_called_once_with("test-uid", "owner/repo", issue=160)
 
 
 async def test_next_issue_interrupt_beats_position(httpx_mock: HTTPXMock, set_user_id: str) -> None:

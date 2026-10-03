@@ -728,3 +728,75 @@ def answer_question(
             .all()
         }
     return {**row, "released": [n for n in row["blocks"] if n not in still_blocked]}
+
+
+# ---------------------------------------------------------------------------
+# lachesis_notes
+# ---------------------------------------------------------------------------
+
+NoteType = Literal["handoff", "finding", "progress", "decision", "report"]
+
+_NOTE_COLUMNS = "id, repo_name, issue, milestone, role, type, text, created_at"
+
+
+def record_note(
+    user_id: str,
+    repo_name: str,
+    role: str,
+    note_type: NoteType,
+    body: str,
+    *,
+    issue: int | None = None,
+    milestone: str | None = None,
+) -> dict[str, Any]:
+    """Store a note on exactly one of *issue* or *milestone* and its ``note_added`` event."""
+    if note_type not in get_args(NoteType):
+        raise ValueError(f"type must be one of {', '.join(get_args(NoteType))}, got {note_type!r}")
+    if (issue is None) == (milestone is None):
+        raise ValueError("a note must name exactly one issue or milestone")
+    sql = text(
+        f"""
+        INSERT INTO lachesis_notes (user_id, repo_name, issue, milestone, role, type, text)
+        VALUES (:user_id, :repo_name, :issue, :milestone, :role, :type, :text)
+        RETURNING {_NOTE_COLUMNS}
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "issue": issue,
+        "milestone": milestone,
+        "role": role,
+        "type": note_type,
+        "text": body,
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+        if row is None:
+            raise RuntimeError(f"record_note returned no row for {repo_name!r}")
+        _insert_event(conn, user_id, repo_name, "note_added", str(row["id"]))
+    return dict(row)
+
+
+def list_notes(
+    user_id: str,
+    repo_name: str,
+    *,
+    issue: int | None = None,
+    milestone: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return the notes on exactly one of *issue* or *milestone*, oldest first."""
+    if (issue is None) == (milestone is None):
+        raise ValueError("notes are read for exactly one issue or milestone")
+    sql = text(
+        f"""
+        SELECT {_NOTE_COLUMNS}
+        FROM lachesis_notes
+        WHERE user_id = :user_id AND repo_name = :repo_name
+          AND (issue = :issue OR milestone = :milestone)
+        ORDER BY id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "issue": issue, "milestone": milestone}
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, params).mappings().all()]
