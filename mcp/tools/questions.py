@@ -132,3 +132,113 @@ async def ask_author(repo: str, number: int, question: str, asker: str = "agent"
         repo, question, "clarification", asker, blocks=[number], issue=number
     )
     return {"url": result["comments"][0]["url"]}
+
+
+async def answer_question(
+    repo: str,
+    id: int,
+    answer: str,
+    answerer: str,
+    outcome: db.OutcomeKind = "none",
+) -> dict[str, Any]:
+    """Answer open question *id*, posting *answer* on every issue it blocks.
+
+    The answer is posted on each blocked issue, then recorded with its answerer,
+    time and outcome, then ``needs-author`` is removed from each blocked issue no
+    other open question still blocks. That order keeps an issue from ever losing
+    the label without the answer on it; a failure part-way is raised and leaves
+    what already landed.
+
+    Returns ``{"id", "outcome", "comments": [{"issue", "url"}, ...], "released"}``.
+    """
+    answer = answer.strip()
+    answerer = answerer.strip()
+    if not answer:
+        raise ValueError("answer must not be empty")
+    if not answerer:
+        raise ValueError("answerer must not be empty")
+    if outcome not in get_args(db.OutcomeKind):
+        raise ValueError(
+            f"outcome must be one of {', '.join(get_args(db.OutcomeKind))}, got {outcome!r}"
+        )
+    user_id = _require_user_id()
+    repo = await _resolve_repo(repo, require_registered=True)
+    question = db.get_question(user_id, repo, id)
+    if question is None:
+        raise FileNotFoundError(f"Question {id} not found in {repo!r}")
+    if question["answered_at"] is not None:
+        raise ValueError(f"Question {id} in {repo!r} is already answered")
+
+    comments: list[dict[str, Any]] = []
+    for number in question["blocks"]:
+        url = await github.create_issue_comment(repo, number, answer)
+        if url is None:
+            raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
+        comments.append({"issue": number, "url": url})
+
+    answered = db.answer_question(user_id, repo, id, answer, answerer, outcome)
+
+    for number in answered["released"]:
+        await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
+    return {
+        "id": id,
+        "outcome": outcome,
+        "comments": comments,
+        "released": answered["released"],
+    }
+
+
+async def answer_author(repo: str, number: int, answer: str) -> dict[str, Any]:
+    """Answer the open question blocking issue *number*; see ``answer_question``.
+
+    Refused unless the issue is waiting on the author, or when several open
+    questions block it, since one answer cannot say which it settles. An issue
+    labelled ``needs-author`` with no open question behind it — by hand on GitHub,
+    or left labelled by a failed answer — gets the answer and loses the label
+    directly.
+
+    Returns ``{"url"}`` of the answer comment on *number*.
+    """
+    if not answer.strip():
+        raise ValueError("answer must not be empty")
+    user_id = _require_user_id()
+    repo = await _resolve_repo(repo, require_registered=True)
+    issue = await github.get_issue(repo, number)
+    if issue is None:
+        raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
+    if _NEEDS_AUTHOR_LABEL not in issue["labels"]:
+        raise ValueError(f"Issue #{number} in {repo!r} is not waiting on the author")
+    open_ids = db.open_questions_blocking(user_id, repo, number)
+    if len(open_ids) > 1:
+        raise ValueError(
+            f"Issue #{number} in {repo!r} is blocked by questions "
+            f"{', '.join(map(str, open_ids))}; answer each with answer_question"
+        )
+    if open_ids:
+        result = await answer_question(repo, open_ids[0], answer, "author")
+        return {"url": next(c["url"] for c in result["comments"] if c["issue"] == number)}
+    return await _answer_unrecorded(repo, number, answer)
+
+
+async def _answer_unrecorded(repo: str, number: int, answer: str) -> dict[str, Any]:
+    """Post *answer* on issue *number* and remove its ``needs-author`` label.
+
+    Either both land or neither does: if the answer cannot be posted, the label
+    is put back before the failure is raised. If putting it back fails too, a
+    ``RuntimeError`` names both failures.
+    """
+    await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
+    try:
+        url = await github.create_issue_comment(repo, number, answer)
+        if url is None:
+            raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
+    except Exception as failure:
+        try:
+            await github.add_labels(repo, number, [_NEEDS_AUTHOR_LABEL])
+        except Exception as restore_failure:
+            raise RuntimeError(
+                f"Answer to #{number} in {repo!r} failed ({failure!r}) and putting the "
+                f"needs-author label back also failed ({restore_failure!r})"
+            ) from failure
+        raise
+    return {"url": url}

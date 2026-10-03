@@ -342,12 +342,31 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Answer an issue that is waiting on the author: posts the answer as a comment "
-        "and removes the needs-author label, making the issue eligible for pickup again "
-        "at its original backlog position. Both happen or neither does. Refused if the "
-        "issue is not waiting on the author. Returns the answer comment's url."
+        "Answer an issue that is waiting on the author: answers the open question "
+        "blocking it as answer_question does, with answerer author and outcome none, "
+        "making the issue eligible for pickup again at its original backlog position "
+        "once no other open question blocks it. Refused if the issue is not waiting on "
+        "the author, or if several open questions block it — answer each with "
+        "answer_question. An issue labelled needs-author with no question recorded "
+        "gets the answer as a comment and loses the label; both happen or neither does. "
+        "Returns the answer comment's url."
     ),
-)(req_tools.answer_author)
+)(question_tools.answer_author)
+
+mcp.tool(
+    description=(
+        "Answer an open question in a registered repository by its id. answerer names "
+        "who answered; outcome is one of none, standing_rule, spec_change, new_project "
+        "and says what the answer became. The answer is posted as a comment on every "
+        "issue the question blocks, then recorded with its answerer, time and outcome, "
+        "then the needs-author label is removed from each of those issues that no "
+        "other open question still blocks, so next_issue can pick it up again. An "
+        "issue never loses the label without the answer on it; a failure part-way is "
+        "reported and leaves what already happened. Refused if the question is already "
+        "answered. Returns the question id, outcome, the url of each comment and the "
+        "released issues."
+    ),
+)(question_tools.answer_question)
 
 mcp.tool(
     description=(

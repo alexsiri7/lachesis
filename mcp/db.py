@@ -630,3 +630,101 @@ def record_question(
             raise RuntimeError(f"record_question returned no row for {repo_name!r}")
         _insert_event(conn, user_id, repo_name, "question_asked", str(row["id"]))
     return dict(row)
+
+
+OutcomeKind = Literal["none", "standing_rule", "spec_change", "new_project"]
+
+_QUESTION_COLUMNS = """id, repo_name, question, context, options, kind, asker,
+                  capability, spec_change, milestone, issue, blocks, created_at,
+                  answer, answerer, answered_at, outcome"""
+
+
+def get_question(user_id: str, repo_name: str, question_id: int) -> dict[str, Any] | None:
+    """Return question *question_id* in *repo_name*, or ``None`` if it is not there."""
+    sql = text(
+        f"""
+        SELECT {_QUESTION_COLUMNS}
+        FROM lachesis_questions
+        WHERE user_id = :user_id AND repo_name = :repo_name AND id = :id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "id": question_id}
+    with _engine().connect() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def open_questions_blocking(user_id: str, repo_name: str, issue: int) -> list[int]:
+    """Return the ids of the open questions in *repo_name* that block *issue*, oldest first."""
+    sql = text(
+        """
+        SELECT id
+        FROM lachesis_questions
+        WHERE user_id = :user_id AND repo_name = :repo_name
+          AND answered_at IS NULL AND :issue = ANY(blocks)
+        ORDER BY id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "issue": issue}
+    with _engine().connect() as conn:
+        return [row["id"] for row in conn.execute(sql, params).mappings().all()]
+
+
+def answer_question(
+    user_id: str,
+    repo_name: str,
+    question_id: int,
+    answer: str,
+    answerer: str,
+    outcome: OutcomeKind,
+) -> dict[str, Any]:
+    """Record the answer to an open question and its ``question_answered`` event.
+
+    Returns the answered question with ``released``: the issues it blocked that no
+    other open question still blocks. Raises ``ValueError`` unless the question is
+    in *repo_name* and still open.
+    """
+    if outcome not in get_args(OutcomeKind):
+        raise ValueError(
+            f"outcome must be one of {', '.join(get_args(OutcomeKind))}, got {outcome!r}"
+        )
+    answer_sql = text(
+        f"""
+        UPDATE lachesis_questions
+        SET answer = :answer, answerer = :answerer, answered_at = now(), outcome = :outcome
+        WHERE user_id = :user_id AND repo_name = :repo_name AND id = :id
+          AND answered_at IS NULL
+        RETURNING {_QUESTION_COLUMNS}
+        """
+    )
+    still_blocked_sql = text(
+        """
+        SELECT DISTINCT unnest(blocks) AS issue
+        FROM lachesis_questions
+        WHERE user_id = :user_id AND repo_name = :repo_name
+          AND answered_at IS NULL AND blocks && CAST(:blocks AS integer[])
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "id": question_id,
+        "answer": answer,
+        "answerer": answerer,
+        "outcome": outcome,
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(answer_sql, params).mappings().first()
+        if row is None:
+            raise ValueError(f"Question {question_id} in {repo_name!r} is not open")
+        _insert_event(conn, user_id, repo_name, "question_answered", str(row["id"]))
+        still_blocked = {
+            r["issue"]
+            for r in conn.execute(
+                still_blocked_sql,
+                {"user_id": user_id, "repo_name": repo_name, "blocks": row["blocks"]},
+            )
+            .mappings()
+            .all()
+        }
+    return {**row, "released": [n for n in row["blocks"] if n not in still_blocked]}

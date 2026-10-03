@@ -385,3 +385,60 @@ def test_questions_migration_allows_exactly_the_question_kinds() -> None:
     check = re.search(r"\"kind IN \((.*?)\)\"", migration.replace('"\n            "', ""))
     assert check is not None
     assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.QuestionKind))
+
+
+def test_answer_question_records_the_answer_and_its_event_in_one_transaction() -> None:
+    row = {"id": 7, "repo_name": "owner/repo", "blocks": [160, 161], "issue": 160}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.answer_question("uid", "owner/repo", 7, "Always A.", "alex", "standing_rule")
+
+    mock.begin.assert_called_once()
+    answer_call, event_call, still_blocked_call = mock.begin.return_value.execute.call_args_list
+    assert "UPDATE lachesis_questions" in str(answer_call[0][0])
+    assert "answered_at IS NULL" in str(answer_call[0][0])
+    assert answer_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "id": 7,
+        "answer": "Always A.",
+        "answerer": "alex",
+        "outcome": "standing_rule",
+    }
+    assert event_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "kind": "question_answered",
+        "subject": "7",
+    }
+    assert "answered_at IS NULL" in str(still_blocked_call[0][0])
+    assert still_blocked_call[0][1]["blocks"] == [160, 161]
+    # The mocked engine answers every query with the same row, so issue 160 reads
+    # as still blocked by another open question and 161 as released.
+    assert result["released"] == [161]
+
+
+def test_answer_question_refuses_a_question_that_is_not_open() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="not open"):
+        db.answer_question("uid", "owner/repo", 7, "Always A.", "alex", "none")
+
+    assert len(mock.begin.return_value.execute.call_args_list) == 1
+
+
+def test_answer_question_refuses_an_unknown_outcome() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="outcome"):
+        db.answer_question("uid", "owner/repo", 7, "A.", "alex", "rule")  # type: ignore[arg-type]
+
+    mock.begin.assert_not_called()
+
+
+def test_answers_migration_allows_exactly_the_outcomes() -> None:
+    from pathlib import Path
+    from typing import get_args
+
+    migration = (Path(db.__file__).parent / "alembic/versions/010_question_answers.py").read_text()
+    check = re.search(r"\"outcome IN \((.*?)\)\"", migration)
+    assert check is not None
+    assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.OutcomeKind))
