@@ -984,6 +984,7 @@ async def _web_dashboard(
     monkeypatch: pytest.MonkeyPatch,
     list_waiting_issues: AsyncMock,
     open_questions: list[dict[str, Any]] | None = None,
+    repos: list[str] | None = None,
 ) -> str:
     from jose import jwt as jose_jwt
 
@@ -992,7 +993,10 @@ async def _web_dashboard(
 
     monkeypatch.setattr("web.settings.secret_key", "test-secret")
     monkeypatch.setattr("web.settings.allowed_email", "user@example.com")
-    monkeypatch.setattr("web.db.list_repos", MagicMock(return_value=[{"repo_name": "owner/repo"}]))
+    monkeypatch.setattr(
+        "web.db.list_repos",
+        MagicMock(return_value=[{"repo_name": name} for name in repos or ["owner/repo"]]),
+    )
     monkeypatch.setattr("web.github.list_files", AsyncMock(return_value=[]))
     monkeypatch.setattr("web.uses_specs", AsyncMock(return_value=False))
     monkeypatch.setattr("web.github.list_waiting_issues", list_waiting_issues)
@@ -1076,6 +1080,44 @@ async def test_the_web_view_lists_open_questions_then_issues_no_question_blocks(
     assert "owner/repo#99" in page
     assert "Park issues" not in page
     assert page.index("May the backlog use priority labels?") < page.index("owner/repo#99")
+
+
+async def test_the_web_view_keeps_an_issue_whose_number_a_question_blocks_in_another_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def waiting_in(repo: str, label: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "number": 160,
+                "title": f"Park issues in {repo}",
+                "url": f"https://github.com/{repo}/issues/160",
+                "question": None,
+                "waiting_since": "2026-09-01T00:00:00Z",
+            }
+        ]
+
+    question = {
+        "id": 7,
+        "repo_name": "owner/repo-a",
+        "question": "May the backlog use priority labels?",
+        "kind": "large_work",
+        "capability": "backlog",
+        "spec_change": None,
+        "milestone": None,
+        "issue": None,
+        "blocks": [160],
+        "created_at": datetime.now(UTC) - timedelta(hours=30),
+    }
+    page = await _web_dashboard(
+        monkeypatch,
+        AsyncMock(side_effect=waiting_in),
+        open_questions=[question],
+        repos=["owner/repo-a", "owner/repo-b"],
+    )
+
+    assert "Waiting on you (2)" in page
+    assert "Park issues in owner/repo-b" in page
+    assert "Park issues in owner/repo-a" not in page
 
 
 async def test_the_web_view_says_when_a_repository_could_not_be_searched_for_questions(
