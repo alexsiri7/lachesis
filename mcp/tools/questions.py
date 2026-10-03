@@ -6,7 +6,6 @@ from typing import Any, get_args
 
 import db
 import github
-import landing
 import notify
 
 from .repos import _require_user_id
@@ -15,6 +14,12 @@ from .requirements import _NEEDS_AUTHOR_COLOR, _NEEDS_AUTHOR_LABEL, _resolve_rep
 # ntfy turns a message over 4096 bytes into an attachment; the full question
 # stays in its record and on any issue it names.
 _QUESTION_MAX_CHARS = 1000
+
+
+def _clip(question: str) -> str:
+    if len(question) <= _QUESTION_MAX_CHARS:
+        return question
+    return question[:_QUESTION_MAX_CHARS].rsplit(" ", 1)[0] + "..."
 
 
 def _comment_body(question: str, context: str, options: list[str]) -> str:
@@ -41,7 +46,7 @@ async def _tell_author(
     await notify.send(
         user_id,
         title=title,
-        body=landing._clip(question, _QUESTION_MAX_CHARS),
+        body=_clip(question),
         click=f"https://github.com/{repo}/issues/{linked}" if linked is not None else None,
         tags=["question"],
     )

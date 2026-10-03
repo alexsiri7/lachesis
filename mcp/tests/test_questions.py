@@ -137,7 +137,7 @@ async def test_one_question_two_issues(
 
 
 async def test_a_question_is_recorded_before_any_issue_is_labelled(
-    httpx_mock: HTTPXMock, set_user_id: str, registered: None
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, sent: AsyncMock
 ) -> None:
     """An issue must never carry needs-author without a recorded question."""
     _mock_comment(httpx_mock, 160)
@@ -155,6 +155,7 @@ async def test_a_question_is_recorded_before_any_issue_is_labelled(
 
     assert calls_at_record == [1]
     assert _requests(httpx_mock) == [("POST", f"{_ISSUES_URL}/160/comments")]
+    sent.assert_not_awaited()
 
 
 async def test_a_missing_blocked_issue_records_and_labels_nothing(
