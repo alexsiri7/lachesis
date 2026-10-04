@@ -53,7 +53,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
     contents.py      Read-only repository contents: read_file, list_directory (registered repos only)
     projects.py      create_project: create a GitHub repository, seed its openspec/specs and register it, rolling back on failure
     specs.py         Spec tools: read (list_capabilities, get_capability), change (propose_spec_change, update_spec_change, with format checking), and the uses_specs detection helper
-    requirements.py  All 12 MCP tool implementations (includes read-only get_initial_instructions, get_github_issue, get_comments, get_dependencies; write tools add_dependency, post_comment, answer_author, update_github_issue)
+    requirements.py  All 12 MCP tool implementations (includes read-only get_initial_instructions, get_morning_briefing, get_github_issue, get_comments, get_dependencies; write tools add_dependency, post_comment, answer_author, update_github_issue)
   templates/
     dashboard.html   Read-only requirements dashboard (Jinja2)
   Dockerfile
