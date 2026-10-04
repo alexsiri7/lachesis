@@ -77,6 +77,16 @@ def test_fewer_than_five_matching_issues_are_low_confidence() -> None:
     assert estimate["samples"] == 4
 
 
+def test_exactly_five_matching_issues_are_normal_confidence() -> None:
+    issues = [_issue(n, capability="backlog") for n in range(1, 6)]
+    usage = {n: {"implementation": 1000} for n in range(1, 6)}
+
+    estimate = estimate_from_history(20, "implementation", "backlog", issues, usage)
+
+    assert estimate["confidence"] == "normal"
+    assert estimate["samples"] == 5
+
+
 def test_history_ignores_open_issues_pull_requests_the_target_other_kinds_and_capabilities() -> (
     None
 ):

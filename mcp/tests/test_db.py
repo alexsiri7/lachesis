@@ -691,14 +691,19 @@ def test_set_estimate_refuses_an_unknown_kind() -> None:
     mock.begin.assert_not_called()
 
 
-def test_estimates_migration_allows_exactly_the_kinds_and_one_estimate_per_issue() -> None:
+def test_estimates_migration_allows_exactly_the_typed_values_and_one_estimate_per_issue() -> None:
     from pathlib import Path
     from typing import get_args
 
     migration = (Path(db.__file__).parent / "alembic/versions/016_estimates.py").read_text()
-    check = re.search(r"\"kind IN \((.*?)\)\"", migration)
-    assert check is not None
-    assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(db.UsageKind))
+    for column, values in (
+        ("kind", db.UsageKind),
+        ("confidence", db.EstimateConfidence),
+        ("basis", db.EstimateBasis),
+    ):
+        check = re.search(rf"\"{column} IN \((.*?)\)\"", migration)
+        assert check is not None
+        assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(values))
     assert 'sa.UniqueConstraint("user_id", "repo_name", "issue"' in migration
     assert 'down_revision: str | None = "015"' in migration
 
