@@ -806,6 +806,7 @@ async def test_session_start_in_a_repository_without_specs(httpx_mock: HTTPXMock
         assert step in guidance
     assert "draft" in guidance
     assert all(tool in guidance for tool in _BACKLOG_TOOLS)
+    assert "Milestone owner" not in guidance
 
 
 async def test_session_start_without_a_repository() -> None:
@@ -836,6 +837,19 @@ async def test_guidance_says_search_first(httpx_mock: HTTPXMock, specs: bool | N
 
     assert "search_answered_questions" in guidance
     assert guidance.index("search_answered_questions") < guidance.index("ask_author")
+
+
+@pytest.mark.parametrize("specs", [True, None])
+async def test_owner_guidance(httpx_mock: HTTPXMock, specs: bool | None) -> None:
+    """Scenario: Owner guidance"""
+    if specs:
+        _mock_spec_repo(httpx_mock)
+    guidance = await get_initial_instructions(_REPO if specs else None)
+
+    assert "Milestone owner" in guidance
+    assert "review_milestone on every milestone that is active or verifying" in guidance
+    assert "add_note on the milestone" in guidance
+    assert "never edits the spec" in guidance
 
 
 # Issue fields the guidance names alongside the tools.

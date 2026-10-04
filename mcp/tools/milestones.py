@@ -10,6 +10,7 @@ import httpx
 
 import db
 import github
+import notify
 from derive import landed
 from spec_reference import SpecReference
 
@@ -118,13 +119,50 @@ def _work(spec_changes: list[int], entries: Entries) -> list[dict[str, Any]]:
     return work
 
 
+def _delivered(view: dict[str, Any]) -> str:
+    """Summarise what done milestone *view* delivered, for its report note."""
+    lines = [f"Done and available: {view['title']}.", f"Goal: {view['goal']}", ""]
+    lines.extend(f"- #{w['spec_change']} {w['title']} ({w['url']})" for w in view["work"])
+    deployment = view["deployment"] or {}
+    lines.extend(["", f"Last merge {view['last_merge']}, live at {deployment.get('url')}."])
+    return "\n".join(lines)
+
+
+async def _report_done(user_id: str, repo: str, view: dict[str, Any]) -> None:
+    """Report done milestone *view* with a note and a push notification, once ever.
+
+    The claim is taken first and gates both, so a report that fails after it is
+    dropped rather than repeated. Never raises.
+    """
+    try:
+        if not db.claim_notification(user_id, repo, f"milestone:{view['id']}"):
+            return
+        db.record_note(
+            user_id, repo, "lachesis", "report", _delivered(view), milestone=str(view["id"])
+        )
+        deployment = view["deployment"] or {}
+        await notify.send(
+            user_id,
+            title=f"Milestone done: {view['title']} ({repo})",
+            body=f"{view['goal']}\n\nDone and available: every spec change in it is live.",
+            click=deployment.get("url") or f"https://github.com/{repo}",
+            tags=["tada"],
+        )
+    except Exception:
+        logger.warning(
+            "could not report milestone %s in %s as done", view["id"], repo, exc_info=True
+        )
+
+
 async def _view(
     user_id: str, repo: str, milestone: dict[str, Any], entries: Entries
 ) -> dict[str, Any]:
     """Return *milestone* as read, deriving its state when it has started.
 
     A conclusive derivation that changed the state records it as an event; a
-    failure to record never fails the read, and the next read tries again.
+    failure to record never fails the read, and the next read tries again. The
+    first read that finds it done also reports it, and a failure to report never
+    fails the read either.
     """
     view: dict[str, Any] = {
         "id": milestone["id"],
@@ -156,6 +194,8 @@ async def _view(
                 repo,
                 exc_info=True,
             )
+    if derivation.state == "done":
+        await _report_done(user_id, repo, view)
     return view
 
 

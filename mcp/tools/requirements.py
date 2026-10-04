@@ -93,12 +93,29 @@ issue in get_dashboard's waiting_on_author list that none of those questions blo
 was labelled needs-author with no question recorded.
 """
 
+_MILESTONE_OWNER = """\
+Milestone owner, for an unattended agent run on a schedule in repositories that use specs.
+On each run, call list_repos, then list_milestones for each repository, and call
+review_milestone on every milestone that is active or verifying. Close its gaps:
+- a requirement no issue names: create_github_issues with an issue naming its spec change,
+  capability and requirement;
+- an issue closed without a merged pull request: create_github_issues with a spec gap
+  (spec_gap: true) for the work it dropped;
+- a gap you cannot close without the author: ask_question about the milestone, and move on.
+Merges not yet in production need nothing from you. Then call add_note on the milestone
+with type progress, saying what you found and what you did.
+The milestone owner never edits the spec: it never calls propose_spec_change or
+update_spec_change. When a milestone is done, Lachesis itself sends the author one push
+notification and adds a report note to the milestone.
+"""
+
 
 async def get_initial_instructions(repo: str | None = None) -> str:
     """Return the Lachesis workflow for new Claude sessions.
 
     With *repo*, only the workflow that applies there; without, both and how to
-    tell which applies.
+    tell which applies. Wherever the spec workflow applies, so does the milestone
+    owner's.
     """
     # specs imports this module, so it cannot be imported at the top.
     from .specs import uses_specs
@@ -109,7 +126,8 @@ async def get_initial_instructions(repo: str | None = None) -> str:
         workflows = [_SPEC_WORKFLOW]
     else:
         workflows = [_REQUIREMENT_WORKFLOW]
-    return "\n".join([*workflows, _BACKLOG])
+    owner = [_MILESTONE_OWNER] if _SPEC_WORKFLOW in workflows else []
+    return "\n".join([*workflows, _BACKLOG, *owner])
 
 
 async def _resolve_repo(repo: str, *, require_registered: bool = False) -> str:
