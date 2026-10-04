@@ -1,0 +1,2 @@
+# Report-only until every existing scenario has its acceptance test; then set to true.
+enforce: false

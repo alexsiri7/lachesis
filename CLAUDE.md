@@ -59,6 +59,10 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   Dockerfile
   pyproject.toml
   requirements.txt
+tests/acceptance/   One acceptance test per spec scenario (see "Acceptance tests" below)
+  harness/         The only route into the app: MCP over HTTP, GitHub stubbed, a disposable Postgres
+  coverage.yml     `enforce:` turns scenario-coverage gaps from a report into a failure
+ci/                Delivery checks run by .github/workflows/delivery.yml and ci.yml, with their unit tests
 migrations/
   001_lachesis_tables.sql   DDL for lachesis_users and lachesis_repos
 docs/
@@ -95,4 +99,23 @@ Tables are namespaced `lachesis_` to coexist with other projects on the same ins
 cd mcp
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
+```
+
+## Acceptance tests
+
+Every `#### Scenario:` in `openspec/specs/` gets exactly one test under
+`tests/acceptance/<capability>/`, declared with `@scenario("<capability>", "<title>")` from
+`harness`. A test the code does not yet satisfy carries
+`@pytest.mark.xfail(strict=True, reason="spec change #N")`; once it passes, the marker must go.
+Tests use only `harness` (the `lachesis` fixture calls MCP tools; `lachesis.github` stubs
+GitHub) and never import from `mcp/`. Implementation pull requests may only remove xfail
+markers from these tests; spec changes and `acceptance-tests` issues may change them.
+
+The harness migrates the Postgres database named by `ACCEPTANCE_DATABASE_URL`, connecting as
+a superuser, and empties every table but the user's before each test: use a throwaway database.
+
+```bash
+ACCEPTANCE_DATABASE_URL=postgresql://postgres@localhost:5432/lachesis_acceptance \
+  pytest tests/acceptance   # acceptance tests
+pytest ci                   # delivery check unit tests
 ```
