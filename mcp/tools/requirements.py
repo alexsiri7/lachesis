@@ -87,6 +87,10 @@ in and out, and the kind of work: triage, summarising, audit, tests, implementat
 spec work. Give its cost in dollars for a model paid per token, such as an overflow run
 through Requesty; leave it out for a run on the Claude allowance.
 
+Every issue carries an estimate in tokens. When you create or triage an issue, call
+estimate_issue with the issue and the kind of work it mostly is; the estimate comes from
+past issues of that kind and capability, and is low confidence until there are five.
+
 At the start of every run, call report_fuel with the Claude allowance used this week, when
 it resets and any shorter limit in force, and the overflow spent this week against the
 Requesty cap. read_fuel returns what is left, the 20 percent reserve kept for security work

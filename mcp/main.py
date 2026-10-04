@@ -26,6 +26,7 @@ from auth import (
 )
 from settings import settings
 from tools import contents as contents_tools
+from tools import estimates as estimate_tools
 from tools import events as event_tools
 from tools import fuel as fuel_tools
 from tools import milestones as milestone_tools
@@ -450,6 +451,22 @@ mcp.tool(
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(fuel_tools.read_fuel)
+
+mcp.tool(
+    description=(
+        "Estimate an issue in a registered repository in tokens, from the measured usage of "
+        "past issues of the same kind and capability, and store the estimate with the issue, "
+        "replacing any earlier one. Give the `issue` (number) and its `kind` of work, one of "
+        "triage, summarising, audit, tests, implementation, spec work. A past issue is a "
+        "closed issue with usage reports; its kind is the kind of work that used the most "
+        "tokens on it, and its capability comes from its reference block. The estimate is "
+        "their mean total tokens, with confidence normal from 5 such issues and low below "
+        "that (basis `capability`). With none in the capability it falls back to past issues "
+        "of that kind in the repository, at low confidence (basis `kind`). With no history at "
+        "all, `tokens` is null (basis `none`). Returns the stored estimate with its samples "
+        "and time."
+    ),
+)(estimate_tools.estimate_issue)
 
 mcp.tool(
     description=(

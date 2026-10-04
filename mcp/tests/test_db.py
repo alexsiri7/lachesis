@@ -639,6 +639,70 @@ def test_usage_reports_migration_requires_an_issue_and_allows_exactly_the_kinds(
     assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(db.UsageKind))
 
 
+def test_usage_by_issue_sums_tokens_per_issue_and_kind() -> None:
+    from decimal import Decimal
+
+    rows = [
+        {"issue": 1, "kind": "tests", "tokens": Decimal(5)},
+        {"issue": 1, "kind": "triage", "tokens": 2},
+        {"issue": 2, "kind": "implementation", "tokens": Decimal(40)},
+    ]
+    mock = _mock_engine(rows)
+    with patch("db._engine", return_value=mock):
+        result = db.usage_by_issue("uid", "owner/repo")
+
+    assert result == {1: {"tests": 5, "triage": 2}, 2: {"implementation": 40}}
+    assert all(type(t) is int for kinds in result.values() for t in kinds.values())
+    sql, params = mock.connect.return_value.execute.call_args[0]
+    assert "GROUP BY issue, kind" in str(sql)
+    assert params == {"user_id": "uid", "repo_name": "owner/repo"}
+
+
+def test_set_estimate_replaces_the_issues_estimate() -> None:
+    row = {"repo_name": "owner/repo", "issue": 230, "tokens": 4600}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.set_estimate(
+            "uid", "owner/repo", 230, "implementation", "sprints", 4600, "normal", "capability", 8
+        )
+
+    assert result == row
+    sql, params = mock.begin.return_value.execute.call_args[0]
+    assert "INSERT INTO lachesis_estimates" in str(sql)
+    assert "ON CONFLICT (user_id, repo_name, issue)" in str(sql)
+    assert params == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "issue": 230,
+        "kind": "implementation",
+        "capability": "sprints",
+        "tokens": 4600,
+        "confidence": "normal",
+        "basis": "capability",
+        "samples": 8,
+    }
+
+
+def test_set_estimate_refuses_an_unknown_kind() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
+        db.set_estimate("uid", "owner/repo", 1, "coding", None, None, "low", "none", 0)  # type: ignore[arg-type]
+
+    mock.begin.assert_not_called()
+
+
+def test_estimates_migration_allows_exactly_the_kinds_and_one_estimate_per_issue() -> None:
+    from pathlib import Path
+    from typing import get_args
+
+    migration = (Path(db.__file__).parent / "alembic/versions/016_estimates.py").read_text()
+    check = re.search(r"\"kind IN \((.*?)\)\"", migration)
+    assert check is not None
+    assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(db.UsageKind))
+    assert 'sa.UniqueConstraint("user_id", "repo_name", "issue"' in migration
+    assert 'down_revision: str | None = "015"' in migration
+
+
 def test_set_fuel_replaces_the_accounts_report() -> None:
     from datetime import UTC, datetime
 

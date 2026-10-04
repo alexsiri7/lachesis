@@ -3092,6 +3092,13 @@ async def test_get_initial_instructions_says_every_run_reports_its_usage() -> No
     assert "tests, implementation or\nspec work." in result
 
 
+async def test_get_initial_instructions_says_to_estimate_every_issue() -> None:
+    result = await get_initial_instructions()
+
+    assert "When you create or triage an issue, call\nestimate_issue" in result
+    assert "low confidence until there are five" in result
+
+
 async def test_get_initial_instructions_says_to_report_and_read_fuel() -> None:
     result = await get_initial_instructions()
 
