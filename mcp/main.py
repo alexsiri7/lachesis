@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, MutableMapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, get_args
 
 import sentry_sdk
 from mcp.server.fastmcp import FastMCP
@@ -499,9 +499,9 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Return the model for a run of `kind`, one of triage, summarising, audit, tests, "
-        "implementation, spec work. Set `emergency` true only for security work or a "
-        "production incident, which alone may draw on the 20 percent reserve. The model is "
+        f"Return the model for a run of `kind`, one of {', '.join(get_args(_db.UsageKind))}. "
+        "Set `emergency` true only for security work or a production incident, which alone "
+        "may draw on the 20 percent reserve. The model is "
         "the cheapest one trusted for the kind that costs less than Claude, while overflow "
         "is under the Requesty cap; otherwise Claude on the allowance; otherwise, once the "
         "allowance outside the reserve is spent or a shorter limit is in force, the cheapest "
