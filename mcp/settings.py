@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     allowed_email: str = ""
 
     claude_usd_per_million_tokens: float = 5.0
+    claude_weekly_allowance_tokens: int = 100_000_000
 
     sentry_dsn: str = ""
 
