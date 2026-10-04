@@ -165,16 +165,19 @@ def test_sqlalchemy_database_url_keeps_explicit_driver(monkeypatch: pytest.Monke
 
 
 def test_list_backlog_returns_rows() -> None:
-    rows = [{"issue_number": 5, "position": 0, "ready": True, "interrupt": False}]
+    rows = [{"issue_number": 5, "ready": True, "interrupt": False, "ready_since": None}]
     mock = _mock_engine(rows)
     with patch("db._engine", return_value=mock):
         result = db.list_backlog("uid", "owner/repo")
     assert result == rows
+    sql = str(mock.connect.return_value.execute.call_args[0][0])
+    assert "ready_since" in sql
+    assert "position" not in sql
 
 
 def test_upsert_backlog_flags_leaves_omitted_flag_null() -> None:
     """An omitted flag binds NULL so COALESCE preserves the stored value."""
-    row = {"issue_number": 5, "position": None, "ready": True, "interrupt": False}
+    row = {"issue_number": 5, "ready": True, "interrupt": False}
     mock = _mock_engine([row])
     with patch("db._engine", return_value=mock):
         result = db.upsert_backlog_flags("uid", "owner/repo", 5, ready=True)
@@ -190,7 +193,7 @@ def test_upsert_backlog_flags_leaves_omitted_flag_null() -> None:
 
 def test_upsert_backlog_flags_inserts_ready_true_not_null() -> None:
     """A row created to set one flag must not bind NULL, nor park the issue."""
-    row = {"issue_number": 9, "position": None, "ready": True, "interrupt": False}
+    row = {"issue_number": 9, "ready": True, "interrupt": False}
     mock = _mock_engine([row])
     with patch("db._engine", return_value=mock):
         db.upsert_backlog_flags("uid", "owner/repo", 9, ready=True)
@@ -199,16 +202,37 @@ def test_upsert_backlog_flags_inserts_ready_true_not_null() -> None:
     assert "COALESCE(:ready, true), COALESCE(:interrupt, false)" in sql
 
 
-def test_set_backlog_order_numbers_contiguously_and_clears_the_rest() -> None:
+def test_upsert_backlog_flags_stamps_ready_since_only_when_unparking() -> None:
+    """Ageing counts from the last unpark, so re-marking a ready issue must not reset it."""
+    mock = _mock_engine([{"issue_number": 9, "ready": True, "interrupt": False}])
+    with patch("db._engine", return_value=mock):
+        db.upsert_backlog_flags("uid", "owner/repo", 9, ready=True)
+
+    sql = " ".join(str(mock.begin.return_value.execute.call_args[0][0]).split())
+    assert (
+        "ready_since = CASE WHEN COALESCE(:ready, false) AND NOT lachesis_backlog.ready "
+        "THEN now() ELSE lachesis_backlog.ready_since END"
+    ) in sql
+
+
+def test_add_focus_ignores_a_focus_already_set() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock):
-        db.set_backlog_order("uid", "owner/repo", [8, 3, 5])
+        db.add_focus("uid", "owner/repo", None)
 
-    calls = mock.begin.return_value.execute.call_args_list
-    assert "position = NULL" in str(calls[0][0][0])
-    assert calls[0][0][1]["numbers"] == [8, 3, 5]
-    placed = [(c[0][1]["issue_number"], c[0][1]["position"]) for c in calls[1:]]
-    assert placed == [(8, 0), (3, 1), (5, 2)]
+    sql = str(mock.begin.return_value.execute.call_args[0][0])
+    params = mock.begin.return_value.execute.call_args[0][1]
+    assert "ON CONFLICT DO NOTHING" in sql
+    assert params == {"user_id": "uid", "repo_name": "owner/repo", "milestone_id": None}
+
+
+def test_remove_focus_matches_a_repository_focus_by_its_null_milestone() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        db.remove_focus("uid", "owner/repo", None)
+
+    sql = str(mock.begin.return_value.execute.call_args[0][0])
+    assert "milestone_id IS NOT DISTINCT FROM :milestone_id" in sql
 
 
 def test_get_ntfy_config_returns_none_when_never_configured() -> None:

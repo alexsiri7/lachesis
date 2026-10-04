@@ -777,7 +777,7 @@ async def test_update_spec_change_writes_repeatedly_with_each_current_version(
 # Agent guidance
 # ---------------------------------------------------------------------------
 
-_BACKLOG_TOOLS = ("set_backlog_flags", "move_issue", "next_issue")
+_BACKLOG_TOOLS = ("set_backlog_flags", "set_focus", "next_issue")
 
 
 async def test_session_start_in_a_spec_repository(httpx_mock: HTTPXMock) -> None:
@@ -792,6 +792,7 @@ async def test_session_start_in_a_spec_repository(httpx_mock: HTTPXMock) -> None
         assert step in guidance
     assert "spec_gap: true" in guidance
     assert all(tool in guidance for tool in _BACKLOG_TOOLS)
+    assert "move_issue" not in guidance
 
 
 async def test_session_start_in_a_repository_without_specs(httpx_mock: HTTPXMock) -> None:
