@@ -936,14 +936,16 @@ _BRIEFING_FIELDS = {
 
 
 async def test_briefing_names_real_tools_and_fields() -> None:
-    """Every tool the morning briefing tells an agent to call is one the server offers."""
+    """Every tool the morning briefing tells an agent to call is one the server offers and
+    none of them writes."""
     briefing = await get_morning_briefing()
 
     named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", briefing)) - _BRIEFING_FIELDS
     tools = {tool.name: tool for tool in await main.mcp.list_tools()}
     assert named
     assert named <= tools.keys()
-    assert tools["get_morning_briefing"].annotations.readOnlyHint is True
+    for name in named | {"get_morning_briefing"}:
+        assert tools[name].annotations.readOnlyHint is True, name
 
 
 @pytest.mark.parametrize("specs", [True, False, None])
