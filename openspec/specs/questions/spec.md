@@ -8,7 +8,7 @@ Questions are decisions only the author can make. They block work, they outlive 
 
 ### Requirement: A question is a record
 
-The system SHALL store each question as a record of its own holding: the question, the context needed to answer it, optional suggested options, its kind, who asked it, what it is about (a repository, and optionally a capability, spec change, milestone or issue) and the issues it blocks. Kinds SHALL be spec contradiction, large work, maturity, improvement and clarification. Questions SHALL survive server restarts and SHALL NOT be lost when an issue they mention closes.
+The system SHALL store each question as a record of its own holding: the question, the context needed to answer it, optional suggested options, its kind, who asked it, what it is about (a repository, and optionally a capability, spec change, milestone or issue) and the issues it blocks. Kinds SHALL be spec contradiction, large work, maturity, improvement, budget and clarification. Questions SHALL survive server restarts and SHALL NOT be lost when an issue they mention closes.
 
 #### Scenario: Asking with options
 - GIVEN the worker cannot tell whether a change contradicts the backlog capability
@@ -20,9 +20,19 @@ The system SHALL store each question as a record of its own holding: the questio
 - WHEN issue 160 is closed
 - THEN the question is still open and readable
 
+### Requirement: Budget questions never block work
+
+A question of kind budget asks the author to raise the spending cap for models outside the Claude allowance, and SHALL state what the extra spend would deliver. It SHALL NOT block any issue: while it is open, work continues within the existing cap.
+
+#### Scenario: Asking for more budget
+- GIVEN the factory has reached its spending cap
+- WHEN it asks a budget question naming issue 160 as work the extra spend would deliver
+- THEN the question is stored with what the spend would deliver
+- AND issue 160 is not labelled needs-author and stays eligible for pickup
+
 ### Requirement: Asking blocks the work it names
 
-Asking a question SHALL, in the same operation, mark every issue it blocks as waiting on the author as described in issues. An issue blocked by more than one open question SHALL stay waiting until all of them are answered.
+Asking a question of any kind other than budget SHALL, in the same operation, mark every issue it blocks as waiting on the author as described in issues. An issue blocked by more than one open question SHALL stay waiting until all of them are answered.
 
 #### Scenario: One question, two issues
 - GIVEN ready issues 160 and 161
