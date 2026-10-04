@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
-from harness import FakeGitHub, Lachesis
+from harness import FakeGitHub, Lachesis, scenario
 from harness.github import NOT_FOUND
 
 
@@ -76,3 +77,17 @@ async def test_oauth_clients_are_kept_in_the_database(lachesis: Lachesis) -> Non
 
     assert registered.status_code == 201
     assert authorize.status_code == 302
+
+
+async def test_a_tool_error_is_reported(lachesis: Lachesis) -> None:
+    await lachesis.call_tool("register_repo", {"repo": "owner/repo"})
+
+    result = await lachesis.call_tool("read_file", {"repo": "owner/repo", "path": "missing.md"})
+
+    assert result.is_error
+    assert "missing.md" in result.text
+
+
+def test_a_scenario_is_named_positionally() -> None:
+    with pytest.raises(TypeError):
+        scenario(capability="delivery", title="After a merge")  # type: ignore[misc]
