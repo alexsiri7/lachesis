@@ -1200,6 +1200,9 @@ async def _backlog_order(repo: str, user_id: str, now: datetime) -> list[dict[st
     Closed issues drop out here; their rows stay, so the flags survive a close and
     reopen. Each entry's ``position`` is its index in this order.
     """
+    # milestones imports this module, so it cannot be imported at the top.
+    from .milestones import _is_started
+
     open_issues = await github.list_open_issues(repo)
     rows = {row["issue_number"]: row for row in db.list_backlog(user_id, repo)}
     milestones = [m for m in db.list_milestones(user_id, repo) if m["dropped_at"] is None]
@@ -1224,7 +1227,7 @@ async def _backlog_order(repo: str, user_id: str, now: datetime) -> list[dict[st
             tier = _SECURITY
         elif repo_focused or (milestone is not None and milestone["id"] in focused_ids):
             tier = _FOCUS
-        elif milestone is not None and milestone["started_at"] is not None:
+        elif milestone is not None and _is_started(milestone):
             tier = _MILESTONE
         else:
             tier = _OTHER
