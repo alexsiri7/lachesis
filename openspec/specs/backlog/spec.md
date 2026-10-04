@@ -60,7 +60,7 @@ The system SHALL offer a single interrupt flag that puts an issue in the top tie
 
 ### Requirement: The system says what to work on next
 
-Asking for the next issue SHALL return the highest-ordered issue that is ready, has no open blocker, is not already in progress, is not waiting on the author and fits the current sprint's remaining budget as described in sprints. The repository SHALL be optional; without one, every registered repository SHALL be considered. When nothing qualifies, the answer SHALL say whether everything ready is blocked, everything is parked, everything eligible is waiting on the author, the sprint budget is spent, or the backlog is empty.
+Asking for the next issue SHALL return the highest-ordered issue that is ready, has no open blocker, is not already in progress, is not waiting on the author and fits the current sprint's remaining budget as described in sprints. The repository SHALL be optional; without one, every registered repository SHALL be considered. When nothing qualifies, the answer SHALL say whether everything ready is blocked, everything is parked, everything eligible is waiting on the author, the sprint budget is spent, spending is ahead of pace, or the backlog is empty.
 
 #### Scenario: Everything blocked
 - GIVEN every ready issue has an open blocker
