@@ -513,11 +513,18 @@ async def test_report_sprint_returns_a_stored_report_without_sending(set_user_id
     mocks["notify"].assert_not_awaited()
 
 
-async def test_report_sprint_that_loses_the_claim_sends_nothing(set_user_id: str) -> None:
-    with _ended_sprint(claimed=False) as mocks:
+async def test_report_sprint_that_loses_the_claim_returns_the_winners_report(
+    set_user_id: str,
+) -> None:
+    winner = {"start": "winner", "findings": ["sentinel"]}
+
+    with (
+        _ended_sprint(claimed=False) as mocks,
+        patch("db.get_sprint_report", side_effect=[None, {"report": winner}]),
+    ):
         result = await report_sprint()
 
-    assert result["first_report"] is False
+    assert result == {"reported": True, "first_report": False, **winner}
     mocks["record_note"].assert_not_called()
     mocks["notify"].assert_not_awaited()
 
