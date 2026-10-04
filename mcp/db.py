@@ -940,8 +940,8 @@ def record_run_outcome(
               AND kind = :kind
             ORDER BY id DESC LIMIT 1
         ), stored AS (
-            INSERT INTO lachesis_run_outcomes (user_id, run_id, outcome)
-            SELECT :user_id, id, :outcome FROM run
+            INSERT INTO lachesis_run_outcomes (run_id, outcome)
+            SELECT id, :outcome FROM run
             RETURNING id, run_id, outcome, created_at
         )
         SELECT stored.id, stored.run_id, run.model, stored.outcome, stored.created_at

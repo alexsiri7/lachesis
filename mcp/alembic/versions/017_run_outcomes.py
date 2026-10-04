@@ -28,7 +28,6 @@ def upgrade() -> None:
     op.create_table(
         "lachesis_run_outcomes",
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), primary_key=True),
-        sa.Column("user_id", sa.UUID(as_uuid=False), nullable=False),
         sa.Column("run_id", sa.BigInteger(), nullable=False),
         sa.Column("outcome", sa.Text(), nullable=False),
         sa.Column(
@@ -40,12 +39,6 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "outcome IN ('rework', 'retry', 'audit_finding')",
             name="lachesis_run_outcomes_outcome_check",
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"],
-            ["lachesis_users.id"],
-            name="lachesis_run_outcomes_user_id_fkey",
-            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["run_id"],
