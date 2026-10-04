@@ -29,6 +29,9 @@ jobs:
   tests:
     name: tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     services:
       postgres:
         image: postgres:16
@@ -69,4 +72,23 @@ jobs:
 
       # Strict xfail: an expected failure passes the run, an unexpected pass fails it.
       - name: Acceptance tests
-        run: pytest tests/acceptance
+        id: acceptance
+        run: |
+          status=0
+          pytest tests/acceptance --scenario-results outcomes.json || status=$?
+          echo "exit-code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      # A failing run still publishes its results; its exit code decides the conclusion.
+      - name: Publish scenario results
+        if: >-
+          always() && steps.acceptance.outputs.exit-code != ''
+          && github.event_name == 'push'
+          && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXIT_CODE: ${{ steps.acceptance.outputs.exit-code }}
+        run: |
+          python ci/scenario_results.py --sha "$GITHUB_SHA" --outcomes outcomes.json \
+            --exit-code "$EXIT_CODE" > check-run.json
+          gh api "repos/$GITHUB_REPOSITORY/check-runs" --input check-run.json

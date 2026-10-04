@@ -62,7 +62,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
 tests/acceptance/   One acceptance test per spec scenario (see "Acceptance tests" below)
   harness/         The only route into the app: MCP over HTTP, GitHub stubbed, a disposable Postgres
   coverage.yml     `enforce:` turns scenario-coverage gaps from a report into a failure
-ci/                Delivery checks run by .github/workflows/delivery.yml, with their unit tests
+ci/                Delivery checks run by .github/workflows/delivery.yml and ci.yml, with their unit tests
 migrations/
   001_lachesis_tables.sql   DDL for lachesis_users and lachesis_repos
 docs/
