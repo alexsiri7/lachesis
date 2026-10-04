@@ -165,6 +165,13 @@ def test_only_an_emergency_draws_on_the_reserve_when_no_overflow_model_is_truste
     assert "wait for the Claude allowance to reset" in routine["reason"]
 
 
+def test_not_even_an_emergency_draws_on_an_allowance_fully_spent() -> None:
+    result = _route([], kind="implementation", fuel=_fuel(used=100.0), emergency=True)
+
+    assert result["claude_available"] is False
+    assert result["model"] is None
+
+
 def test_with_no_fuel_reported_the_run_stays_on_claude() -> None:
     result = _route(_trusted(), fuel=fuel_status(None, _NOW))
 
