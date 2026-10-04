@@ -853,8 +853,31 @@ async def test_owner_guidance(httpx_mock: HTTPXMock, specs: bool | None) -> None
     assert "never edits the spec" in guidance
 
 
+@pytest.mark.parametrize("specs", [True, False, None])
+async def test_sprint_review_guidance(httpx_mock: HTTPXMock, specs: bool | None) -> None:
+    """Scenario: Sprint ends — the scheduled run reports it and routes each finding."""
+    if specs is not None:
+        (_mock_spec_repo if specs else _mock_not_spec_repo)(httpx_mock)
+    guidance = await get_initial_instructions(_REPO if specs is not None else None)
+
+    review = guidance[guidance.index("Sprint review, for an unattended") :]
+    assert "Call report_sprint" in review
+    assert "first_report" in review
+    assert "standing rule" in review
+    assert "ask_question\n  with kind improvement" in review
+    assert "create_github_issues for that work" in review
+    assert review.index("search_answered_questions") < review.index("ask_question")
+
+
 # Issue fields and argument values the guidance names alongside the tools.
-_GUIDANCE_FIELDS = {"audit_finding", "spec_change", "spec_gap", "uses_specs", "waiting_on_author"}
+_GUIDANCE_FIELDS = {
+    "audit_finding",
+    "first_report",
+    "spec_change",
+    "spec_gap",
+    "uses_specs",
+    "waiting_on_author",
+}
 
 
 @pytest.mark.parametrize("specs", [True, False, None])

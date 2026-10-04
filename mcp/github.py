@@ -341,6 +341,8 @@ class IssueSummary(TypedDict):
     merged: bool
     created_at: str | None
     updated_at: str | None
+    closed_at: str | None
+    state_reason: str | None
 
 
 _ISSUES_PAGE_SIZE = 100
@@ -386,6 +388,8 @@ async def list_all_issues(repo: str) -> list[IssueSummary]:
             "merged": bool((item.get("pull_request") or {}).get("merged_at")),
             "created_at": item.get("created_at"),
             "updated_at": item.get("updated_at"),
+            "closed_at": item.get("closed_at"),
+            "state_reason": item.get("state_reason"),
         }
         for item in items
     ]

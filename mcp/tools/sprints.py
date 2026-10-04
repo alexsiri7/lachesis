@@ -1,4 +1,5 @@
-"""Lachesis MCP tool implementations — sprints: the week's budget and what fits in it."""
+"""Lachesis MCP tool implementations — sprints: the week's budget, what fits in it, and the
+report on each week that ended."""
 
 from __future__ import annotations
 
@@ -7,6 +8,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import db
+import github
+import notify
 from settings import settings
 
 from .fuel import RESERVE_PERCENT, fuel_status
@@ -165,3 +168,299 @@ async def read_sprint() -> dict[str, Any]:
         "not_planned": not_planned,
         "unreadable": unreadable,
     }
+
+
+ESTIMATE_MISS_FACTOR = 2
+
+
+def ended_sprint(row: dict[str, Any] | None, now: datetime) -> tuple[datetime, datetime] | None:
+    """Return the start and end of the sprint before the one holding *now*.
+
+    ``None`` when fuel was never reported, so no sprint has ended.
+    """
+    if row is None:
+        return None
+    start = _sprint_start(row["weekly_resets_at"], now) - _SPRINT
+    return start, start + _SPRINT
+
+
+def _tokens(run: dict[str, Any]) -> int:
+    return int(run["tokens_in"]) + int(run["tokens_out"])
+
+
+def sprint_spending(
+    runs: list[dict[str, Any]], row: dict[str, Any] | None, end: datetime
+) -> dict[str, Any]:
+    """Return what the sprint's *runs* spent on Claude and on overflow.
+
+    A run with no cost was on the Claude allowance. The fuel report *row* adds the
+    allowance used and the overflow spent against the cap only while it still
+    describes the week ending at *end*: the next week's report replaces it.
+    """
+    claude = [run for run in runs if run["cost_usd"] is None]
+    overflow = [run for run in runs if run["cost_usd"] is not None]
+    fuel = row if row is not None and row["weekly_resets_at"] == end else None
+    return {
+        "claude": {
+            "runs": len(claude),
+            "tokens": sum(_tokens(run) for run in claude),
+            "allowance_used_percent": fuel["weekly_used_percent"] if fuel else None,
+        },
+        "overflow": {
+            "runs": len(overflow),
+            "tokens": sum(_tokens(run) for run in overflow),
+            "cost_usd": round(sum(run["cost_usd"] for run in overflow), 2),
+            "spent_usd": fuel["overflow_spent_usd"] if fuel else None,
+            "cap_usd": fuel["overflow_cap_usd"] if fuel else None,
+        },
+    }
+
+
+def estimate_accuracy(
+    closed: list[tuple[str, int]],
+    estimates: list[dict[str, Any]],
+    usage: dict[str, dict[int, dict[str, int]]],
+) -> dict[str, Any]:
+    """Compare the estimate of each *closed* issue with its actual usage.
+
+    Only an issue with a positive estimate and some reported usage counts. Returns
+    each issue and the totals by kind and capability; a ratio is actual over estimate.
+    """
+    by_issue = {(normalize_repo(row["repo_name"]), row["issue"]): row for row in estimates}
+    issues: list[dict[str, Any]] = []
+    for repo, number in closed:
+        estimate = by_issue.get((repo, number))
+        actual = sum(usage.get(repo, {}).get(number, {}).values())
+        if estimate is None or not estimate["tokens"] or actual <= 0:
+            continue
+        issues.append(
+            {
+                "repo": repo,
+                "number": number,
+                "kind": estimate["kind"],
+                "capability": estimate["capability"],
+                "estimate_tokens": estimate["tokens"],
+                "actual_tokens": actual,
+                "ratio": round(actual / estimate["tokens"], 2),
+            }
+        )
+
+    groups: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for issue in issues:
+        group = groups.setdefault(
+            (issue["kind"], issue["capability"]),
+            {
+                "kind": issue["kind"],
+                "capability": issue["capability"],
+                "issues": 0,
+                "estimate_tokens": 0,
+                "actual_tokens": 0,
+            },
+        )
+        group["issues"] += 1
+        group["estimate_tokens"] += issue["estimate_tokens"]
+        group["actual_tokens"] += issue["actual_tokens"]
+    by_kind_and_capability = [
+        {**group, "ratio": round(group["actual_tokens"] / group["estimate_tokens"], 2)}
+        for _, group in sorted(groups.items(), key=lambda item: (item[0][0], item[0][1] or ""))
+    ]
+    return {"issues": issues, "by_kind_and_capability": by_kind_and_capability}
+
+
+def _is_estimate_miss(estimate: int, actual: int) -> bool:
+    return actual > ESTIMATE_MISS_FACTOR * estimate or ESTIMATE_MISS_FACTOR * actual < estimate
+
+
+def _miss_sentence(miss: dict[str, Any]) -> str:
+    if miss["kind"] == "estimate":
+        return (
+            f"estimated {miss['estimate_tokens']} tokens of {miss['work']} work in "
+            f"{miss['capability'] or 'no capability'}, used {miss['actual_tokens']} "
+            f"({miss['ratio']:.2f}x)."
+        )
+    if miss["kind"] == "retry":
+        return f"{miss['count']} {'retry' if miss['count'] == 1 else 'retries'}."
+    return f"{miss['count']} rework."
+
+
+def sprint_findings(
+    start: datetime,
+    end: datetime,
+    accuracy_issues: list[dict[str, Any]],
+    runs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return one finding for each issue that missed during the sprint, by repo and issue.
+
+    A miss is an estimate off by more than ``ESTIMATE_MISS_FACTOR`` either way, or a
+    retry or rework on a run of the sprint.
+    """
+    misses: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for issue in accuracy_issues:
+        if _is_estimate_miss(issue["estimate_tokens"], issue["actual_tokens"]):
+            misses.setdefault((issue["repo"], issue["number"]), []).append(
+                {
+                    "kind": "estimate",
+                    "work": issue["kind"],
+                    "capability": issue["capability"],
+                    "estimate_tokens": issue["estimate_tokens"],
+                    "actual_tokens": issue["actual_tokens"],
+                    "ratio": issue["ratio"],
+                }
+            )
+    failures: dict[tuple[str, int], dict[str, int]] = {}
+    for run in runs:
+        counts = failures.setdefault(
+            (normalize_repo(run["repo_name"]), run["issue"]), {"retry": 0, "rework": 0}
+        )
+        counts["retry"] += run["retries"]
+        counts["rework"] += run["rework"]
+    for key, counts in failures.items():
+        for kind, count in counts.items():
+            if count:
+                misses.setdefault(key, []).append({"kind": kind, "count": count})
+
+    prefix = f"Sprint {start.date().isoformat()} to {end.date().isoformat()} review:"
+    return [
+        {
+            "repo": repo,
+            "issue": issue,
+            "misses": found,
+            "text": " ".join([prefix, *(_miss_sentence(miss) for miss in found)]),
+        }
+        for (repo, issue), found in sorted(misses.items())
+    ]
+
+
+def _push_body(report: dict[str, Any]) -> str:
+    delivered = report["delivered"]
+    claude = report["spending"]["claude"]
+    overflow = report["spending"]["overflow"]
+    estimated = report["estimates"]["issues"]
+    if estimated:
+        ratio = sum(i["actual_tokens"] for i in estimated) / sum(
+            i["estimate_tokens"] for i in estimated
+        )
+        estimates = f"Estimates: actual {ratio:.2f}x estimated over {len(estimated)} issues."
+    else:
+        estimates = "Estimates: no estimated issue closed."
+    return "\n".join(
+        [
+            f"Delivered: {len(delivered['milestones'])} milestones, "
+            f"{len(delivered['issues'])} issues.",
+            f"Spent: {claude['tokens']} Claude tokens; {overflow['tokens']} overflow tokens, "
+            f"${overflow['cost_usd']:.2f}.",
+            estimates,
+            f"Carried over: {len(report['carryover'])} issues.",
+            f"Findings: {len(report['findings'])}.",
+        ]
+    )
+
+
+def _in_sprint(stamp: str | None, start: datetime, end: datetime) -> bool:
+    return stamp is not None and start <= datetime.fromisoformat(stamp) < end
+
+
+def _issue_ref(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
+    return {"repo": repo, "number": issue["number"], "title": issue["title"], "url": issue["url"]}
+
+
+async def report_sprint() -> dict[str, Any]:
+    """Report the sprint that last ended, once.
+
+    Storing the report claims the sprint before the finding notes and the push
+    notification, so a report that fails after it drops them rather than repeating
+    them. Every later call returns the stored report.
+    """
+    user_id = _require_user_id()
+    fuel = db.get_fuel(user_id)
+    sprint = ended_sprint(fuel, datetime.now(UTC))
+    if sprint is None:
+        return {
+            "reported": False,
+            "explanation": "No fuel has been reported, so no sprint has ended yet — call "
+            "report_fuel.",
+        }
+    start, end = sprint
+    stored = db.get_sprint_report(user_id, end)
+    if stored is not None:
+        return {"reported": True, "first_report": False, **stored["report"]}
+
+    runs = db.list_runs(user_id, start=start, end=end)
+    worked_on = {(normalize_repo(run["repo_name"]), run["issue"]) for run in runs}
+    delivered: list[dict[str, Any]] = []
+    carryover: list[dict[str, Any]] = []
+    usage: dict[str, dict[int, dict[str, int]]] = {}
+    unreadable: list[str] = []
+    for repo in [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]:
+        try:
+            listing = await github.list_all_issues(repo)
+        except Exception:
+            logger.warning("report_sprint: could not list the issues of %s", repo)
+            unreadable.append(repo)
+            continue
+        usage[repo] = db.usage_by_issue(user_id, repo)
+        for issue in listing:
+            if issue["is_pull_request"]:
+                continue
+            if issue["state"] == "open" and (repo, issue["number"]) in worked_on:
+                carryover.append(_issue_ref(repo, issue))
+            elif (
+                issue["state"] == "closed"
+                and issue["state_reason"] != "not_planned"
+                and _in_sprint(issue["closed_at"], start, end)
+            ):
+                delivered.append(_issue_ref(repo, issue))
+    carryover.sort(key=lambda ref: (ref["repo"], ref["number"]))
+    delivered.sort(key=lambda ref: (ref["repo"], ref["number"]))
+
+    accuracy = estimate_accuracy(
+        [(ref["repo"], ref["number"]) for ref in delivered], db.list_estimates(user_id), usage
+    )
+    report = {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "delivered": {
+            "milestones": [
+                {"repo": normalize_repo(m["repo_name"]), "id": m["id"], "title": m["title"]}
+                for m in db.milestones_done_between(user_id, start, end)
+            ],
+            "issues": delivered,
+        },
+        "spending": sprint_spending(runs, fuel, end),
+        "estimates": accuracy,
+        "carryover": carryover,
+        "findings": sprint_findings(start, end, accuracy["issues"], runs),
+        "unreadable": unreadable,
+    }
+
+    if db.claim_sprint_report(user_id, start, end, report) is None:
+        stored = db.get_sprint_report(user_id, end)
+        return {
+            "reported": True,
+            "first_report": False,
+            **(stored["report"] if stored is not None else report),
+        }
+    for finding in report["findings"]:
+        try:
+            db.record_note(
+                user_id,
+                finding["repo"],
+                "lachesis",
+                "finding",
+                finding["text"],
+                issue=finding["issue"],
+            )
+        except Exception:
+            logger.warning(
+                "report_sprint: could not note the finding on %s#%s",
+                finding["repo"],
+                finding["issue"],
+                exc_info=True,
+            )
+    await notify.send(
+        user_id,
+        title=f"Sprint report: {start.date().isoformat()} to {end.date().isoformat()}",
+        body=_push_body(report),
+        tags=["bar_chart"],
+    )
+    return {"reported": True, "first_report": True, **report}

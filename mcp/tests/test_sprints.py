@@ -5,14 +5,23 @@ from __future__ import annotations
 import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import main
 from auth import current_db_user_id
 from settings import settings
-from tools.sprints import plan_sprint, read_sprint, sprint_budget
+from tools.sprints import (
+    ended_sprint,
+    estimate_accuracy,
+    plan_sprint,
+    read_sprint,
+    report_sprint,
+    sprint_budget,
+    sprint_findings,
+    sprint_spending,
+)
 
 _RESETS_AT = datetime(2026, 10, 11, 9, tzinfo=UTC)
 _NOW = _RESETS_AT - timedelta(days=2)
@@ -233,3 +242,305 @@ async def test_read_sprint_with_no_fuel_has_no_sprint(set_user_id: str) -> None:
 async def test_read_sprint_is_registered_read_only() -> None:
     tools = {tool.name: tool for tool in await main.mcp.list_tools()}
     assert tools["read_sprint"].annotations.readOnlyHint is True
+
+
+# ---------------------------------------------------------------------------
+# The ended sprint and its report
+# ---------------------------------------------------------------------------
+
+_END = _RESETS_AT - timedelta(days=7)
+_START = _END - timedelta(days=7)
+
+
+def test_the_ended_sprint_is_the_week_before_the_current_one() -> None:
+    assert ended_sprint(_fuel(), _NOW) == (_START, _END)
+
+
+def test_no_fuel_means_no_sprint_has_ended() -> None:
+    assert ended_sprint(None, _NOW) is None
+
+
+def _run(
+    issue: int,
+    *,
+    cost: float | None = None,
+    retries: int = 0,
+    rework: int = 0,
+    repo: str = "owner/repo",
+) -> dict[str, Any]:
+    return {
+        "repo_name": repo,
+        "issue": issue,
+        "tokens_in": 100,
+        "tokens_out": 10,
+        "cost_usd": cost,
+        "retries": retries,
+        "rework": rework,
+    }
+
+
+def test_spending_splits_claude_runs_from_overflow_runs() -> None:
+    runs = [_run(1), _run(2), _run(3, cost=0.104), _run(4, cost=0.2)]
+
+    spending = sprint_spending(runs, _fuel(resets_at=_END), _END)
+
+    assert spending["claude"] == {"runs": 2, "tokens": 220, "allowance_used_percent": 40.0}
+    assert spending["overflow"] == {
+        "runs": 2,
+        "tokens": 220,
+        "cost_usd": 0.3,
+        "spent_usd": 0.5,
+        "cap_usd": 1.0,
+    }
+
+
+def test_spending_leaves_out_a_fuel_report_on_another_week() -> None:
+    spending = sprint_spending([], _fuel(resets_at=_RESETS_AT), _END)
+
+    assert spending["claude"]["allowance_used_percent"] is None
+    assert spending["overflow"]["spent_usd"] is None
+    assert spending["overflow"]["cap_usd"] is None
+
+
+def _estimate(issue: int, tokens: int | None, capability: str | None = "backlog") -> dict:
+    return {
+        "repo_name": "owner/repo",
+        "issue": issue,
+        "kind": "implementation",
+        "capability": capability,
+        "tokens": tokens,
+    }
+
+
+def test_estimate_accuracy_compares_each_issue_and_each_kind_and_capability() -> None:
+    estimates = [_estimate(1, 100), _estimate(2, 300), _estimate(3, 50, capability=None)]
+    usage = {"owner/repo": {1: {"implementation": 150, "tests": 50}, 2: {"tests": 100}, 3: {}}}
+
+    accuracy = estimate_accuracy([("owner/repo", n) for n in (1, 2, 3)], estimates, usage)
+
+    assert [(i["number"], i["actual_tokens"], i["ratio"]) for i in accuracy["issues"]] == [
+        (1, 200, 2.0),
+        (2, 100, 0.33),
+    ]
+    assert accuracy["by_kind_and_capability"] == [
+        {
+            "kind": "implementation",
+            "capability": "backlog",
+            "issues": 2,
+            "estimate_tokens": 400,
+            "actual_tokens": 300,
+            "ratio": 0.75,
+        }
+    ]
+
+
+def test_estimate_accuracy_skips_issues_without_an_estimate() -> None:
+    usage = {"owner/repo": {1: {"tests": 10}, 2: {"tests": 10}}}
+
+    accuracy = estimate_accuracy(
+        [("owner/repo", 1), ("owner/repo", 2)], [_estimate(1, None)], usage
+    )
+
+    assert accuracy == {"issues": [], "by_kind_and_capability": []}
+
+
+def _accuracy(issue: int, estimate: int, actual: int) -> dict[str, Any]:
+    return {
+        "repo": "owner/repo",
+        "number": issue,
+        "kind": "implementation",
+        "capability": "backlog",
+        "estimate_tokens": estimate,
+        "actual_tokens": actual,
+        "ratio": round(actual / estimate, 2),
+    }
+
+
+def test_a_repeated_estimate_miss_is_a_finding_on_each_issue() -> None:
+    """Scenario: Repeated estimate miss."""
+    issues = [_accuracy(1, 40_000, 95_000), _accuracy(2, 10_000, 25_000)]
+
+    findings = sprint_findings(_START, _END, issues, [])
+
+    assert [(f["repo"], f["issue"]) for f in findings] == [("owner/repo", 1), ("owner/repo", 2)]
+    assert findings[0]["text"] == (
+        "Sprint 2026-09-27 to 2026-10-04 review: estimated 40000 tokens of implementation "
+        "work in backlog, used 95000 (2.38x)."
+    )
+
+
+def test_an_estimate_within_double_is_no_finding() -> None:
+    issues = [_accuracy(1, 100, 200), _accuracy(2, 100, 50)]
+
+    assert sprint_findings(_START, _END, issues, []) == []
+
+
+def test_retries_and_rework_on_an_issue_are_one_finding() -> None:
+    runs = [_run(5, retries=2), _run(5, rework=1), _run(6)]
+
+    (finding,) = sprint_findings(_START, _END, [], runs)
+
+    assert finding["issue"] == 5
+    assert finding["misses"] == [{"kind": "retry", "count": 2}, {"kind": "rework", "count": 1}]
+    assert finding["text"].endswith("review: 2 retries. 1 rework.")
+
+
+def _listed(
+    number: int,
+    state: str = "open",
+    closed_at: datetime | None = None,
+    state_reason: str | None = None,
+    *,
+    is_pull_request: bool = False,
+) -> dict[str, Any]:
+    return {
+        "number": number,
+        "title": f"Issue {number}",
+        "url": f"https://github.com/owner/repo/issues/{number}",
+        "state": state,
+        "is_pull_request": is_pull_request,
+        "closed_at": closed_at.isoformat().replace("+00:00", "Z") if closed_at else None,
+        "state_reason": state_reason,
+    }
+
+
+@contextlib.contextmanager
+def _ended_sprint(
+    *,
+    stored: dict | None = None,
+    claimed: bool = True,
+    unreadable: str | None = None,
+):
+    """A sprint with two milestones done, issues 1 and 2 delivered and 10-12 carried over."""
+    inside = _START + timedelta(days=2)
+    listing = [
+        _listed(1, "closed", inside, "completed"),
+        _listed(2, "closed", inside, "completed"),
+        _listed(3, "closed", inside, "not_planned"),
+        _listed(4, "closed", _START - timedelta(hours=1), "completed"),
+        _listed(5, "closed", _END, "completed"),
+        _listed(6, "closed", inside, is_pull_request=True),
+        _listed(10),
+        _listed(11),
+        _listed(12),
+        _listed(13),
+    ]
+    runs = [_run(10, retries=1), _run(11), _run(12, cost=0.25), _run(1)]
+
+    async def list_all_issues(repo: str) -> list[dict[str, Any]]:
+        if repo == unreadable:
+            raise RuntimeError("gone")
+        return listing
+
+    mocks = {
+        "notify": AsyncMock(return_value=True),
+        "record_note": MagicMock(),
+        "claim": MagicMock(
+            side_effect=lambda uid, start, end, report: {"report": report} if claimed else None
+        ),
+    }
+    with (
+        patch("db.get_fuel", return_value=_fuel(resets_at=_RESETS_AT)),
+        patch("tools.sprints.datetime", wraps=datetime) as clock,
+        patch("db.get_sprint_report", return_value=stored),
+        patch("db.list_runs", return_value=runs) as list_runs,
+        patch("db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch("github.list_all_issues", AsyncMock(side_effect=list_all_issues)),
+        patch("db.usage_by_issue", return_value={1: {"implementation": 500}, 2: {"tests": 10}}),
+        patch("db.list_estimates", return_value=[_estimate(1, 100), _estimate(2, 10)]),
+        patch(
+            "db.milestones_done_between",
+            return_value=[
+                {"repo_name": "owner/repo", "id": 7, "title": "M7", "done_at": inside},
+                {"repo_name": "owner/repo", "id": 8, "title": "M8", "done_at": inside},
+            ],
+        ),
+        patch("db.claim_sprint_report", mocks["claim"]),
+        patch("db.record_note", mocks["record_note"]),
+        patch("tools.sprints.notify.send", mocks["notify"]),
+    ):
+        clock.now.return_value = _NOW
+        mocks["list_runs"] = list_runs
+        yield mocks
+
+
+async def test_report_sprint_reports_the_sprint_that_ended(set_user_id: str) -> None:
+    """Scenario: Sprint ends — one push and a report on delivery, spending, estimates and
+    carryover."""
+    with _ended_sprint() as mocks:
+        result = await report_sprint()
+
+    assert result["reported"] is True
+    assert result["first_report"] is True
+    assert (result["start"], result["end"]) == (_START.isoformat(), _END.isoformat())
+    mocks["list_runs"].assert_called_once_with("test-uid", start=_START, end=_END)
+    assert [m["id"] for m in result["delivered"]["milestones"]] == [7, 8]
+    assert [i["number"] for i in result["delivered"]["issues"]] == [1, 2]
+    assert [i["number"] for i in result["carryover"]] == [10, 11, 12]
+    assert result["spending"]["claude"]["tokens"] == 330
+    assert result["spending"]["overflow"]["cost_usd"] == 0.25
+    assert [(i["number"], i["ratio"]) for i in result["estimates"]["issues"]] == [
+        (1, 5.0),
+        (2, 1.0),
+    ]
+    assert [f["issue"] for f in result["findings"]] == [1, 10]
+    assert result["unreadable"] == []
+
+    mocks["claim"].assert_called_once()
+    notes = mocks["record_note"].call_args_list
+    assert [(c.args[3], c.kwargs["issue"]) for c in notes] == [("finding", 1), ("finding", 10)]
+    mocks["notify"].assert_awaited_once()
+    push = mocks["notify"].await_args.kwargs
+    assert push["title"] == "Sprint report: 2026-09-27 to 2026-10-04"
+    assert push["body"].splitlines() == [
+        "Delivered: 2 milestones, 2 issues.",
+        "Spent: 330 Claude tokens; 110 overflow tokens, $0.25.",
+        "Estimates: actual 4.64x estimated over 2 issues.",
+        "Carried over: 3 issues.",
+        "Findings: 2.",
+    ]
+
+
+async def test_report_sprint_returns_a_stored_report_without_sending(set_user_id: str) -> None:
+    stored = {"report": {"start": _START.isoformat(), "findings": []}}
+
+    with _ended_sprint(stored=stored) as mocks:
+        result = await report_sprint()
+
+    assert result == {"reported": True, "first_report": False, **stored["report"]}
+    mocks["claim"].assert_not_called()
+    mocks["record_note"].assert_not_called()
+    mocks["notify"].assert_not_awaited()
+
+
+async def test_report_sprint_that_loses_the_claim_sends_nothing(set_user_id: str) -> None:
+    with _ended_sprint(claimed=False) as mocks:
+        result = await report_sprint()
+
+    assert result["first_report"] is False
+    mocks["record_note"].assert_not_called()
+    mocks["notify"].assert_not_awaited()
+
+
+async def test_report_sprint_reports_the_repos_it_can_read(set_user_id: str) -> None:
+    with _ended_sprint(unreadable="owner/repo") as mocks:
+        result = await report_sprint()
+
+    assert result["unreadable"] == ["owner/repo"]
+    assert result["delivered"]["issues"] == []
+    mocks["notify"].assert_awaited_once()
+
+
+async def test_report_sprint_with_no_fuel_reports_nothing(set_user_id: str) -> None:
+    with patch("db.get_fuel", return_value=None):
+        result = await report_sprint()
+
+    assert result["reported"] is False
+    assert "report_fuel" in result["explanation"]
+
+
+async def test_report_sprint_is_registered_as_a_write() -> None:
+    tools = {tool.name: tool for tool in await main.mcp.list_tools()}
+    assert tools["report_sprint"].annotations is None or not (
+        tools["report_sprint"].annotations.readOnlyHint
+    )
