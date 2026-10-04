@@ -13,6 +13,8 @@ Tables (all namespaced lachesis_):
   lachesis_questions      — questions for the author and the issues each one blocks
   lachesis_milestones     — milestones and when the author started or dropped them
   lachesis_milestone_spec_changes — the spec changes each milestone groups, one milestone each
+  lachesis_fuel           — the latest Claude allowance status and overflow spend reported
+                            for the account
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -888,6 +890,64 @@ def record_usage_report(
             raise RuntimeError(f"record_usage_report returned no row for {repo_name!r}")
         _insert_event(conn, user_id, repo_name, "usage_reported", str(row["id"]))
     return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# lachesis_fuel
+# ---------------------------------------------------------------------------
+
+_FUEL_COLUMNS = """weekly_used_percent, weekly_resets_at, shorter_limit_until,
+    overflow_spent_usd, overflow_cap_usd, reported_at"""
+
+
+def set_fuel(
+    user_id: str,
+    weekly_used_percent: float,
+    weekly_resets_at: datetime,
+    shorter_limit_until: datetime | None,
+    overflow_spent_usd: float,
+    overflow_cap_usd: float,
+) -> dict[str, Any]:
+    """Replace the account's fuel report with this one."""
+    sql = text(
+        f"""
+        INSERT INTO lachesis_fuel
+            (user_id, weekly_used_percent, weekly_resets_at, shorter_limit_until,
+             overflow_spent_usd, overflow_cap_usd)
+        VALUES
+            (:user_id, :weekly_used_percent, :weekly_resets_at, :shorter_limit_until,
+             :overflow_spent_usd, :overflow_cap_usd)
+        ON CONFLICT (user_id) DO UPDATE
+            SET weekly_used_percent = EXCLUDED.weekly_used_percent,
+                weekly_resets_at = EXCLUDED.weekly_resets_at,
+                shorter_limit_until = EXCLUDED.shorter_limit_until,
+                overflow_spent_usd = EXCLUDED.overflow_spent_usd,
+                overflow_cap_usd = EXCLUDED.overflow_cap_usd,
+                reported_at = now()
+        RETURNING {_FUEL_COLUMNS}
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "weekly_used_percent": weekly_used_percent,
+        "weekly_resets_at": weekly_resets_at,
+        "shorter_limit_until": shorter_limit_until,
+        "overflow_spent_usd": overflow_spent_usd,
+        "overflow_cap_usd": overflow_cap_usd,
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    if row is None:
+        raise RuntimeError(f"set_fuel returned no row for user_id={user_id!r}")
+    return dict(row)
+
+
+def get_fuel(user_id: str) -> dict[str, Any] | None:
+    """Return the account's latest fuel report, or None if fuel was never reported."""
+    sql = text(f"SELECT {_FUEL_COLUMNS} FROM lachesis_fuel WHERE user_id = :user_id")
+    with _engine().connect() as conn:
+        row = conn.execute(sql, {"user_id": user_id}).mappings().first()
+    return None if row is None else dict(row)
 
 
 # ---------------------------------------------------------------------------

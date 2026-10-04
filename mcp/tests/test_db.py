@@ -639,6 +639,43 @@ def test_usage_reports_migration_requires_an_issue_and_allows_exactly_the_kinds(
     assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(db.UsageKind))
 
 
+def test_set_fuel_replaces_the_accounts_report() -> None:
+    from datetime import UTC, datetime
+
+    resets_at = datetime(2026, 10, 11, 9, tzinfo=UTC)
+    row = {"weekly_used_percent": 60.0, "weekly_resets_at": resets_at}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.set_fuel("uid", 60.0, resets_at, None, 12.0, 40.0)
+
+    assert result == row
+    mock.begin.assert_called_once()
+    sql, params = mock.begin.return_value.execute.call_args[0]
+    assert "INSERT INTO lachesis_fuel" in str(sql)
+    assert "ON CONFLICT (user_id)" in str(sql)
+    assert params == {
+        "user_id": "uid",
+        "weekly_used_percent": 60.0,
+        "weekly_resets_at": resets_at,
+        "shorter_limit_until": None,
+        "overflow_spent_usd": 12.0,
+        "overflow_cap_usd": 40.0,
+    }
+
+
+def test_get_fuel_is_none_before_any_report() -> None:
+    with patch("db._engine", return_value=_mock_engine([])):
+        assert db.get_fuel("uid") is None
+
+
+def test_fuel_migration_keeps_one_report_per_account() -> None:
+    from pathlib import Path
+
+    migration = (Path(db.__file__).parent / "alembic/versions/015_fuel.py").read_text()
+    assert 'sa.UniqueConstraint("user_id"' in migration
+    assert 'down_revision: str | None = "014"' in migration
+
+
 def _sequenced_engine(firsts: list[dict | None]) -> MagicMock:
     """Return an engine whose successive execute() calls each yield one row from *firsts*."""
     mock = _mock_engine([])

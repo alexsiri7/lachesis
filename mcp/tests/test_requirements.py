@@ -3092,6 +3092,13 @@ async def test_get_initial_instructions_says_every_run_reports_its_usage() -> No
     assert "tests, implementation or\nspec work." in result
 
 
+async def test_get_initial_instructions_says_to_report_and_read_fuel() -> None:
+    result = await get_initial_instructions()
+
+    assert "At the start of every run, call report_fuel" in result
+    assert "read_fuel returns what is left" in result
+
+
 async def test_stuck_on_intent() -> None:
     """Scenario: Stuck on intent — ask the author rather than guess, then move on."""
     result = await get_initial_instructions()

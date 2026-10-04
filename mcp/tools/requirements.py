@@ -87,6 +87,11 @@ in and out, and the kind of work: triage, summarising, audit, tests, implementat
 spec work. Give its cost in dollars for a model paid per token, such as an overflow run
 through Requesty; leave it out for a run on the Claude allowance.
 
+At the start of every run, call report_fuel with the Claude allowance used this week, when
+it resets and any shorter limit in force, and the overflow spent this week against the
+Requesty cap. read_fuel returns what is left, the 20 percent reserve kept for security work
+and production incidents, and the pace for today.
+
 Agents do not message each other: they leave notes on the work. When you stop working on
 an issue, finished or not, call add_note on it with type handoff, saying what you did and
 what is left, so the next agent starts from what you knew. Use finding, progress, decision

@@ -428,6 +428,31 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Report the Claude account's fuel, whenever you check it and at least at the start "
+        "of every run: `weekly_used_percent` of the weekly Claude allowance used, "
+        "`weekly_resets_at` when it resets (ISO-8601 with timezone, within the next 7 days), "
+        "`shorter_limit_until` when a shorter limit is in force (leave it out otherwise), "
+        "and this week's Requesty overflow spending `overflow_spent_usd` against the "
+        "`overflow_cap_usd` the author set there. Replaces the previous report. Returns "
+        "fuel as read_fuel does."
+    ),
+)(fuel_tools.report_fuel)
+
+mcp.tool(
+    description=(
+        "Return what fuel is left: the latest reported Claude allowance use, when it resets "
+        "and any shorter limit in force; this week's overflow spending against the Requesty "
+        "cap; the reserve, 20 percent of the weekly allowance kept for security work and "
+        "production incidents, and whether only it is left; and the pace — the share of the "
+        "allowance outside the reserve that may be used by the end of today, and whether "
+        "spending is within it. `current` is false once the reported week has reset, and "
+        "then no pace is given. `reported` is false when no fuel has been reported."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(fuel_tools.read_fuel)
+
+mcp.tool(
+    description=(
         "Create a milestone in a registered repository that uses specs: a `title`, the "
         "`goal` it reaches, and the `spec_changes` (pull request numbers) it groups. Each "
         "must be a spec change in the repository, not dropped, and in no other milestone — "
