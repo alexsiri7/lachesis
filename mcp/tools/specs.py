@@ -202,15 +202,22 @@ def spec_problems(capability: str, spec: str) -> list[str]:
 def requirement_texts(spec: str) -> dict[str, str]:
     """Map each requirement in *spec*'s Requirements section to its text, in document order.
 
-    Trailing whitespace on a line and blank lines around the text are not part of it.
+    Trailing whitespace on a line and blank lines around the text are not part of it.  A
+    heading inside a fenced code block is part of the text, not a requirement boundary.
     """
-    section = _REQUIREMENTS_SECTION.search(spec)
+    outside = _outside_code_blocks(spec)
+    section = _REQUIREMENTS_SECTION.search(outside)
     if section is None:
         return {}
-    return {
-        block.group(1): "\n".join(line.rstrip() for line in block.group(2).strip().splitlines())
-        for block in _REQUIREMENT_BLOCK.finditer(section.group(1))
-    }
+    lines = spec.split("\n")
+    texts: dict[str, str] = {}
+    for block in _REQUIREMENT_BLOCK.finditer(outside, section.start(1), section.end(1)):
+        first = outside.count("\n", 0, block.start(2)) + 1
+        last = outside.count("\n", 0, block.end(2))
+        if outside[block.end(2) - 1 : block.end(2)] != "\n":
+            last += 1
+        texts[block.group(1)] = "\n".join(line.rstrip() for line in lines[first:last]).strip()
+    return texts
 
 
 def changed_requirements(

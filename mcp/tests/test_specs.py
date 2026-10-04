@@ -399,6 +399,20 @@ def test_a_removed_requirement_is_not_reported() -> None:
     assert changed_requirements(_BACKLOG_SPEC, after) == []
 
 
+_FENCED_EXAMPLE = "The system SHALL keep issues in order.\n\n```md\n### Requirement: Fake\n```"
+
+
+def test_a_heading_in_a_fenced_example_is_not_a_requirement() -> None:
+    before = _BACKLOG_SPEC.replace("The system SHALL keep issues in order.", _FENCED_EXAMPLE)
+    after = before.replace("### Requirement: Fake", "### Requirement: Fake, edited")
+
+    assert changed_requirements(None, before) == [
+        ("Issues are ordered", "added"),
+        ("Issues can be parked", "added"),
+    ]
+    assert changed_requirements(before, after) == [("Issues are ordered", "changed")]
+
+
 def test_every_requirement_of_a_new_capability_is_added() -> None:
     assert changed_requirements(None, _BACKLOG_SPEC) == [
         ("Issues are ordered", "added"),
