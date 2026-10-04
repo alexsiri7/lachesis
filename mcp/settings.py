@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     allowed_email: str = ""
 
+    claude_usd_per_million_tokens: float = 5.0
+
     sentry_dsn: str = ""
 
     @property

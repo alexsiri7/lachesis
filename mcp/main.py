@@ -37,6 +37,7 @@ from tools import projects as project_tools
 from tools import questions as question_tools
 from tools import repos as repo_tools
 from tools import requirements as req_tools
+from tools import routing as routing_tools
 from tools import scorecard as scorecard_tools
 from tools import specs as spec_tools
 
@@ -495,6 +496,23 @@ mcp.tool(
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(scorecard_tools.read_scorecard)
+
+mcp.tool(
+    description=(
+        "Return the model for a run of `kind`, one of triage, summarising, audit, tests, "
+        "implementation, spec work. Set `emergency` true only for security work or a "
+        "production incident, which alone may draw on the 20 percent reserve. The model is "
+        "the cheapest one trusted for the kind that costs less than Claude, while overflow "
+        "is under the Requesty cap; otherwise Claude on the allowance; otherwise, once the "
+        "allowance outside the reserve is spent or a shorter limit is in force, the cheapest "
+        "trusted overflow model under the cap; otherwise none, with the `reason`. Claude is "
+        "trusted for every kind by default. `via` is `allowance` for Claude and `requesty` "
+        "for any other model. Prices are per million tokens, observed from the costs runs "
+        "reported, against the configured Claude price; a model that never reported a cost "
+        "is not a candidate. Derived on every read."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(routing_tools.route_run)
 
 mcp.tool(
     description=(

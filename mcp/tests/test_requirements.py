@@ -3114,6 +3114,13 @@ async def test_get_initial_instructions_says_to_report_run_outcomes() -> None:
     assert "read_scorecard shows" in result
 
 
+async def test_get_initial_instructions_says_to_route_runs() -> None:
+    result = await get_initial_instructions()
+
+    assert "call route_run with the kind of work" in result
+    assert "through Requesty" in result
+
+
 async def test_stuck_on_intent() -> None:
     """Scenario: Stuck on intent — ask the author rather than guess, then move on."""
     result = await get_initial_instructions()
