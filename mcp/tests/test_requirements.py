@@ -4205,6 +4205,21 @@ async def test_next_issue_says_when_the_sprint_budget_is_spent(
     assert "only security work is offered" in result["explanation"]
 
 
+async def test_next_issue_holds_an_interrupt_once_the_sprint_budget_is_spent(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    """Only security work is exempt from the budget, not an interrupt."""
+    _mock_open_issues(httpx_mock, [1], created=_recent(1))
+    fuel = _sprint_fuel(used=80.0, overflow_spent=1.0)
+    fake = _FakeBacklog([{"issue_number": 1, "interrupt": True}])
+
+    with _patch_backlog(fake, fuel=fuel):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "budget_spent"
+
+
 async def test_next_issue_offers_security_work_from_the_reserve(
     httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
 ) -> None:
