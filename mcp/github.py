@@ -475,6 +475,39 @@ async def list_pull_request_files(repo: str, pr_number: int) -> list[str]:
     return paths
 
 
+async def get_merge_base(repo: str, pr_number: int) -> tuple[str, str] | None:
+    """Return *pr_number*'s merge base and head commits, or ``None`` on 404.
+
+    The pair spans the pull request's own change, as its "Files changed" tab shows
+    it, whether it is open or merged and however it was merged.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(f"{_BASE_URL}/repos/{repo}/pulls/{pr_number}", headers=_headers())
+        if resp.status_code == 404:
+            logger.debug("github.get_merge_base 404 repo=%s pr=%s", repo, pr_number)
+            return None
+        _raise_for_merge_base(resp, repo, pr_number)
+        pull = resp.json()
+        head = str(pull["head"]["sha"])
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/compare/{pull['base']['sha']}...{head}",
+            headers=_headers(),
+        )
+        _raise_for_merge_base(resp, repo, pr_number)
+    return str(resp.json()["merge_base_commit"]["sha"]), head
+
+
+def _raise_for_merge_base(resp: httpx.Response, repo: str, pr_number: int) -> None:
+    if not resp.is_success:
+        logger.warning(
+            "github.get_merge_base failed repo=%s pr=%s status=%s",
+            repo,
+            pr_number,
+            resp.status_code,
+        )
+        resp.raise_for_status()
+
+
 async def update_file(
     repo: str, path: str, content: str, sha: str, message: str, *, branch: str | None = None
 ) -> dict[str, Any]:

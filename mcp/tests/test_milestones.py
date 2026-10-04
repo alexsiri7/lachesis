@@ -5,11 +5,14 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 import landing
 import main
 from auth import current_db_user_id
+from derive import IssueFacts
+from spec_reference import SpecReference
 from tools import milestones
 from tools.specs import SpecProgress
 
@@ -72,6 +75,7 @@ def _entry(
     landed_at: str | None = "2026-10-02T00:00:00Z",
     landed_commit: str | None = "abc",
     dropped: bool = False,
+    linked_issues: list[int] | None = None,
 ) -> dict[str, Any]:
     is_done = status == "done"
     entry = {
@@ -86,6 +90,7 @@ def _entry(
             "landed_at": landed_at if is_done else None,
             "landed_commit": landed_commit if is_done else None,
             "signals": {"closed_without_merge": closed_without_merge},
+            "linked_issues": linked_issues or [],
         },
     }
     if dropped:
@@ -93,12 +98,15 @@ def _entry(
     return entry
 
 
-def _progress(*entries: dict[str, Any]):
+def _progress(
+    *entries: dict[str, Any],
+    references: dict[int, SpecReference] | None = None,
+    facts: dict[int, IssueFacts] | None = None,
+):
+    candidates = [landing.SpecChangeCandidate("", e) for e in entries]
     return patch(
         "tools.milestones.read_spec_progress",
-        new=AsyncMock(
-            return_value=SpecProgress({}, [landing.SpecChangeCandidate("", e) for e in entries])
-        ),
+        new=AsyncMock(return_value=SpecProgress({}, candidates, references or {}, facts or {})),
     )
 
 
@@ -437,5 +445,195 @@ async def test_milestone_tools_are_registered() -> None:
         "remove_milestone_spec_change",
     ):
         assert name in tools
-    for name in ("get_milestone", "list_milestones"):
+    for name in ("get_milestone", "list_milestones", "review_milestone"):
         assert tools[name].annotations.readOnlyHint is True
+
+
+# ---------------------------------------------------------------------------
+# Review
+# ---------------------------------------------------------------------------
+
+
+def _facts(number: int, *, state: str = "OPEN", merged: bool = False) -> IssueFacts:
+    return {
+        "number": number,
+        "state": state,
+        "updated_at": None,
+        "closed_at": None,
+        "labels": [],
+        "closed_by_commit": merged,
+        "blocked_by": [],
+        "pulls": [],
+    }
+
+
+def _question(question_id: int, **about: Any) -> dict[str, Any]:
+    return {
+        "id": question_id,
+        "repo_name": _REPO,
+        "spec_change": None,
+        "milestone": None,
+        "blocks": [],
+        **about,
+    }
+
+
+@pytest.fixture()
+def requirements():
+    with patch("tools.milestones.spec_change_requirements", new=AsyncMock(return_value=[])) as read:
+        yield read
+
+
+@pytest.fixture()
+def questions():
+    with patch("tools.milestones.db.list_open_questions", return_value=[]) as listed:
+        yield listed
+
+
+async def _review(*entries: dict[str, Any], row: dict[str, Any] | None = None, **progress: Any):
+    with (
+        patch("tools.milestones.db.get_milestone", return_value=row or _row()),
+        _progress(*entries, **progress),
+    ):
+        return await milestones.review_milestone("lachesis", 7)
+
+
+_IN_PROGRESS = _entry(170, status="in-progress", linked_issues=[231, 232])
+
+
+@pytest.mark.usefixtures("deployment", "record_state", "questions")
+async def test_requirement_without_work(requirements: AsyncMock) -> None:
+    """Scenario: Requirement without work — the gaps name spec change 170 and the requirement."""
+    requirements.return_value = [
+        ("milestones", "Req A", "added"),
+        ("milestones", "Req B", "changed"),
+    ]
+    references = {
+        231: SpecReference(170, "milestones", "  req   B "),
+        232: SpecReference(170, "milestones"),
+        233: SpecReference(171, "milestones", "Req A"),
+    }
+
+    review = await _review(_IN_PROGRESS, references=references)
+
+    requirements.assert_awaited_once_with(_REPO, 170)
+    assert review["gaps"]["requirements_without_issues"] == [
+        {"spec_change": 170, "capability": "milestones", "requirement": "Req A", "change": "added"}
+    ]
+    assert review["unreadable"] == []
+
+
+@pytest.mark.usefixtures("deployment", "record_state", "questions", "requirements")
+async def test_work_dropped() -> None:
+    """Scenario: Work dropped — the gaps name the issue closed without a merged pull request."""
+    facts = {
+        230: _facts(230, state="CLOSED", merged=True),
+        231: _facts(231, state="CLOSED"),
+        232: _facts(232),
+    }
+    entry = _entry(170, status="in-progress", linked_issues=[232, 231, 230])
+
+    review = await _review(entry, facts=facts)
+
+    assert review["gaps"]["issues_closed_without_merge"] == [{"issue": 231, "spec_change": 170}]
+
+
+@pytest.mark.usefixtures("deployment", "record_state", "questions")
+async def test_gaps_follow_the_milestone_order(requirements: AsyncMock) -> None:
+    requirements.side_effect = lambda _repo, number: [("milestones", f"Req {number}", "added")]
+    facts = {200: _facts(200, state="CLOSED"), 300: _facts(300, state="CLOSED")}
+    entries = (
+        _entry(170, status="in-progress", linked_issues=[200]),
+        _entry(172, status="in-progress", linked_issues=[300]),
+    )
+
+    review = await _review(*entries, row=_row(spec_changes=[172, 170]), facts=facts)
+
+    assert review["gaps"]["issues_closed_without_merge"] == [
+        {"issue": 300, "spec_change": 172},
+        {"issue": 200, "spec_change": 170},
+    ]
+    assert [gap["spec_change"] for gap in review["gaps"]["requirements_without_issues"]] == [
+        172,
+        170,
+    ]
+
+
+@pytest.mark.usefixtures("record_state", "questions", "requirements")
+@pytest.mark.parametrize("verdict", [None, {"state": "pending", "url": None}])
+async def test_a_merge_not_yet_in_production(deployment: AsyncMock, verdict: dict | None) -> None:
+    deployment.side_effect = lambda _repo, commit: (
+        verdict if commit == "late" else {"state": "success", "url": "https://deploy/1"}
+    )
+    entries = [
+        _entry(170, landed_commit="early"),
+        _entry(172, landed_commit="late", landed_at="2026-10-03T00:00:00Z"),
+        _entry(173, status="in-progress"),
+    ]
+
+    review = await _review(*entries, row=_row(spec_changes=[170, 172, 173]))
+
+    assert review["gaps"]["merges_not_in_production"] == [
+        {"spec_change": 172, "commit": "late", "deployment": verdict}
+    ]
+
+
+@pytest.mark.usefixtures("deployment", "record_state", "requirements")
+async def test_open_questions_blocking_the_work(questions: AsyncMock) -> None:
+    questions.return_value = [
+        _question(1, blocks=[232]),
+        _question(2, milestone="7"),
+        _question(3, spec_change=170),
+        _question(4, blocks=[999], milestone="8", spec_change=171),
+        {**_question(5, blocks=[232]), "repo_name": "someone/else"},
+    ]
+
+    review = await _review(
+        _IN_PROGRESS,
+        references={232: SpecReference(170, "milestones"), 999: SpecReference(171, "milestones")},
+    )
+
+    assert [q["id"] for q in review["gaps"]["open_questions"]] == [1, 2, 3]
+
+
+@pytest.mark.usefixtures("deployment", "record_state", "questions")
+async def test_what_could_not_be_read_is_never_clean(requirements: AsyncMock) -> None:
+    async def read(_repo: str, number: int) -> None:
+        if number != 172:
+            raise httpx.ConnectError("down")
+
+    requirements.side_effect = read
+    entries = [
+        _entry(170, status="in-progress", linked_issues=[231]),
+        _entry(171, status=None, source="unavailable", linked_issues=[232]),
+        _entry(172, status="in-progress"),
+    ]
+    facts = {231: _facts(231, state="CLOSED"), 232: _facts(232, state="CLOSED")}
+
+    review = await _review(*entries, row=_row(spec_changes=[170, 171, 172, 173]), facts=facts)
+
+    assert review["unreadable"] == [170, 171, 172, 173]
+    assert review["gaps"]["requirements_without_issues"] == []
+    assert review["gaps"]["issues_closed_without_merge"] == [{"issue": 231, "spec_change": 170}]
+
+
+@pytest.mark.usefixtures("deployment", "record_state", "questions")
+async def test_a_closed_spec_change_has_no_requirements_to_review(
+    requirements: AsyncMock,
+) -> None:
+    review = await _review(_entry(170, state="closed", status=None, source="unlinked"))
+
+    requirements.assert_not_called()
+    assert review["unreadable"] == []
+
+
+async def test_review_refuses_a_milestone_that_has_not_started_or_was_dropped() -> None:
+    for row, state in [(_row(started=False), "planned"), (_row(dropped=True), "dropped")]:
+        with (
+            patch("tools.milestones.db.get_milestone", return_value=row),
+            _progress() as progress,
+            pytest.raises(ValueError, match=f"Milestone 7 is {state}"),
+        ):
+            await milestones.review_milestone("lachesis", 7)
+
+        progress.assert_not_called()
