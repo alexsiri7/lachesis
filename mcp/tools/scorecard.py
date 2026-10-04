@@ -106,12 +106,11 @@ async def report_run_outcome(
     return db.record_run_outcome(user_id, repo, issue, kind, outcome)
 
 
-async def read_scorecard() -> dict[str, Any]:
-    """Return the scorecard of every model with runs, derived from the runs and GitHub."""
-    runs = db.list_runs(_require_user_id())
+async def closed_issues(runs: list[dict[str, Any]]) -> dict[str, set[int]]:
+    """Return the closed issue numbers of every repository with *runs*, read from GitHub."""
     repos = sorted({run["repo_name"] for run in runs})
     listings = await asyncio.gather(*(github.list_all_issues(repo) for repo in repos))
-    closed = {
+    return {
         repo: {
             item["number"]
             for item in issues
@@ -119,4 +118,9 @@ async def read_scorecard() -> dict[str, Any]:
         }
         for repo, issues in zip(repos, listings, strict=True)
     }
-    return {"models": scorecard(runs, closed)}
+
+
+async def read_scorecard() -> dict[str, Any]:
+    """Return the scorecard of every model with runs, derived from the runs and GitHub."""
+    runs = db.list_runs(_require_user_id())
+    return {"models": scorecard(runs, await closed_issues(runs))}

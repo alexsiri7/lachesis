@@ -108,6 +108,9 @@ At the start of every run, call report_fuel with the Claude allowance used this 
 it resets and any shorter limit in force, and the overflow spent this week against the
 Requesty cap. read_fuel returns what is left, the 20 percent reserve kept for security work
 and production incidents, and the pace for today.
+Then call route_run with the kind of work, and emergency true only for security work or a
+production incident, and run the model it chooses: Claude on the allowance, or any other
+model through Requesty. When it chooses none, follow its reason.
 
 Agents do not message each other: they leave notes on the work. When you stop working on
 an issue, finished or not, call add_note on it with type handoff, saying what you did and
