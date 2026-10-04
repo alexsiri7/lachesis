@@ -1,0 +1,111 @@
+name: Delivery
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # Labels and the body decide whether a pull request may change acceptance tests.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+jobs:
+  scenario-coverage:
+    name: scenario-coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml
+
+      - name: Every scenario has exactly one acceptance test
+        run: python ci/scenario_coverage.py
+
+  acceptance-internals:
+    name: acceptance-internals
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Acceptance tests import nothing of the codebase
+        run: python ci/acceptance_internals.py
+
+  goalposts:
+    name: goalposts
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Implementation leaves acceptance tests alone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: >-
+          python ci/goalposts.py
+          --base="$BASE_SHA" --head="$HEAD_SHA" --labels="$PR_LABELS" --body="$PR_BODY"
+
+  scenario-results:
+    name: scenario-results
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lachesis_acceptance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ACCEPTANCE_DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/lachesis_acceptance"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r mcp/requirements.txt
+
+      # A failing run still publishes its results; its exit code decides the conclusion.
+      - name: Acceptance tests
+        id: acceptance
+        run: |
+          status=0
+          pytest tests/acceptance --scenario-results outcomes.json || status=$?
+          echo "exit-code=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Publish scenario results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXIT_CODE: ${{ steps.acceptance.outputs.exit-code }}
+        run: |
+          python ci/scenario_results.py --sha "$GITHUB_SHA" --outcomes outcomes.json \
+            --exit-code "$EXIT_CODE" > check-run.json
+          gh api "repos/$GITHUB_REPOSITORY/check-runs" --input check-run.json

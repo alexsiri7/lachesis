@@ -26,9 +26,20 @@ jobs:
       - name: ruff format check
         run: ruff format --check mcp/
 
-  test:
-    name: Test
+  tests:
+    name: tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lachesis_acceptance
+        ports:
+          # Not 5432, which DATABASE_URL above names for the unit tests, where nothing listens.
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       # All settings default to "" in settings.py — stub values keep pydantic happy
       DATABASE_URL: "postgresql://postgres:test@localhost:5432/lachesis_test"
@@ -38,6 +49,7 @@ jobs:
       GOOGLE_CLIENT_SECRET: "ci-client-secret"
       ALLOWED_EMAIL: "ci@example.com"
       MCP_BASE_URL: "http://localhost:8000"
+      ACCEPTANCE_DATABASE_URL: "postgresql://postgres:postgres@localhost:5433/lachesis_acceptance"
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +60,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r mcp/requirements.txt
 
-      - name: Run tests
+      - name: Unit tests
         working-directory: mcp
         run: pytest tests/ -x
+
+      - name: Delivery check unit tests
+        run: pytest ci
+
+      # Strict xfail: an expected failure passes the run, an unexpected pass fails it.
+      - name: Acceptance tests
+        run: pytest tests/acceptance

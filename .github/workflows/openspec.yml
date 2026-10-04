@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate:
-    name: Validate specs
+    name: spec-validate
     runs-on: ubuntu-latest
     env:
       OPENSPEC_TELEMETRY: "0"
