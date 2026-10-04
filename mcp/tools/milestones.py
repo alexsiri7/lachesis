@@ -62,6 +62,21 @@ def _last_merge(entries: list[dict[str, Any]]) -> str | None:
     return latest["derived"]["landed_commit"]
 
 
+def _partition_readable(
+    spec_changes: list[int], entries: Entries
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Split *spec_changes* into the entries that were read and the numbers that were not."""
+    read: list[dict[str, Any]] = []
+    unreadable: list[int] = []
+    for number in spec_changes:
+        entry = entries.get(number)
+        if entry is None or spec_change_status(entry) == "unreadable":
+            unreadable.append(number)
+        else:
+            read.append(entry)
+    return read, unreadable
+
+
 async def derive_milestone_state(
     repo: str, spec_changes: list[int], entries: Entries
 ) -> Derivation:
@@ -71,10 +86,9 @@ async def derive_milestone_state(
     by merged code, and production includes the last of those merges; a spec
     change no issue names is unfinished work, not vacuously done.
     """
-    work = [entries.get(number) for number in spec_changes]
-    if any(entry is None or spec_change_status(entry) == "unreadable" for entry in work):
+    read, unreadable = _partition_readable(spec_changes, entries)
+    if unreadable:
         return Derivation("active", False, None, None)
-    read = [entry for entry in work if entry is not None]
     if not read or not all(_closed_out(entry) for entry in read):
         return Derivation("active", True, None, None)
     if not all(entry["derived"]["status"] == "done" for entry in read):
@@ -371,15 +385,7 @@ async def review_milestone(repo: str, milestone: int) -> dict[str, Any]:
     view = await _view(user_id, repo, row, entries)
     spec_changes: list[int] = view["spec_changes"]
 
-    unreadable: set[int] = set()
-    read: list[dict[str, Any]] = []
-    for number in spec_changes:
-        entry = entries.get(number)
-        if entry is None or spec_change_status(entry) == "unreadable":
-            unreadable.add(number)
-        else:
-            read.append(entry)
-
+    read, unread_entries = _partition_readable(spec_changes, entries)
     issues = {n for n, ref in progress.references.items() if ref.spec_change in spec_changes}
     closed_without_merge = [
         {"issue": n, "spec_change": entry["spec_change"]}
@@ -390,12 +396,12 @@ async def review_milestone(repo: str, milestone: int) -> dict[str, Any]:
         and not landed(facts)
     ]
     lagging = await asyncio.gather(*(_not_in_production(repo, entry) for entry in read))
-    requirements, unread = await _requirements_without_issues(
+    requirements, unread_requirements = await _requirements_without_issues(
         repo,
         [entry["spec_change"] for entry in read if entry["state"] != "closed"],
         progress.references,
     )
-    unreadable |= unread
+    unreadable = set(unread_entries) | unread_requirements
     return {
         **view,
         "gaps": {
