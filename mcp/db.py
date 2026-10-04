@@ -15,6 +15,8 @@ Tables (all namespaced lachesis_):
   lachesis_milestone_spec_changes — the spec changes each milestone groups, one milestone each
   lachesis_fuel           — the latest Claude allowance status and overflow spend reported
                             for the account
+  lachesis_estimates      — the current token estimate of each issue, with its kind,
+                            capability and confidence
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -889,6 +891,86 @@ def record_usage_report(
         if row is None:
             raise RuntimeError(f"record_usage_report returned no row for {repo_name!r}")
         _insert_event(conn, user_id, repo_name, "usage_reported", str(row["id"]))
+    return dict(row)
+
+
+def usage_by_issue(user_id: str, repo_name: str) -> dict[int, dict[str, int]]:
+    """Return the tokens in and out reported on each issue in *repo_name*, by kind of work."""
+    sql = text(
+        """
+        SELECT issue, kind, SUM(tokens_in + tokens_out) AS tokens
+        FROM lachesis_usage_reports
+        WHERE user_id = :user_id AND repo_name = :repo_name
+        GROUP BY issue, kind
+        """
+    )
+    with _engine().connect() as conn:
+        rows = conn.execute(sql, {"user_id": user_id, "repo_name": repo_name}).mappings().all()
+    usage: dict[int, dict[str, int]] = {}
+    for row in rows:
+        usage.setdefault(row["issue"], {})[row["kind"]] = int(row["tokens"])
+    return usage
+
+
+# ---------------------------------------------------------------------------
+# lachesis_estimates
+# ---------------------------------------------------------------------------
+
+EstimateConfidence = Literal["low", "normal"]
+EstimateBasis = Literal["capability", "kind", "none"]
+
+_ESTIMATE_COLUMNS = (
+    "repo_name, issue, kind, capability, tokens, confidence, basis, samples, estimated_at"
+)
+
+
+def set_estimate(
+    user_id: str,
+    repo_name: str,
+    issue: int,
+    kind: UsageKind,
+    capability: str | None,
+    tokens: int | None,
+    confidence: EstimateConfidence,
+    basis: EstimateBasis,
+    samples: int,
+) -> dict[str, Any]:
+    """Replace *issue*'s token estimate with this one."""
+    if kind not in get_args(UsageKind):
+        raise ValueError(f"kind must be one of {', '.join(get_args(UsageKind))}, got {kind!r}")
+    sql = text(
+        f"""
+        INSERT INTO lachesis_estimates
+            (user_id, repo_name, issue, kind, capability, tokens, confidence, basis, samples)
+        VALUES
+            (:user_id, :repo_name, :issue, :kind, :capability, :tokens, :confidence, :basis,
+             :samples)
+        ON CONFLICT (user_id, repo_name, issue) DO UPDATE
+            SET kind = EXCLUDED.kind,
+                capability = EXCLUDED.capability,
+                tokens = EXCLUDED.tokens,
+                confidence = EXCLUDED.confidence,
+                basis = EXCLUDED.basis,
+                samples = EXCLUDED.samples,
+                estimated_at = now()
+        RETURNING {_ESTIMATE_COLUMNS}
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "issue": issue,
+        "kind": kind,
+        "capability": capability,
+        "tokens": tokens,
+        "confidence": confidence,
+        "basis": basis,
+        "samples": samples,
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    if row is None:
+        raise RuntimeError(f"set_estimate returned no row for {repo_name!r} issue {issue}")
     return dict(row)
 
 
