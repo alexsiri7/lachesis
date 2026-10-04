@@ -195,6 +195,21 @@ async def test_report_fuel_stores_the_status(set_user_id: str) -> None:
     assert result["allowance"]["resets_at"] == resets_at
 
 
+async def test_report_fuel_accepts_a_shorter_limit_that_has_already_lifted(
+    set_user_id: str,
+) -> None:
+    resets_at = (datetime.now(UTC) + timedelta(days=3)).replace(microsecond=0)
+    lifted_at = (datetime.now(UTC) - timedelta(hours=2)).replace(microsecond=0)
+    stored = _fuel(weekly_resets_at=resets_at, shorter_limit_until=lifted_at)
+    with patch("tools.fuel.db.set_fuel", return_value=stored) as store:
+        result = await report_fuel(
+            60, resets_at.isoformat(), 12, 40, shorter_limit_until=lifted_at.isoformat()
+        )
+
+    store.assert_called_once_with("test-uid", 60, resets_at, lifted_at, 12, 40)
+    assert result["reported"] is True
+
+
 def _in_days(days: float) -> str:
     return (datetime.now(UTC) + timedelta(days=days)).isoformat()
 
