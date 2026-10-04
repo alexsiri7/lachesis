@@ -504,6 +504,7 @@ EventKind = Literal[
     "milestone_state_changed",
     "milestone_spec_change_added",
     "milestone_spec_change_removed",
+    "usage_reported",
 ]
 
 
@@ -840,6 +841,53 @@ def list_notes(
     params = {"user_id": user_id, "repo_name": repo_name, "issue": issue, "milestone": milestone}
     with _engine().connect() as conn:
         return [dict(row) for row in conn.execute(sql, params).mappings().all()]
+
+
+# ---------------------------------------------------------------------------
+# lachesis_usage_reports
+# ---------------------------------------------------------------------------
+
+UsageKind = Literal["triage", "summarising", "audit", "tests", "implementation", "spec"]
+
+
+def record_usage_report(
+    user_id: str,
+    repo_name: str,
+    issue: int,
+    model: str,
+    kind: UsageKind,
+    tokens_in: int,
+    tokens_out: int,
+    cost_usd: float | None,
+) -> dict[str, Any]:
+    """Store one run's usage on *issue* and its ``usage_reported`` event."""
+    if kind not in get_args(UsageKind):
+        raise ValueError(f"kind must be one of {', '.join(get_args(UsageKind))}, got {kind!r}")
+    sql = text(
+        """
+        INSERT INTO lachesis_usage_reports
+            (user_id, repo_name, issue, model, kind, tokens_in, tokens_out, cost_usd)
+        VALUES
+            (:user_id, :repo_name, :issue, :model, :kind, :tokens_in, :tokens_out, :cost_usd)
+        RETURNING id, repo_name, issue, model, kind, tokens_in, tokens_out, cost_usd, created_at
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "issue": issue,
+        "model": model,
+        "kind": kind,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": cost_usd,
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+        if row is None:
+            raise RuntimeError(f"record_usage_report returned no row for {repo_name!r}")
+        _insert_event(conn, user_id, repo_name, "usage_reported", str(row["id"]))
+    return dict(row)
 
 
 # ---------------------------------------------------------------------------

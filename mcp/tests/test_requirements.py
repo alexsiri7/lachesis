@@ -3084,6 +3084,13 @@ async def test_get_initial_instructions_says_a_budget_question_blocks_nothing() 
     assert "it blocks no issue" in result
 
 
+async def test_get_initial_instructions_says_every_run_reports_its_usage() -> None:
+    result = await get_initial_instructions()
+
+    assert "At the end of every run on an issue, call report_usage" in result
+    assert "leave it out for a run on the Claude allowance" in result
+
+
 async def test_stuck_on_intent() -> None:
     """Scenario: Stuck on intent — ask the author rather than guess, then move on."""
     result = await get_initial_instructions()
