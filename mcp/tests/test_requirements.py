@@ -3089,6 +3089,7 @@ async def test_get_initial_instructions_says_every_run_reports_its_usage() -> No
 
     assert "At the end of every run on an issue, call report_usage" in result
     assert "leave it out for a run on the Claude allowance" in result
+    assert "tests, implementation or\nspec work." in result
 
 
 async def test_stuck_on_intent() -> None:

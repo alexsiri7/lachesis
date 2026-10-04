@@ -84,8 +84,8 @@ keep working within the cap.
 
 At the end of every run on an issue, call report_usage with the issue, the model, tokens
 in and out, and the kind of work: triage, summarising, audit, tests, implementation or
-spec. Give its cost in dollars for a model paid per token, such as an overflow run through
-Requesty; leave it out for a run on the Claude allowance.
+spec work. Give its cost in dollars for a model paid per token, such as an overflow run
+through Requesty; leave it out for a run on the Claude allowance.
 
 Agents do not message each other: they leave notes on the work. When you stop working on
 an issue, finished or not, call add_note on it with type handoff, saying what you did and

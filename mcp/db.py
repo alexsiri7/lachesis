@@ -847,7 +847,7 @@ def list_notes(
 # lachesis_usage_reports
 # ---------------------------------------------------------------------------
 
-UsageKind = Literal["triage", "summarising", "audit", "tests", "implementation", "spec"]
+UsageKind = Literal["triage", "summarising", "audit", "tests", "implementation", "spec work"]
 
 
 def record_usage_report(

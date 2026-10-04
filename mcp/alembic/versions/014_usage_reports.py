@@ -43,7 +43,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
         sa.CheckConstraint(
-            "kind IN ('triage', 'summarising', 'audit', 'tests', 'implementation', 'spec')",
+            "kind IN ('triage', 'summarising', 'audit', 'tests', 'implementation', 'spec work')",
             name="lachesis_usage_reports_kind_check",
         ),
         sa.CheckConstraint(

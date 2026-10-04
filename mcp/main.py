@@ -420,7 +420,7 @@ mcp.tool(
         "Report what one run on an issue in a registered repository used, once at the "
         "end of every run: the `issue` (number) it worked on — a report naming no issue "
         "is refused — the `model`, `tokens_in` and `tokens_out`, and its `kind` of work, "
-        "one of triage, summarising, audit, tests, implementation, spec. Give `cost_usd` "
+        "one of triage, summarising, audit, tests, implementation, spec work. Give `cost_usd` "
         "when the model is paid per token, as on Requesty overflow runs; leave it out "
         "for a run on the Claude allowance. Returns the stored report with its id and time."
     ),

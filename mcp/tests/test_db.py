@@ -636,7 +636,7 @@ def test_usage_reports_migration_requires_an_issue_and_allows_exactly_the_kinds(
     assert 'sa.Column("issue", sa.Integer(), nullable=False)' in migration
     check = re.search(r"\"kind IN \((.*?)\)\"", migration)
     assert check is not None
-    assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.UsageKind))
+    assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(db.UsageKind))
 
 
 def _sequenced_engine(firsts: list[dict | None]) -> MagicMock:
