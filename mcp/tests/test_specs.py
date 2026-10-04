@@ -852,8 +852,8 @@ async def test_owner_guidance(httpx_mock: HTTPXMock, specs: bool | None) -> None
     assert "never edits the spec" in guidance
 
 
-# Issue fields the guidance names alongside the tools.
-_GUIDANCE_FIELDS = {"spec_change", "spec_gap", "uses_specs", "waiting_on_author"}
+# Issue fields and argument values the guidance names alongside the tools.
+_GUIDANCE_FIELDS = {"audit_finding", "spec_change", "spec_gap", "uses_specs", "waiting_on_author"}
 
 
 @pytest.mark.parametrize("specs", [True, False, None])

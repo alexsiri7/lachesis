@@ -87,6 +87,13 @@ in and out, and the kind of work: triage, summarising, audit, tests, implementat
 spec work. Give its cost in dollars for a model paid per token, such as an overflow run
 through Requesty; leave it out for a run on the Claude allowance.
 
+When review sends a run's work back for changes, when you retry a failed run, or when an
+audit finds a gap in work done on an issue, call report_run_outcome with the issue, the
+kind of work and the outcome: rework, retry or audit_finding. It counts against the latest
+run of that kind on the issue, so report a retry at the start of the retrying run.
+read_scorecard shows, for each model and kind of work, its runs and failures, whether it is
+trusted, and whether it may trial that kind.
+
 Every issue carries an estimate in tokens. When you create or triage an issue, call
 estimate_issue with the issue and the kind of work it mostly is; the estimate comes from
 past issues of that kind and capability, and is low confidence until there are five.

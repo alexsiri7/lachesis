@@ -3106,6 +3106,14 @@ async def test_get_initial_instructions_says_to_report_and_read_fuel() -> None:
     assert "read_fuel returns what is left" in result
 
 
+async def test_get_initial_instructions_says_to_report_run_outcomes() -> None:
+    result = await get_initial_instructions()
+
+    assert "call report_run_outcome with the issue" in result
+    assert "report a retry at the start of the retrying run" in result
+    assert "read_scorecard shows" in result
+
+
 async def test_stuck_on_intent() -> None:
     """Scenario: Stuck on intent — ask the author rather than guess, then move on."""
     result = await get_initial_instructions()
