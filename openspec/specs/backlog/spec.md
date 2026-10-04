@@ -2,33 +2,42 @@
 
 ## Purpose
 
-The backlog tells the autonomous worker what to build next. Order is set by the author through relative placement, dependencies constrain what is possible, and readiness marks what the author has finished thinking about. Priority labels and urgency grades are deliberately absent: with one author, they stop carrying information.
+The backlog tells the autonomous worker what to build next. Its order is computed by the system, not set by hand, so the author is never on the critical path. The author steers by naming a focus and by the single interrupt marker; dependencies constrain what is possible; readiness marks what the author has finished thinking about. Priority labels and urgency grades stay absent: the order itself carries the priority.
 
 ## Requirements
 
 ### Requirement: Each repository has one ordered backlog
 
-The open issues of a repository SHALL form a single ordered backlog. Reading it SHALL return every open issue with its position, its ready flag and its interrupt flag, with interrupt-marked issues first.
+The open issues of a repository SHALL form a single ordered backlog. Reading it SHALL return every open issue with its position, its tier, its ready flag and its interrupt flag.
 
 #### Scenario: Reading the backlog
 - GIVEN a repository with four open issues, one marked interrupt
 - WHEN its backlog is read
 - THEN the interrupt-marked issue is listed first
-- AND every entry shows its position, ready flag and interrupt flag
+- AND every entry shows its position, tier, ready flag and interrupt flag
 
-### Requirement: Order is set relatively
+### Requirement: Order is computed
 
-The author SHALL move an issue only by placing it immediately before or immediately after another named open issue, never by absolute rank. Exactly one of before or after SHALL be given. The result SHALL be the reordered backlog.
+The system SHALL order the backlog by tier, highest first: interrupt; security (spec gaps found by a security audit or a security incident); in the author's focus; work implementing an active milestone, nearest-done milestone first; everything else. Within a tier, older issues SHALL come first. An issue that has been ready and unblocked for two whole sprints without being picked up SHALL move up one tier, so no work starves. The system SHALL NOT offer a way to set an issue's rank by hand.
 
-#### Scenario: Move after
-- GIVEN a backlog 10, 11, 12
-- WHEN 10 is moved after 12
-- THEN the backlog reads 11, 12, 10
+#### Scenario: Security before milestone work
+- GIVEN a ready milestone issue created yesterday and a ready security spec gap created today
+- WHEN the backlog is read
+- THEN the security spec gap comes first
 
-#### Scenario: Both anchors given
-- GIVEN any backlog
-- WHEN a move names both a before and an after issue
-- THEN the move is refused
+#### Scenario: Starving work rises
+- GIVEN a ready, unblocked issue in the last tier that has waited two whole sprints
+- WHEN the backlog is read
+- THEN the issue is in the tier above
+
+### Requirement: The author steers with focus
+
+The author SHALL be able to set a focus on any number of repositories or milestones, and clear it. Setting or clearing a focus SHALL take effect on the next read of the backlog and SHALL never wait on any other decision.
+
+#### Scenario: Focusing a milestone
+- GIVEN two active milestones A and B with ready work
+- WHEN the author sets focus on B
+- THEN B's issues come before A's in the backlog
 
 ### Requirement: Work is eligible unless parked
 
@@ -38,20 +47,20 @@ An issue SHALL be ready for autonomous pickup from the moment it is created. The
 - GIVEN a ready issue
 - WHEN it is parked
 - THEN it is skipped for autonomous pickup
-- AND when it is unparked it is eligible again at its original position
+- AND when it is unparked it is eligible again in its computed place
 
 ### Requirement: One interrupt marker
 
-The system SHALL offer a single interrupt flag that puts an issue ahead of the order, and SHALL NOT offer graded urgency levels.
+The system SHALL offer a single interrupt flag that puts an issue in the top tier, and SHALL NOT offer graded urgency levels.
 
-#### Scenario: Interrupt wins over position
-- GIVEN issue 30 is last in the backlog and ready
+#### Scenario: Interrupt wins over every tier
+- GIVEN issue 30 is in the last tier and ready
 - WHEN it is marked interrupt
 - THEN it is the next issue offered for pickup, provided it is unblocked
 
 ### Requirement: The system says what to work on next
 
-Asking for the next issue SHALL return the highest-ordered issue that is ready, has no open blocker, is not already in progress and is not waiting on the author, with an interrupt-marked issue winning over position. The repository SHALL be optional; without one, every registered repository SHALL be considered. When nothing qualifies, the answer SHALL say whether everything ready is blocked, everything is parked, everything eligible is waiting on the author, or the backlog is empty.
+Asking for the next issue SHALL return the highest-ordered issue that is ready, has no open blocker, is not already in progress, is not waiting on the author and fits the current sprint's remaining budget as described in sprints. The repository SHALL be optional; without one, every registered repository SHALL be considered. When nothing qualifies, the answer SHALL say whether everything ready is blocked, everything is parked, everything eligible is waiting on the author, the sprint budget is spent, or the backlog is empty.
 
 #### Scenario: Everything blocked
 - GIVEN every ready issue has an open blocker
@@ -68,5 +77,10 @@ Asking for the next issue SHALL return the highest-ordered issue that is ready, 
 - GIVEN the top ready issue is labelled needs-author
 - WHEN the next issue is requested
 - THEN the following eligible issue is returned
-- AND once the question is answered the waiting issue is eligible again at its original position
+- AND once the question is answered the waiting issue is eligible again in its computed place
 
+#### Scenario: Budget spent
+- GIVEN the current sprint has no budget left outside the reserve
+- WHEN the next issue is requested and the top issue is not security work
+- THEN no issue is returned
+- AND the result says the sprint budget is spent
