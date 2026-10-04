@@ -538,6 +538,27 @@ async def test_work_dropped() -> None:
     assert review["gaps"]["issues_closed_without_merge"] == [{"issue": 231, "spec_change": 170}]
 
 
+@pytest.mark.usefixtures("deployment", "record_state", "questions")
+async def test_gaps_follow_the_milestone_order(requirements: AsyncMock) -> None:
+    requirements.side_effect = lambda _repo, number: [("milestones", f"Req {number}", "added")]
+    facts = {200: _facts(200, state="CLOSED"), 300: _facts(300, state="CLOSED")}
+    entries = (
+        _entry(170, status="in-progress", linked_issues=[200]),
+        _entry(172, status="in-progress", linked_issues=[300]),
+    )
+
+    review = await _review(*entries, row=_row(spec_changes=[172, 170]), facts=facts)
+
+    assert review["gaps"]["issues_closed_without_merge"] == [
+        {"issue": 300, "spec_change": 172},
+        {"issue": 200, "spec_change": 170},
+    ]
+    assert [gap["spec_change"] for gap in review["gaps"]["requirements_without_issues"]] == [
+        172,
+        170,
+    ]
+
+
 @pytest.mark.usefixtures("record_state", "questions", "requirements")
 @pytest.mark.parametrize("verdict", [None, {"state": "pending", "url": None}])
 async def test_a_merge_not_yet_in_production(deployment: AsyncMock, verdict: dict | None) -> None:
