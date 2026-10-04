@@ -139,6 +139,15 @@ def test_a_run_on_an_open_issue_neither_counts_nor_breaks_the_streak() -> None:
     assert _kind(models, "deepseek/deepseek-chat", "triage")["trusted"]
 
 
+def test_merged_is_scoped_to_each_runs_own_repository() -> None:
+    other = "alexsiri7/kindred"
+    runs = [_run(1, repo_name=_REPO), _run(1, repo_name=other)]
+
+    models = scorecard(runs, {_REPO: {1}, other: set()})
+
+    assert _kind(models, "deepseek/deepseek-chat", "triage")["merged_without_rework"] == 1
+
+
 def test_a_failure_on_an_open_issue_is_judged() -> None:
     runs = [_run(n) for n in range(1, 5)] + [_run(5, retries=1)] + [_run(n) for n in range(6, 10)]
 
