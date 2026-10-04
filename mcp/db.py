@@ -1063,6 +1063,14 @@ def set_estimate(
     return dict(row)
 
 
+def list_estimates(user_id: str) -> list[dict[str, Any]]:
+    """Return every stored issue estimate of the account."""
+    sql = text(f"SELECT {_ESTIMATE_COLUMNS} FROM lachesis_estimates WHERE user_id = :user_id")
+    with _engine().connect() as conn:
+        rows = conn.execute(sql, {"user_id": user_id}).mappings().all()
+    return [dict(row) for row in rows]
+
+
 # ---------------------------------------------------------------------------
 # lachesis_fuel
 # ---------------------------------------------------------------------------

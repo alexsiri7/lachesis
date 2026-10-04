@@ -15,6 +15,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from auth import current_db_user_id
+from settings import settings
 from spec_reference import SpecReference, append_reference
 from tools.requirements import (
     _MAX_WRITE_ATTEMPTS,
@@ -3121,6 +3122,13 @@ async def test_get_initial_instructions_says_to_route_runs() -> None:
     assert "through Requesty" in result
 
 
+async def test_get_initial_instructions_explains_the_sprint() -> None:
+    result = await get_initial_instructions()
+
+    assert "read_sprint returns the sprint's" in result
+    assert "says\nwhen the sprint budget is spent" in result
+
+
 async def test_stuck_on_intent() -> None:
     """Scenario: Stuck on intent — ask the author rather than guess, then move on."""
     result = await get_initial_instructions()
@@ -3198,6 +3206,7 @@ def _patch_backlog(
     milestones: list[dict] | None = None,
     focus: list[dict] | None = None,
     fuel: dict | None = None,
+    estimates: list[dict] | None = None,
 ):
     """Route the db accessors the backlog reads at fakes for the duration of the block."""
     with (
@@ -3206,6 +3215,7 @@ def _patch_backlog(
         patch("db.list_milestones", return_value=milestones or []),
         patch("db.list_focus", return_value=focus or []),
         patch("db.get_fuel", return_value=fuel),
+        patch("db.list_estimates", return_value=estimates or []),
     ):
         yield fake
 
@@ -4147,6 +4157,140 @@ async def test_next_issue_scoped_call_surfaces_the_failure(
 
     with _patch_backlog(_FakeBacklog()), pytest.raises(httpx.HTTPStatusError):
         await next_issue("owner/gone")
+
+
+def _sprint_fuel(
+    *, used: float, overflow_spent: float, overflow_cap: float = 1.0, resets_in_days: float = 3
+) -> dict:
+    """A current fuel report, resetting *resets_in_days* from now."""
+    now = datetime.now(UTC)
+    return {
+        "weekly_used_percent": used,
+        "weekly_resets_at": now + timedelta(days=resets_in_days),
+        "shorter_limit_until": None,
+        "overflow_spent_usd": overflow_spent,
+        "overflow_cap_usd": overflow_cap,
+        "reported_at": now,
+    }
+
+
+@pytest.fixture()
+def _sprint_settings():
+    """An allowance of 1,000 tokens, and a dollar of overflow buying 1,000 tokens."""
+    with (
+        patch.object(settings, "claude_weekly_allowance_tokens", 1000),
+        patch.object(settings, "claude_usd_per_million_tokens", 1000.0),
+    ):
+        yield
+
+
+def _recent(*numbers: int) -> dict[int, datetime]:
+    """Creation times recent enough that nothing ages, oldest first."""
+    now = datetime.now(UTC)
+    return {n: now - timedelta(hours=100 - n) for n in numbers}
+
+
+async def test_next_issue_says_when_the_sprint_budget_is_spent(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    """Scenario: Budget spent — allowance outside the reserve used and overflow at its cap."""
+    _mock_open_issues(httpx_mock, [1], created=_recent(1))
+    fuel = _sprint_fuel(used=80.0, overflow_spent=1.0)
+
+    with _patch_backlog(_FakeBacklog(), fuel=fuel):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "budget_spent"
+    assert "only security work is offered" in result["explanation"]
+
+
+async def test_next_issue_holds_an_interrupt_once_the_sprint_budget_is_spent(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    """Only security work is exempt from the budget, not an interrupt."""
+    _mock_open_issues(httpx_mock, [1], created=_recent(1))
+    fuel = _sprint_fuel(used=80.0, overflow_spent=1.0)
+    fake = _FakeBacklog([{"issue_number": 1, "interrupt": True}])
+
+    with _patch_backlog(fake, fuel=fuel):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "budget_spent"
+
+
+async def test_next_issue_offers_security_work_from_the_reserve(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    """Scenario: Only emergencies use the reserve — security work is offered past the budget."""
+    _mock_open_issues(httpx_mock, [1, 2], {2: ["security"]}, created=_recent(1, 2))
+    _mock_blocked_by(httpx_mock, 2, [])
+    fuel = _sprint_fuel(used=80.0, overflow_spent=1.0)
+
+    with _patch_backlog(_FakeBacklog(), fuel=fuel):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 2
+
+
+async def test_next_issue_holds_an_early_burst_back(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    """Scenario: Early burst held back — day 2 with 70 percent used, overflow money left."""
+    _mock_open_issues(httpx_mock, [1], created=_recent(1))
+    fuel = _sprint_fuel(used=70.0, overflow_spent=0.0, resets_in_days=5.5)
+
+    with _patch_backlog(_FakeBacklog(), fuel=fuel):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"] is None
+    assert result["reason"] == "over_pace"
+
+
+async def test_next_issue_offers_security_work_over_pace(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    _mock_open_issues(httpx_mock, [1, 2], {2: ["security"]}, created=_recent(1, 2))
+    _mock_blocked_by(httpx_mock, 2, [])
+    fuel = _sprint_fuel(used=70.0, overflow_spent=0.0, resets_in_days=5.5)
+
+    with _patch_backlog(_FakeBacklog(), fuel=fuel):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 2
+
+
+async def test_next_issue_passes_over_work_too_big_for_the_budget_left(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    """With 300 tokens left, issue 1's 500 do not fit and issue 2's 200 do."""
+    _mock_open_issues(httpx_mock, [1, 2], created=_recent(1, 2))
+    _mock_blocked_by(httpx_mock, 2, [])
+    fuel = _sprint_fuel(used=50.0, overflow_spent=1.0)
+    estimates = [
+        {"repo_name": "owner/repo", "issue": 1, "tokens": 500},
+        {"repo_name": "owner/repo", "issue": 2, "tokens": 200},
+    ]
+
+    with _patch_backlog(_FakeBacklog(), fuel=fuel, estimates=estimates):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 2
+
+
+async def test_next_issue_with_nothing_that_fits_says_the_budget_is_spent(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    _mock_open_issues(httpx_mock, [1], created=_recent(1))
+    fuel = _sprint_fuel(used=50.0, overflow_spent=1.0)
+    estimates = [{"repo_name": "owner/repo", "issue": 1, "tokens": 500}]
+
+    with _patch_backlog(_FakeBacklog(), fuel=fuel, estimates=estimates):
+        result = await next_issue("owner/repo")
+
+    assert result["reason"] == "budget_spent"
+    assert "(300 tokens)" in result["explanation"]
 
 
 # ---------------------------------------------------------------------------

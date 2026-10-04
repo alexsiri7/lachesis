@@ -40,6 +40,7 @@ from tools import requirements as req_tools
 from tools import routing as routing_tools
 from tools import scorecard as scorecard_tools
 from tools import specs as spec_tools
+from tools import sprints as sprint_tools
 
 logger = logging.getLogger(__name__)
 
@@ -516,6 +517,21 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Return the current sprint — from one weekly Claude allowance reset to the next — "
+        "with its `start` and `end`; its budget in tokens: the weekly allowance (the "
+        "configured CLAUDE_WEEKLY_ALLOWANCE_TOKENS) less the 20 percent reserve, plus the "
+        "Requesty cap converted at the configured Claude price; what is spent and left; "
+        "whether spending is within today's pace; and the `plan` — the registered "
+        "repositories' backlogs in computed order, ready and not waiting on the author, each "
+        "included when its estimate fits what is left. An issue with no estimate is "
+        "included, with `estimate_tokens` null. Derived on every read, so it follows focus "
+        "changes. `reported` is false when no fuel has been reported."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(sprint_tools.read_sprint)
+
+mcp.tool(
+    description=(
         "Create a milestone in a registered repository that uses specs: a `title`, the "
         "`goal` it reaches, and the `spec_changes` (pull request numbers) it groups. Each "
         "must be a spec change in the repository, not dropped, and in no other milestone — "
@@ -659,13 +675,15 @@ mcp.tool(
     description=(
         "Return the issue to pick up next — the highest-ordered issue that is ready, "
         "has no open blocker, is not already in progress, and is not waiting on the "
-        "author (labelled needs-author). Issues are taken in computed backlog order, "
-        "across repos when `repo` is omitted. "
+        "author (labelled needs-author). Once fuel is reported, work other than security "
+        "work must also fit the sprint budget left and spending must be within today's "
+        "pace. Issues are taken in computed backlog order, across repos when `repo` is "
+        "omitted. "
         "The offered issue's notes are returned with it under `notes`, oldest first. "
         "`repo` is optional: omit it to consider every registered repo. When nothing "
         "qualifies the result explains which case it is — everything ready is blocked, "
-        "everything eligible is waiting on the author, everything is parked, or the "
-        "backlog is empty."
+        "the sprint budget is spent, spending is ahead of pace, everything eligible is "
+        "waiting on the author, everything is parked, or the backlog is empty."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.next_issue)

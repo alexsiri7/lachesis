@@ -21,6 +21,7 @@ import groups
 import landing
 from auth import current_db_user_id
 from derive import ActivityFailure, IssueFacts, derive, linked_issue_numbers
+from settings import settings
 from spec_reference import SpecReference, append_reference, parse_reference
 from status import INACTIVE_STATUSES, VALID_STATUSES, canonical_status
 
@@ -111,6 +112,13 @@ and production incidents, and the pace for today.
 Then call route_run with the kind of work, and emergency true only for security work or a
 production incident, and run the model it chooses: Claude on the allowance, or any other
 model through Requesty. When it chooses none, follow its reason.
+
+Sprints run from one weekly allowance reset to the next. read_sprint returns the sprint's
+dates, its budget in tokens — the allowance and overflow cap less the reserve — what is
+spent and left, and the plan: the backlog in order, as far as estimates fit what is left.
+It is derived on every read, so a new focus re-plans it. next_issue offers work other than
+security work only while it fits the budget left and spending is within pace, and says
+when the sprint budget is spent.
 
 Agents do not message each other: they leave notes on the work. When you stop working on
 an issue, finished or not, call add_note on it with type handoff, saying what you did and
@@ -1329,6 +1337,8 @@ class _RepoScan(NamedTuple):
     saw_open: bool
     saw_claimed: bool
     saw_waiting: bool
+    saw_over_budget: bool
+    saw_over_pace: bool
 
 
 async def _open_blockers(
@@ -1363,14 +1373,26 @@ async def _scan_repo(
     user_id: str,
     now: datetime,
     cache: dict[tuple[str, int], dict[str, Any] | None],
+    budget: dict[str, Any] | None,
+    estimates: dict[tuple[str, int], int | None],
 ) -> _RepoScan:
-    """Walk one repo's backlog for the first pickable issue, reporting what it passed."""
+    """Walk one repo's backlog for the first pickable issue, reporting what it passed.
+
+    With a sprint *budget*, work other than security work is held unless spending is
+    within pace and its estimate fits the budget left: only security work may draw on
+    the reserve.
+    """
+    # sprints imports this module, so it cannot be imported at the top.
+    from .sprints import fits
+
     order = await _backlog_order(repo, user_id, now)
     open_titles = {item["number"]: item["title"] for item in order}
     candidate: dict[str, Any] | None = None
     blocked: list[dict[str, Any]] = []
     saw_claimed = False
     saw_waiting = False
+    saw_over_budget = False
+    saw_over_pace = False
 
     for item in order:
         # Interrupts lead the order, so keep walking that group even once a candidate
@@ -1385,6 +1407,16 @@ async def _scan_repo(
         if _NEEDS_AUTHOR_LABEL in item["labels"]:
             saw_waiting = True
             continue
+        if budget is not None and SECURITY_LABEL not in item["labels"]:
+            if budget["left_tokens"] <= 0:
+                saw_over_budget = True
+                continue
+            if budget["within_pace"] is False:
+                saw_over_pace = True
+                continue
+            if not fits(estimates.get((repo, item["number"])), budget["left_tokens"]):
+                saw_over_budget = True
+                continue
         blockers = await _open_blockers(repo, item["number"], open_titles, cache)
         if blockers:
             blocked.append(
@@ -1407,7 +1439,15 @@ async def _scan_repo(
                 "sort_key": item["sort_key"],
             }
 
-    return _RepoScan(candidate, blocked, bool(order), saw_claimed, saw_waiting)
+    return _RepoScan(
+        candidate,
+        blocked,
+        bool(order),
+        saw_claimed,
+        saw_waiting,
+        saw_over_budget,
+        saw_over_pace,
+    )
 
 
 def _describe_blocked(entries: list[dict[str, Any]]) -> str:
@@ -1427,17 +1467,19 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
 
     Considers only issues that are ready, free of open blockers, and carrying neither
     the ``archon:in-progress`` nor the ``needs-author`` label, in computed backlog order.
+    Once fuel is reported, an issue not labelled ``security`` must also fit the sprint
+    budget left and spending must be within today's pace.
     Omitting *repo* considers every registered repo, merging their backlogs by tier and
     age, in which case runners-up are listed under ``also_eligible``.
 
     Returns ``issue`` (``None`` when nothing qualifies) with its ``notes`` oldest
     first when one is selected, a ``reason`` of
-    ``selected`` / ``all_blocked`` / ``all_waiting`` / ``all_in_progress`` /
-    ``none_ready`` / ``empty``, a one-sentence ``explanation``, and ``blocked`` — the
-    ready issues passed over because a dependency of theirs is still open, each naming
-    its blockers. An unscoped call skips a repo it cannot read and says so in the
-    explanation, rather than letting one unreachable repo cost the caller every other
-    repo's backlog.
+    ``selected`` / ``all_blocked`` / ``budget_spent`` / ``over_pace`` / ``all_waiting`` /
+    ``all_in_progress`` / ``none_ready`` / ``empty``, a one-sentence ``explanation``,
+    and ``blocked`` — the ready issues passed over because a dependency of theirs is
+    still open, each naming its blockers. An unscoped call skips a repo it cannot read
+    and says so in the explanation, rather than letting one unreachable repo cost the
+    caller every other repo's backlog.
     """
     user_id = _require_user_id()
     if repo is not None:
@@ -1445,13 +1487,23 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     else:
         repos = [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]
 
+    # sprints imports this module, so it cannot be imported at the top.
+    from .sprints import estimates_by_issue, sprint_budget
+
     now = datetime.now(UTC)
+    budget = sprint_budget(
+        db.get_fuel(user_id),
+        now,
+        settings.claude_weekly_allowance_tokens,
+        settings.claude_usd_per_million_tokens,
+    )
+    estimates = estimates_by_issue(user_id) if budget is not None else {}
     cache: dict[tuple[str, int], dict[str, Any] | None] = {}
     scans: list[_RepoScan] = []
     unreadable: list[str] = []
     for repo_name in repos:
         try:
-            scans.append(await _scan_repo(repo_name, user_id, now, cache))
+            scans.append(await _scan_repo(repo_name, user_id, now, cache, budget, estimates))
         except Exception:
             # A scoped call named this repo, so its failure is the answer. Unscoped, one
             # repo gone from the PAT's reach must not cost the worker every other backlog.
@@ -1499,6 +1551,19 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         explanation = (
             f"Every ready issue is blocked — {_describe_blocked(blocked)}. "
             "Unblocking one is the move here."
+        )
+    elif budget is not None and any(scan.saw_over_budget for scan in scans):
+        reason = "budget_spent"
+        explanation = (
+            f"The sprint budget left outside the reserve ({budget['left_tokens']} tokens) fits "
+            "no ready issue other than security work; only security work is offered until "
+            f"the allowance resets at {budget['end'].isoformat()}."
+        )
+    elif any(scan.saw_over_pace for scan in scans):
+        reason = "over_pace"
+        explanation = (
+            "Spending is ahead of today's pace, so work other than security work is held "
+            "until it is back within pace."
         )
     elif any(scan.saw_waiting for scan in scans):
         reason = "all_waiting"

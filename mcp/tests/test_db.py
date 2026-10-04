@@ -851,6 +851,19 @@ def test_set_fuel_replaces_the_accounts_report() -> None:
     }
 
 
+def test_list_estimates_reads_the_accounts_estimates() -> None:
+    rows = [{"repo_name": "owner/repo", "issue": 7, "tokens": 1200}]
+    mock = _mock_engine(rows)
+    with patch("db._engine", return_value=mock):
+        result = db.list_estimates("uid")
+
+    conn = mock.connect.return_value.__enter__.return_value
+    sql, params = conn.execute.call_args.args
+    assert "FROM lachesis_estimates" in str(sql)
+    assert params == {"user_id": "uid"}
+    assert result == rows
+
+
 def test_get_fuel_is_none_before_any_report() -> None:
     with patch("db._engine", return_value=_mock_engine([])):
         assert db.get_fuel("uid") is None
