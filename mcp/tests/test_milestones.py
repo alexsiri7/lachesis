@@ -33,6 +33,12 @@ def registered():
         yield
 
 
+@pytest.fixture(autouse=True)
+def unreported():
+    with patch("tools.milestones.db.claim_notification", return_value=False) as claim:
+        yield claim
+
+
 @pytest.fixture()
 def record_state():
     with patch("tools.milestones.db.record_milestone_state", return_value=True) as record:
@@ -243,6 +249,88 @@ async def test_failing_to_record_the_state_does_not_fail_the_read(deployment: As
         view = await milestones.get_milestone("lachesis", 7)
 
     assert view["state"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# Done is reported once
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def report():
+    with (
+        patch("tools.milestones.db.get_milestone", return_value=_row()),
+        patch("tools.milestones.db.record_note") as record_note,
+        patch("tools.milestones.notify.send", new=AsyncMock(return_value=True)) as send,
+        _progress(_entry(170)),
+    ):
+        yield record_note, send
+
+
+@pytest.mark.usefixtures("deployment", "record_state")
+async def test_milestone_goes_live(unreported, report) -> None:
+    """Scenario: Milestone goes live"""
+    record_note, send = report
+    unreported.return_value = True
+
+    view = await milestones.get_milestone("lachesis", 7)
+
+    assert view["state"] == "done"
+    unreported.assert_called_once_with("test-uid", _REPO, "milestone:7")
+    record_note.assert_called_once()
+    args, kwargs = record_note.call_args
+    assert args[:4] == ("test-uid", _REPO, "lachesis", "report")
+    assert kwargs == {"milestone": "7"}
+    assert f"#170 Spec change 170 (https://github.com/{_REPO}/pull/170)" in args[4]
+    assert "https://deploy/1" in args[4]
+    send.assert_awaited_once()
+    assert "Milestones" in send.call_args.kwargs["title"]
+    assert "Done and available" in send.call_args.kwargs["body"]
+    assert send.call_args.kwargs["click"] == "https://deploy/1"
+
+
+@pytest.mark.usefixtures("deployment", "record_state")
+async def test_a_done_milestone_is_reported_only_once(report) -> None:
+    record_note, send = report
+
+    view = await milestones.get_milestone("lachesis", 7)
+
+    assert view["state"] == "done"
+    record_note.assert_not_called()
+    send.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("record_state", "report")
+async def test_an_unfinished_milestone_is_not_reported(deployment: AsyncMock, unreported) -> None:
+    deployment.return_value = None
+
+    view = await milestones.get_milestone("lachesis", 7)
+
+    assert view["state"] == "verifying"
+    unreported.assert_not_called()
+
+
+@pytest.mark.parametrize("failing", ["claim", "note", "send"])
+@pytest.mark.usefixtures("deployment", "record_state")
+async def test_failing_to_report_does_not_fail_the_read(unreported, report, failing: str) -> None:
+    record_note, send = report
+    unreported.return_value = True
+    {"claim": unreported, "note": record_note, "send": send}[failing].side_effect = RuntimeError
+
+    view = await milestones.get_milestone("lachesis", 7)
+
+    assert view["state"] == "done"
+
+
+@pytest.mark.usefixtures("deployment", "record_state")
+async def test_the_report_note_is_added_without_ntfy(unreported, report) -> None:
+    record_note, send = report
+    unreported.return_value = True
+    send.return_value = False
+
+    await milestones.get_milestone("lachesis", 7)
+
+    record_note.assert_called_once()
 
 
 async def test_an_unknown_milestone_is_not_found() -> None:

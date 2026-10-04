@@ -460,7 +460,8 @@ mcp.tool(
         "production does not yet include the last merge; done once every spec change merged, "
         "every issue naming one closed by merged code and the production deployment includes "
         "the last merge; dropped once dropped. A started milestone also returns `work` (each "
-        "spec change's status), `last_merge` and `deployment`."
+        "spec change's status), `last_merge` and `deployment`. The first read that finds a "
+        "milestone done adds a report note to it and sends one push notification, once ever."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(milestone_tools.get_milestone)
@@ -680,7 +681,9 @@ mcp.tool(
         "With `repo`, returns the workflow that applies there: for a repository that uses "
         "specs, list_capabilities → propose_spec_change → create_github_issues naming the "
         "spec change; otherwise create_requirement → create_github_issues → link_issues. "
-        "Without `repo`, returns both and how to tell which applies."
+        "Without `repo`, returns both and how to tell which applies. Wherever the spec "
+        "workflow applies, also returns the milestone owner workflow for scheduled "
+        "unattended runs."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_initial_instructions)
