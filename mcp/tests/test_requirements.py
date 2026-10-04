@@ -3538,6 +3538,7 @@ async def _read_one_waiting_issue(
     blockers: list[dict] | None = None,
     fuel: bool = True,
     milestones: list[dict] | None = None,
+    focus: list[dict] | None = None,
 ) -> dict:
     """Read the backlog of one issue 1, the current sprint having started four days ago.
 
@@ -3559,7 +3560,7 @@ async def _read_one_waiting_issue(
     report = {"weekly_resets_at": _days_ago(-3)} if fuel else None
     fake = _FakeBacklog([{"issue_number": 1, **row}] if row else [])
 
-    with _patch_backlog(fake, fuel=report, milestones=milestones):
+    with _patch_backlog(fake, fuel=report, milestones=milestones, focus=focus):
         result = await get_backlog("owner/repo")
     return result[0]
 
@@ -3582,6 +3583,16 @@ async def test_starving_milestone_work_rises_into_the_focus_tier(
     )
 
     assert (entry["tier"], entry["aged"]) == ("focus", True)
+
+
+async def test_starving_focused_work_rises_into_the_security_tier(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    entry = await _read_one_waiting_issue(
+        httpx_mock, focus=[{"repo_name": "owner/repo", "milestone_id": None}], blockers=[]
+    )
+
+    assert (entry["tier"], entry["aged"]) == ("security", True)
 
 
 async def test_a_blocker_closed_long_ago_does_not_stop_ageing(
