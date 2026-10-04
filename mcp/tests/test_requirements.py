@@ -3076,6 +3076,14 @@ async def test_get_initial_instructions_documents_parking() -> None:
     assert "park" in result
 
 
+async def test_get_initial_instructions_says_a_budget_question_blocks_nothing() -> None:
+    result = await get_initial_instructions()
+
+    assert "ask a budget\nquestion" in result
+    assert "what the extra spend would deliver" in result
+    assert "it blocks no issue" in result
+
+
 async def test_stuck_on_intent() -> None:
     """Scenario: Stuck on intent — ask the author rather than guess, then move on."""
     result = await get_initial_instructions()
