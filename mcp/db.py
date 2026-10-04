@@ -576,6 +576,7 @@ QuestionKind = Literal[
     "large_work",
     "maturity",
     "improvement",
+    "budget",
     "clarification",
 ]
 

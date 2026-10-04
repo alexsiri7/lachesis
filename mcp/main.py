@@ -327,7 +327,8 @@ mcp.tool(
 mcp.tool(
     description=(
         "Ask the author a question in a registered repository and record it. kind is "
-        "one of spec_contradiction, large_work, maturity, improvement, clarification; "
+        "one of spec_contradiction, large_work, maturity, improvement, budget, "
+        "clarification; "
         "asker names who is asking; context is what the author needs to answer; options "
         "are optional suggested answers. The question is about the repository and "
         "optionally a capability, spec_change (pull request number), milestone or "
@@ -337,7 +338,10 @@ mcp.tool(
         "never labelled without its question; a failure part-way is reported and "
         "leaves what already happened. Once recorded, the author is sent a push "
         "notification naming the repository, question and kind, if notifications are "
-        "configured. The question outlives the issues it names. "
+        "configured. The question outlives the issues it names. A budget question asks "
+        "the author to raise the spending cap for models outside the Claude allowance; "
+        "its context must say what the extra spend would deliver. It blocks no issue — "
+        "blocks is refused — so work continues within the existing cap. "
         "Returns the question id and the url of each comment."
     ),
 )(question_tools.ask_question)
