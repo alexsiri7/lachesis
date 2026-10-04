@@ -27,6 +27,7 @@ from auth import (
 from settings import settings
 from tools import contents as contents_tools
 from tools import events as event_tools
+from tools import fuel as fuel_tools
 from tools import milestones as milestone_tools
 from tools import notes as note_tools
 from tools import notifications as notify_tools
@@ -416,6 +417,17 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Report what one run on an issue in a registered repository used, once at the "
+        "end of every run: the `issue` (number) it worked on — a report naming no issue "
+        "is refused — the `model`, `tokens_in` and `tokens_out`, and its `kind` of work, "
+        "one of triage, summarising, audit, tests, implementation, spec work. Give `cost_usd` "
+        "when the model is paid per token, as on Requesty overflow runs; leave it out "
+        "for a run on the Claude allowance. Returns the stored report with its id and time."
+    ),
+)(fuel_tools.report_usage)
+
+mcp.tool(
+    description=(
         "Create a milestone in a registered repository that uses specs: a `title`, the "
         "`goal` it reaches, and the `spec_changes` (pull request numbers) it groups. Each "
         "must be a spec change in the repository, not dropped, and in no other milestone — "
@@ -669,13 +681,13 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Follow the event log: every question asked or answered, note added, and "
+        "Follow the event log: every question asked or answered, note added, "
         "milestone created, started, dropped, changing state, or gaining or losing a "
-        "spec change. Returns the events after cursor `after` (0 reads from the "
-        "beginning), oldest first, up to `limit` (at most 500), optionally filtered by "
-        "`repo` (owner/repo) and `kind`. Pass the returned `cursor` as `after` on the "
-        "next read; when nothing new has happened, `events` is empty and `cursor` is "
-        "unchanged. Events are never changed or deleted."
+        "spec change, and run usage reported. Returns the events after cursor `after` "
+        "(0 reads from the beginning), oldest first, up to `limit` (at most 500), "
+        "optionally filtered by `repo` (owner/repo) and `kind`. Pass the returned "
+        "`cursor` as `after` on the next read; when nothing new has happened, `events` "
+        "is empty and `cursor` is unchanged. Events are never changed or deleted."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(event_tools.list_events)

@@ -589,6 +589,56 @@ def test_notes_migration_allows_exactly_the_note_types_on_one_subject() -> None:
     assert '"(issue IS NULL) <> (milestone IS NULL)"' in migration
 
 
+def test_record_usage_report_stores_the_report_and_its_event_in_one_transaction() -> None:
+    row = {"id": 3, "repo_name": "owner/repo", "issue": 160, "cost_usd": 0.42}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.record_usage_report(
+            "uid", "owner/repo", 160, "deepseek/deepseek-chat", "tests", 120_000, 8_000, 0.42
+        )
+
+    assert result == row
+    mock.begin.assert_called_once()
+    report_call, event_call = mock.begin.return_value.execute.call_args_list
+    assert "INSERT INTO lachesis_usage_reports" in str(report_call[0][0])
+    assert report_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "issue": 160,
+        "model": "deepseek/deepseek-chat",
+        "kind": "tests",
+        "tokens_in": 120_000,
+        "tokens_out": 8_000,
+        "cost_usd": 0.42,
+    }
+    assert event_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "kind": "usage_reported",
+        "subject": "3",
+    }
+
+
+def test_record_usage_report_refuses_an_unknown_kind() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
+        db.record_usage_report("uid", "owner/repo", 1, "m", "coding", 1, 1, None)  # type: ignore[arg-type]
+
+    mock.begin.assert_not_called()
+
+
+def test_usage_reports_migration_requires_an_issue_and_allows_exactly_the_kinds() -> None:
+    """A report that names no issue is refused by the database too."""
+    from pathlib import Path
+    from typing import get_args
+
+    migration = (Path(db.__file__).parent / "alembic/versions/014_usage_reports.py").read_text()
+    assert 'sa.Column("issue", sa.Integer(), nullable=False)' in migration
+    check = re.search(r"\"kind IN \((.*?)\)\"", migration)
+    assert check is not None
+    assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(db.UsageKind))
+
+
 def _sequenced_engine(firsts: list[dict | None]) -> MagicMock:
     """Return an engine whose successive execute() calls each yield one row from *firsts*."""
     mock = _mock_engine([])
