@@ -118,7 +118,8 @@ dates, its budget in tokens — the allowance and overflow cap less the reserve 
 spent and left, and the plan: the backlog in order, as far as estimates fit what is left.
 It is derived on every read, so a new focus re-plans it. next_issue offers work other than
 security work only while it fits the budget left and spending is within pace, and says
-when the sprint budget is spent.
+when the sprint budget is spent. At each allowance reset, the scheduled sprint review calls
+report_sprint (see Sprint review).
 
 Agents do not message each other: they leave notes on the work. When you stop working on
 an issue, finished or not, call add_note on it with type handoff, saying what you did and
@@ -150,13 +151,29 @@ update_spec_change. When a milestone is done, Lachesis itself sends the author o
 notification and adds a report note to the milestone.
 """
 
+_SPRINT_REVIEW = """\
+Sprint review, for an unattended agent run on a schedule at each weekly allowance reset.
+Call report_sprint. It reports the sprint that last ended, once: the first call stores the
+report, adds a finding note to each issue with a miss — an estimate off by more than double,
+a retry or rework — sends the author one push notification and returns first_report true.
+A later call returns the same report with first_report false; then there is nothing to do.
+For each finding of a first report, read the estimates by kind and capability with it, call
+search_answered_questions, and if an answer already settles the finding, follow it. Otherwise:
+- a finding that needs a standing rule — a decision only the author can make for the miss not
+  to recur, such as how far to trust a model or how to split work of a kind: ask_question
+  with kind improvement, the finding in its context, blocking no issue;
+- any other finding, which the factory can fix itself: create_github_issues for that work in
+  the finding's repository, following the workflow that applies there.
+The sprint review changes nothing else.
+"""
+
 
 async def get_initial_instructions(repo: str | None = None) -> str:
     """Return the Lachesis workflow for new Claude sessions.
 
     With *repo*, only the workflow that applies there; without, both and how to
     tell which applies. Wherever the spec workflow applies, so does the milestone
-    owner's.
+    owner's. Sprints span the account, so the sprint review always applies.
     """
     # specs imports this module, so it cannot be imported at the top.
     from .specs import uses_specs
@@ -168,7 +185,7 @@ async def get_initial_instructions(repo: str | None = None) -> str:
     else:
         workflows = [_REQUIREMENT_WORKFLOW]
     owner = [_MILESTONE_OWNER] if _SPEC_WORKFLOW in workflows else []
-    return "\n".join([*workflows, _BACKLOG, *owner])
+    return "\n".join([*workflows, _BACKLOG, *owner, _SPRINT_REVIEW])
 
 
 async def _resolve_repo(repo: str, *, require_registered: bool = False) -> str:

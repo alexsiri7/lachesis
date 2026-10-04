@@ -979,8 +979,13 @@ def record_run_outcome(
     return {"repo_name": repo_name, "issue": issue, "kind": kind, **dict(row)}
 
 
-def list_runs(user_id: str) -> list[dict[str, Any]]:
-    """Return every run of the account with its count of each outcome, oldest first."""
+def list_runs(
+    user_id: str, *, start: datetime | None = None, end: datetime | None = None
+) -> list[dict[str, Any]]:
+    """Return the account's runs with their count of each outcome, oldest first.
+
+    With *start* or *end*, only the runs reported in ``[start, end)``.
+    """
     sql = text(
         """
         SELECT r.id, r.repo_name, r.issue, r.model, r.kind,
@@ -991,12 +996,15 @@ def list_runs(user_id: str) -> list[dict[str, Any]]:
         FROM lachesis_usage_reports r
         LEFT JOIN lachesis_run_outcomes o ON o.run_id = r.id
         WHERE r.user_id = :user_id
+          AND (CAST(:start AS timestamptz) IS NULL OR r.created_at >= :start)
+          AND (CAST(:end AS timestamptz) IS NULL OR r.created_at < :end)
         GROUP BY r.id
         ORDER BY r.id
         """
     )
+    params = {"user_id": user_id, "start": start, "end": end}
     with _engine().connect() as conn:
-        rows = conn.execute(sql, {"user_id": user_id}).mappings().all()
+        rows = conn.execute(sql, params).mappings().all()
     counted = ("tokens_in", "tokens_out", "rework", "retries", "audit_findings")
     return [{**row, **{column: int(row[column]) for column in counted}} for row in rows]
 
@@ -1395,3 +1403,72 @@ def record_milestone_state(
             return False
         _insert_event(conn, user_id, repo_name, "milestone_state_changed", prefix + state)
         return True
+
+
+def milestones_done_between(user_id: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Return each milestone first found done in ``[start, end)``, with when."""
+    sql = text(
+        """
+        SELECT DISTINCT ON (m.id) m.repo_name, m.id, m.title, e.created_at AS done_at
+        FROM lachesis_events e
+        JOIN lachesis_milestones m
+          ON m.user_id = e.user_id AND m.repo_name = e.repo_name
+         AND e.subject = m.id::text || ':done'
+        WHERE e.user_id = :user_id AND e.kind = 'milestone_state_changed'
+          AND e.created_at >= :start AND e.created_at < :end
+        ORDER BY m.id, e.created_at
+        """
+    )
+    params = {"user_id": user_id, "start": start, "end": end}
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, params).mappings().all()]
+
+
+# ---------------------------------------------------------------------------
+# lachesis_sprint_reports
+# ---------------------------------------------------------------------------
+
+_SPRINT_REPORT_COLUMNS = "sprint_start, sprint_end, report, created_at"
+
+
+def get_sprint_report(user_id: str, sprint_end: datetime) -> dict[str, Any] | None:
+    """Return the report on the sprint ending at *sprint_end*, or None if it is not reported."""
+    sql = text(
+        f"""
+        SELECT {_SPRINT_REPORT_COLUMNS}
+        FROM lachesis_sprint_reports
+        WHERE user_id = :user_id AND sprint_end = :sprint_end
+        """
+    )
+    params = {"user_id": user_id, "sprint_end": sprint_end}
+    with _engine().connect() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    return None if row is None else dict(row)
+
+
+def claim_sprint_report(
+    user_id: str, sprint_start: datetime, sprint_end: datetime, report: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Store *report* as the sprint's only report and return it; None if one was stored first.
+
+    Storing it is the claim on the sprint's one notification. The absent row is
+    the signal that the sprint was already reported, not an error, so unlike the
+    other writers here an empty RETURNING never raises.
+    """
+    sql = text(
+        f"""
+        INSERT INTO lachesis_sprint_reports (user_id, sprint_start, sprint_end, report)
+        VALUES (:user_id, :sprint_start, :sprint_end, CAST(:report AS jsonb))
+        ON CONFLICT (user_id, sprint_end) DO NOTHING
+        RETURNING {_SPRINT_REPORT_COLUMNS}
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "sprint_start": sprint_start,
+        "sprint_end": sprint_end,
+        "report": json.dumps(report, default=str),
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    return None if row is None else dict(row)

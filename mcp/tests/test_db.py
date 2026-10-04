@@ -762,7 +762,7 @@ def test_list_runs_counts_each_runs_outcomes() -> None:
     assert all(type(result[column]) is int for column in counted)
     sql, params = mock.connect.return_value.execute.call_args[0]
     assert "LEFT JOIN lachesis_run_outcomes" in str(sql)
-    assert params == {"user_id": "uid"}
+    assert params == {"user_id": "uid", "start": None, "end": None}
 
 
 def test_run_outcomes_migration_allows_exactly_the_outcomes_against_a_run() -> None:
@@ -1026,3 +1026,57 @@ def test_milestones_migration_stores_no_state_and_one_milestone_per_spec_change(
     assert 'down_revision: str | None = "011"' in migration
     assert re.search(r'UniqueConstraint\(\s*"user_id",\s*"repo_name",\s*"spec_change",', migration)
     assert not re.search(r'sa\.Column\("(state|status)"', migration)
+
+
+def test_list_runs_in_a_window_reads_only_the_runs_reported_in_it() -> None:
+    start = datetime(2026, 9, 27, tzinfo=UTC)
+    end = datetime(2026, 10, 4, tzinfo=UTC)
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        assert db.list_runs("uid", start=start, end=end) == []
+
+    sql, params = mock.connect.return_value.execute.call_args[0]
+    assert "r.created_at >= :start" in str(sql)
+    assert "r.created_at < :end" in str(sql)
+    assert params == {"user_id": "uid", "start": start, "end": end}
+
+
+def test_milestones_done_between_reads_done_state_changes_in_the_window() -> None:
+    start = datetime(2026, 9, 27, tzinfo=UTC)
+    end = datetime(2026, 10, 4, tzinfo=UTC)
+    row = {"repo_name": "owner/repo", "id": 3, "title": "M", "done_at": start}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        assert db.milestones_done_between("uid", start, end) == [row]
+
+    sql, params = mock.connect.return_value.execute.call_args[0]
+    assert "kind = 'milestone_state_changed'" in str(sql)
+    assert "':done'" in str(sql)
+    assert params == {"user_id": "uid", "start": start, "end": end}
+
+
+def test_claim_sprint_report_stores_the_report_once() -> None:
+    start = datetime(2026, 9, 27, tzinfo=UTC)
+    end = datetime(2026, 10, 4, tzinfo=UTC)
+    row = {"sprint_start": start, "sprint_end": end, "report": {"findings": []}}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        assert db.claim_sprint_report("uid", start, end, {"findings": []}) == row
+
+    sql, params = mock.begin.return_value.execute.call_args[0]
+    assert "ON CONFLICT (user_id, sprint_end) DO NOTHING" in str(sql)
+    assert params["report"] == '{"findings": []}'
+
+
+def test_claim_sprint_report_lost_returns_none() -> None:
+    start = datetime(2026, 9, 27, tzinfo=UTC)
+    with patch("db._engine", return_value=_mock_engine([])):
+        assert db.claim_sprint_report("uid", start, start, {}) is None
+
+
+def test_sprint_reports_migration_keeps_one_report_per_sprint() -> None:
+    from pathlib import Path
+
+    migration = (Path(db.__file__).parent / "alembic/versions/019_sprint_reports.py").read_text()
+    assert 'sa.UniqueConstraint("user_id", "sprint_end"' in migration
+    assert 'down_revision: str | None = "018"' in migration

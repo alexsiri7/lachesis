@@ -532,6 +532,24 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Report the sprint that last ended — the previous span from one weekly allowance "
+        "reset to the next — once. The first call returns `first_report` true: it stores "
+        "the report, adds a finding note to each issue with a miss (an estimate off by more "
+        "than double, or a retry or rework during the sprint) and sends the author one push "
+        "notification. Later calls return the same stored report with `first_report` false. "
+        "The report has `delivered`: the milestones found done and the issues closed as "
+        "completed during the sprint; `spending`: tokens on Claude runs, and tokens and "
+        "dollars on overflow runs, from the usage reported during the sprint; `estimates`: "
+        "estimate against actual usage for each delivered issue with an estimate, and by "
+        "kind and capability; `carryover`: open issues worked on during the sprint; "
+        "`findings`; and `unreadable` repositories. `reported` is false when no fuel has "
+        "been reported. Call it once at each allowance reset, from the scheduled sprint "
+        "review."
+    ),
+)(sprint_tools.report_sprint)
+
+mcp.tool(
+    description=(
         "Create a milestone in a registered repository that uses specs: a `title`, the "
         "`goal` it reaches, and the `spec_changes` (pull request numbers) it groups. Each "
         "must be a spec change in the repository, not dropped, and in no other milestone — "
@@ -822,7 +840,8 @@ mcp.tool(
         "spec change; otherwise create_requirement → create_github_issues → link_issues. "
         "Without `repo`, returns both and how to tell which applies. Wherever the spec "
         "workflow applies, also returns the milestone owner workflow for scheduled "
-        "unattended runs."
+        "unattended runs. Always returns the sprint review for the scheduled run at each "
+        "weekly allowance reset."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_initial_instructions)
