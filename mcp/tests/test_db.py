@@ -658,6 +658,101 @@ def test_usage_by_issue_sums_tokens_per_issue_and_kind() -> None:
     assert params == {"user_id": "uid", "repo_name": "owner/repo"}
 
 
+def test_record_run_outcome_stores_it_against_the_latest_run_with_its_event() -> None:
+    row = {"id": 2, "run_id": 7, "model": "deepseek/deepseek-chat", "outcome": "rework"}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        result = db.record_run_outcome("uid", "owner/repo", 160, "implementation", "rework")
+
+    assert result == {"repo_name": "owner/repo", "issue": 160, "kind": "implementation", **row}
+    mock.begin.assert_called_once()
+    outcome_call, event_call = mock.begin.return_value.execute.call_args_list
+    sql = str(outcome_call[0][0])
+    assert "FROM lachesis_usage_reports" in sql
+    assert "ORDER BY id DESC LIMIT 1" in sql
+    assert "INSERT INTO lachesis_run_outcomes" in sql
+    assert outcome_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "issue": 160,
+        "kind": "implementation",
+        "outcome": "rework",
+    }
+    assert event_call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "kind": "run_outcome_reported",
+        "subject": "2",
+    }
+
+
+def test_record_run_outcome_refuses_when_no_run_of_the_kind_is_on_the_issue() -> None:
+    mock = _mock_engine([])
+    with (
+        patch("db._engine", return_value=mock),
+        pytest.raises(ValueError, match="no tests run on issue 160"),
+    ):
+        db.record_run_outcome("uid", "owner/repo", 160, "tests", "retry")
+
+    assert mock.begin.return_value.execute.call_count == 1
+
+
+@pytest.mark.parametrize(("kind", "outcome"), [("coding", "retry"), ("tests", "merged")])
+def test_record_run_outcome_refuses_an_unknown_kind_or_outcome(kind: str, outcome: str) -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="must be one of"):
+        db.record_run_outcome("uid", "owner/repo", 1, kind, outcome)  # type: ignore[arg-type]
+
+    mock.begin.assert_not_called()
+
+
+def test_list_runs_counts_each_runs_outcomes() -> None:
+    from decimal import Decimal
+
+    row = {
+        "id": 7,
+        "repo_name": "owner/repo",
+        "issue": 160,
+        "model": "m",
+        "kind": "tests",
+        "tokens_in": Decimal(100),
+        "tokens_out": Decimal(10),
+        "cost_usd": None,
+        "rework": Decimal(1),
+        "retries": Decimal(0),
+        "audit_findings": Decimal(2),
+    }
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        (result,) = db.list_runs("uid")
+
+    assert result == {
+        **row,
+        "tokens_in": 100,
+        "tokens_out": 10,
+        "rework": 1,
+        "retries": 0,
+        "audit_findings": 2,
+    }
+    counted = ("tokens_in", "tokens_out", "rework", "retries", "audit_findings")
+    assert all(type(result[column]) is int for column in counted)
+    sql, params = mock.connect.return_value.execute.call_args[0]
+    assert "LEFT JOIN lachesis_run_outcomes" in str(sql)
+    assert params == {"user_id": "uid"}
+
+
+def test_run_outcomes_migration_allows_exactly_the_outcomes_against_a_run() -> None:
+    from pathlib import Path
+    from typing import get_args
+
+    migration = (Path(db.__file__).parent / "alembic/versions/017_run_outcomes.py").read_text()
+    check = re.search(r"\"outcome IN \((.*?)\)\"", migration)
+    assert check is not None
+    assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(db.RunOutcome))
+    assert '["lachesis_usage_reports.id"]' in migration
+    assert 'down_revision: str | None = "016"' in migration
+
+
 def test_set_estimate_replaces_the_issues_estimate() -> None:
     row = {"repo_name": "owner/repo", "issue": 230, "tokens": 4600}
     mock = _mock_engine([row])

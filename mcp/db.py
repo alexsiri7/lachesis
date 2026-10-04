@@ -17,6 +17,8 @@ Tables (all namespaced lachesis_):
                             for the account
   lachesis_estimates      — the current token estimate of each issue, with its kind,
                             capability and confidence
+  lachesis_run_outcomes   — failures reported against a run: rework, a retry or an
+                            audit finding
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -509,6 +511,7 @@ EventKind = Literal[
     "milestone_spec_change_added",
     "milestone_spec_change_removed",
     "usage_reported",
+    "run_outcome_reported",
 ]
 
 
@@ -910,6 +913,78 @@ def usage_by_issue(user_id: str, repo_name: str) -> dict[int, dict[str, int]]:
     for row in rows:
         usage.setdefault(row["issue"], {})[row["kind"]] = int(row["tokens"])
     return usage
+
+
+# ---------------------------------------------------------------------------
+# lachesis_run_outcomes
+# ---------------------------------------------------------------------------
+
+RunOutcome = Literal["rework", "retry", "audit_finding"]
+
+
+def record_run_outcome(
+    user_id: str, repo_name: str, issue: int, kind: UsageKind, outcome: RunOutcome
+) -> dict[str, Any]:
+    """Store *outcome* against the latest *kind* run on *issue* and its event."""
+    if kind not in get_args(UsageKind):
+        raise ValueError(f"kind must be one of {', '.join(get_args(UsageKind))}, got {kind!r}")
+    if outcome not in get_args(RunOutcome):
+        raise ValueError(
+            f"outcome must be one of {', '.join(get_args(RunOutcome))}, got {outcome!r}"
+        )
+    sql = text(
+        """
+        WITH run AS (
+            SELECT id, model FROM lachesis_usage_reports
+            WHERE user_id = :user_id AND repo_name = :repo_name AND issue = :issue
+              AND kind = :kind
+            ORDER BY id DESC LIMIT 1
+        ), stored AS (
+            INSERT INTO lachesis_run_outcomes (user_id, run_id, outcome)
+            SELECT :user_id, id, :outcome FROM run
+            RETURNING id, run_id, outcome, created_at
+        )
+        SELECT stored.id, stored.run_id, run.model, stored.outcome, stored.created_at
+        FROM stored JOIN run ON run.id = stored.run_id
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "issue": issue,
+        "kind": kind,
+        "outcome": outcome,
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+        if row is None:
+            raise ValueError(
+                f"no {kind} run on issue {issue} in {repo_name!r} to report {outcome} against"
+            )
+        _insert_event(conn, user_id, repo_name, "run_outcome_reported", str(row["id"]))
+    return {"repo_name": repo_name, "issue": issue, "kind": kind, **dict(row)}
+
+
+def list_runs(user_id: str) -> list[dict[str, Any]]:
+    """Return every run of the account with its count of each outcome, oldest first."""
+    sql = text(
+        """
+        SELECT r.id, r.repo_name, r.issue, r.model, r.kind,
+               r.tokens_in, r.tokens_out, r.cost_usd,
+               COUNT(o.id) FILTER (WHERE o.outcome = 'rework') AS rework,
+               COUNT(o.id) FILTER (WHERE o.outcome = 'retry') AS retries,
+               COUNT(o.id) FILTER (WHERE o.outcome = 'audit_finding') AS audit_findings
+        FROM lachesis_usage_reports r
+        LEFT JOIN lachesis_run_outcomes o ON o.run_id = r.id
+        WHERE r.user_id = :user_id
+        GROUP BY r.id
+        ORDER BY r.id
+        """
+    )
+    with _engine().connect() as conn:
+        rows = conn.execute(sql, {"user_id": user_id}).mappings().all()
+    counted = ("tokens_in", "tokens_out", "rework", "retries", "audit_findings")
+    return [{**row, **{column: int(row[column]) for column in counted}} for row in rows]
 
 
 # ---------------------------------------------------------------------------

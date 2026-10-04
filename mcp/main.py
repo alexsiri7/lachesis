@@ -36,6 +36,7 @@ from tools import projects as project_tools
 from tools import questions as question_tools
 from tools import repos as repo_tools
 from tools import requirements as req_tools
+from tools import scorecard as scorecard_tools
 from tools import specs as spec_tools
 
 logger = logging.getLogger(__name__)
@@ -470,6 +471,31 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Report a failure of a run in a registered repository: it counts against the latest "
+        "run of `kind` on `issue`. `outcome` is `rework` when review asked for changes to "
+        "the work, `retry` when the run failed and is being retried — report it at the start "
+        "of the retrying run, before that run reports usage — or `audit_finding` when a "
+        "later audit found a gap in the work. Refused when no run of that kind has been "
+        "reported on the issue. Returns the stored outcome with the run's id and model."
+    ),
+)(scorecard_tools.report_run_outcome)
+
+mcp.tool(
+    description=(
+        "Return the scorecard of every model with runs, for each kind of work in risk order "
+        "(triage, summarising, audit, tests, implementation, spec work): runs, merged "
+        "without rework, retries, audit findings, tokens in and out, and cost in dollars. A "
+        "run is merged once its issue is closed. `trusted` is true after 5 consecutive clean "
+        "runs of the kind — merged with no rework, retry or audit finding — and lost after 2 "
+        "failures in the last 5; runs on open issues with no failure are not yet judged. "
+        "`may_trial` is true for triage and summarising, and for any other kind once the "
+        "model is trusted for it or for a lower-risk kind. Derived on every read."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(scorecard_tools.read_scorecard)
+
+mcp.tool(
+    description=(
         "Create a milestone in a registered repository that uses specs: a `title`, the "
         "`goal` it reaches, and the `spec_changes` (pull request numbers) it groups. Each "
         "must be a spec change in the repository, not dropped, and in no other milestone — "
@@ -725,10 +751,10 @@ mcp.tool(
     description=(
         "Follow the event log: every question asked or answered, note added, "
         "milestone created, started, dropped, changing state, or gaining or losing a "
-        "spec change, and run usage reported. Returns the events after cursor `after` "
-        "(0 reads from the beginning), oldest first, up to `limit` (at most 500), "
-        "optionally filtered by `repo` (owner/repo) and `kind`. Pass the returned "
-        "`cursor` as `after` on the next read; when nothing new has happened, `events` "
+        "spec change, run usage reported, and run outcome reported. Returns the events "
+        "after cursor `after` (0 reads from the beginning), oldest first, up to `limit` "
+        "(at most 500), optionally filtered by `repo` (owner/repo) and `kind`. Pass the "
+        "returned `cursor` as `after` on the next read; when nothing new has happened, `events` "
         "is empty and `cursor` is unchanged. Events are never changed or deleted."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
