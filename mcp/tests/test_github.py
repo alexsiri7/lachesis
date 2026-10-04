@@ -35,6 +35,7 @@ from github import (
     get_pull_request,
     get_repo_settings,
     list_blocked_by_numbers,
+    list_blockers,
     list_files,
     list_issue_comments,
     list_labelled_prs,
@@ -767,6 +768,29 @@ async def test_get_issue_dependencies_returns_parsed_numbers(httpx_mock: HTTPXMo
     assert result == {"blocked_by": [38, 41], "blocking": [45]}
 
 
+async def test_list_blockers_reports_each_blockers_state_and_close_time(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url=_BLOCKED_BY_URL,
+        json=[
+            {"number": 38, "id": 1001, "state": "closed", "closed_at": "2026-03-01T00:00:00Z"},
+            {"number": 41, "id": 1002, "state": "open", "closed_at": None},
+        ],
+    )
+
+    assert await list_blockers("owner/repo", 42) == [
+        {"number": 38, "state": "closed", "closed_at": "2026-03-01T00:00:00Z"},
+        {"number": 41, "state": "open", "closed_at": None},
+    ]
+
+
+async def test_list_blockers_returns_none_on_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url=_BLOCKED_BY_URL, status_code=404)
+
+    assert await list_blockers("owner/repo", 42) is None
+
+
 @pytest.mark.parametrize("which_404", ["blocked_by", "blocking"])
 async def test_get_issue_dependencies_returns_none_when_either_endpoint_is_404(
     httpx_mock: HTTPXMock, which_404: str
@@ -1054,16 +1078,28 @@ async def test_list_open_issues_sorted_ascending(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url="https://api.github.com/repos/owner/repo/issues?state=open&per_page=100",
         json=[
-            {"number": 7, "title": "Later"},
-            {"number": 3, "title": "Earlier"},
+            {"number": 7, "title": "Later", "body": None, "created_at": "2026-02-01T00:00:00Z"},
+            {"number": 3, "title": "Earlier", "body": "b", "created_at": "2026-01-01T00:00:00Z"},
         ],
     )
 
     result = await list_open_issues("owner/repo")
 
     assert result == [
-        {"number": 3, "title": "Earlier", "labels": []},
-        {"number": 7, "title": "Later", "labels": []},
+        {
+            "number": 3,
+            "title": "Earlier",
+            "labels": [],
+            "body": "b",
+            "created_at": "2026-01-01T00:00:00Z",
+        },
+        {
+            "number": 7,
+            "title": "Later",
+            "labels": [],
+            "body": "",
+            "created_at": "2026-02-01T00:00:00Z",
+        },
     ]
 
 
@@ -1072,14 +1108,14 @@ async def test_list_open_issues_excludes_pull_requests(httpx_mock: HTTPXMock) ->
     httpx_mock.add_response(
         url="https://api.github.com/repos/owner/repo/issues?state=open&per_page=100",
         json=[
-            {"number": 1, "title": "An issue"},
+            {"number": 1, "title": "An issue", "created_at": "2026-01-01T00:00:00Z"},
             {"number": 2, "title": "A PR", "pull_request": {"url": "..."}},
         ],
     )
 
     result = await list_open_issues("owner/repo")
 
-    assert result == [{"number": 1, "title": "An issue", "labels": []}]
+    assert [issue["number"] for issue in result] == [1]
 
 
 async def test_list_open_issues_raises_on_error(httpx_mock: HTTPXMock) -> None:

@@ -15,8 +15,10 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from auth import current_db_user_id
+from spec_reference import SpecReference, append_reference
 from tools.requirements import (
     _MAX_WRITE_ATTEMPTS,
+    _sprint_start,
     add_dependency,
     create_github_issues,
     create_requirement,
@@ -31,7 +33,6 @@ from tools.requirements import (
     get_requirement,
     link_issues,
     list_requirements,
-    move_issue,
     next_issue,
     post_comment,
     set_backlog_flags,
@@ -492,7 +493,6 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
             "blocked_by": [],
             "added_to_project": False,
             "ready": True,
-            "placed": False,
         }
     ]
 
@@ -724,7 +724,6 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
             "blocked_by": [],
             "added_to_project": False,
             "ready": True,
-            "placed": False,
         }
     ]
 
@@ -3071,7 +3070,8 @@ async def test_get_initial_instructions_documents_parking() -> None:
     result = await get_initial_instructions()
 
     assert "set_backlog_flags" in result
-    assert "move_issue" in result
+    assert "set_focus" in result
+    assert "move_issue" not in result
     assert "next_issue" in result
     assert "park" in result
 
@@ -3134,10 +3134,11 @@ async def test_guidance_says_to_leave_a_handoff_note() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Backlog ordering — get_backlog, move_issue, set_backlog_flags
+# Backlog ordering — get_backlog, set_backlog_flags
 # ---------------------------------------------------------------------------
 
 _OPEN_ISSUES_URL = "https://api.github.com/repos/owner/repo/issues?state=open&per_page=100"
+_BACKLOG_EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class _FakeBacklog:
@@ -3147,21 +3148,20 @@ class _FakeBacklog:
         self.rows: dict[int, dict] = {}
         for row in rows or []:
             self.rows[row["issue_number"]] = {
-                "position": None,
                 "ready": True,
                 "interrupt": False,
+                "ready_since": None,
                 **row,
             }
-        self.orders: list[list[int]] = []
 
     def _row(self, issue_number: int) -> dict:
         return self.rows.setdefault(
             issue_number,
             {
                 "issue_number": issue_number,
-                "position": None,
                 "ready": True,
                 "interrupt": False,
+                "ready_since": None,
             },
         )
 
@@ -3183,23 +3183,22 @@ class _FakeBacklog:
             row["interrupt"] = interrupt
         return dict(row)
 
-    def set_backlog_order(
-        self, user_id: str, repo_name: str, ordered_issue_numbers: list[int]
-    ) -> None:
-        self.orders.append(list(ordered_issue_numbers))
-        for row in self.rows.values():
-            row["position"] = None
-        for index, issue_number in enumerate(ordered_issue_numbers):
-            self._row(issue_number)["position"] = index
-
 
 @contextlib.contextmanager
-def _patch_backlog(fake: _FakeBacklog):
-    """Route the db backlog accessors at a _FakeBacklog for the duration of the block."""
+def _patch_backlog(
+    fake: _FakeBacklog,
+    *,
+    milestones: list[dict] | None = None,
+    focus: list[dict] | None = None,
+    fuel: dict | None = None,
+):
+    """Route the db accessors the backlog reads at fakes for the duration of the block."""
     with (
         patch("db.list_backlog", fake.list_backlog),
         patch("db.upsert_backlog_flags", fake.upsert_backlog_flags),
-        patch("db.set_backlog_order", fake.set_backlog_order),
+        patch("db.list_milestones", return_value=milestones or []),
+        patch("db.list_focus", return_value=focus or []),
+        patch("db.get_fuel", return_value=fuel),
     ):
         yield fake
 
@@ -3210,7 +3209,10 @@ def _mock_open_issues(
     labels: dict[int, list[str]] | None = None,
     *,
     repo: str = "owner/repo",
+    bodies: dict[int, str] | None = None,
+    created: dict[int, datetime] | None = None,
 ) -> None:
+    """Mock the open issues of *repo*; by default issue n was created n hours into 2026."""
     httpx_mock.add_response(
         url=f"https://api.github.com/repos/{repo}/issues?state=open&per_page=100",
         json=[
@@ -3218,24 +3220,16 @@ def _mock_open_issues(
                 "number": n,
                 "title": f"Issue {n}",
                 "labels": [{"name": name} for name in (labels or {}).get(n, [])],
+                "body": (bodies or {}).get(n, ""),
+                "created_at": (created or {})
+                .get(n, _BACKLOG_EPOCH + timedelta(hours=n))
+                .isoformat()
+                .replace("+00:00", "Z"),
             }
             for n in numbers
         ],
         is_reusable=True,
     )
-
-
-async def test_get_backlog_positioned_first_then_by_issue_number(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """Positioned rows lead; everything else follows in creation order."""
-    _mock_open_issues(httpx_mock, [1, 2, 3])
-    fake = _FakeBacklog([{"issue_number": 3, "position": 0}])
-
-    with _patch_backlog(fake):
-        result = await get_backlog("owner/repo")
-
-    assert [(i["number"], i["position"]) for i in result] == [(3, 0), (1, 1), (2, 2)]
 
 
 async def test_get_backlog_defaults_new_issues_to_ready(
@@ -3248,7 +3242,15 @@ async def test_get_backlog_defaults_new_issues_to_ready(
         result = await get_backlog("owner/repo")
 
     assert result == [
-        {"number": 1, "title": "Issue 1", "position": 0, "ready": True, "interrupt": False}
+        {
+            "number": 1,
+            "title": "Issue 1",
+            "position": 0,
+            "tier": "other",
+            "aged": False,
+            "ready": True,
+            "interrupt": False,
+        }
     ]
 
 
@@ -3258,7 +3260,7 @@ async def test_get_backlog_omits_closed_issues_that_still_have_rows(
     """A row for an issue that is no longer open drops out of the backlog."""
     _mock_open_issues(httpx_mock, [1])
     fake = _FakeBacklog(
-        [{"issue_number": 2, "position": 0, "ready": True}, {"issue_number": 1, "position": 1}]
+        [{"issue_number": 2, "ready": True}, {"issue_number": 1, "interrupt": True}]
     )
 
     with _patch_backlog(fake):
@@ -3267,85 +3269,23 @@ async def test_get_backlog_omits_closed_issues_that_still_have_rows(
     assert [i["number"] for i in result] == [1]
 
 
-async def test_get_backlog_puts_interrupt_first(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    """An interrupt-marked issue leads the backlog whatever its position."""
-    _mock_open_issues(httpx_mock, [1, 2, 3])
-    fake = _FakeBacklog(
-        [
-            {"issue_number": 1, "position": 0},
-            {"issue_number": 2, "position": 1},
-            {"issue_number": 3, "position": 2, "interrupt": True},
-        ]
-    )
+async def test_get_backlog_lists_the_interrupt_first_with_every_entrys_flags(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Scenario: Reading the backlog — four open issues, one marked interrupt."""
+    _mock_open_issues(httpx_mock, [1, 2, 3, 4])
+    fake = _FakeBacklog([{"issue_number": 3, "interrupt": True}])
 
     with _patch_backlog(fake):
         result = await get_backlog("owner/repo")
 
-    assert [i["number"] for i in result] == [3, 1, 2]
-    assert result[0]["position"] == 2
-
-
-async def test_move_issue_before_anchor(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    _mock_open_issues(httpx_mock, [1, 2, 3])
-    fake = _FakeBacklog()
-
-    with _patch_backlog(fake):
-        result = await move_issue("owner/repo", 3, before=2)
-
-    assert fake.orders == [[1, 3, 2]]
-    assert [i["number"] for i in result] == [1, 3, 2]
-    assert "labels" not in result[0]
-
-
-async def test_move_issue_after_anchor(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    _mock_open_issues(httpx_mock, [1, 2, 3])
-    fake = _FakeBacklog()
-
-    with _patch_backlog(fake):
-        await move_issue("owner/repo", 1, after=3)
-
-    assert fake.orders == [[2, 3, 1]]
-
-
-async def test_move_issue_requires_exactly_one_anchor(set_user_id: str) -> None:
-    with pytest.raises(ValueError, match="exactly one of before/after"):
-        await move_issue("owner/repo", 1)
-    with pytest.raises(ValueError, match="exactly one of before/after"):
-        await move_issue("owner/repo", 1, before=2, after=3)
-
-
-async def test_move_issue_rejects_self_anchor(set_user_id: str) -> None:
-    with pytest.raises(ValueError, match="relative to itself"):
-        await move_issue("owner/repo", 1, before=1)
-
-
-async def test_move_issue_unknown_anchor_raises(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    _mock_open_issues(httpx_mock, [1, 2])
-
-    with _patch_backlog(_FakeBacklog()):
-        with pytest.raises(FileNotFoundError, match="#99"):
-            await move_issue("owner/repo", 1, before=99)
-
-
-async def test_move_issue_persists_base_order_not_interrupt_order(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """Moving an unrelated issue must not bake an interrupt's lead into its position."""
-    _mock_open_issues(httpx_mock, [1, 2, 3])
-    fake = _FakeBacklog(
-        [
-            {"issue_number": 1, "position": 0},
-            {"issue_number": 2, "position": 1},
-            {"issue_number": 3, "position": 2, "interrupt": True},
-        ]
+    assert [i["number"] for i in result] == [3, 1, 2, 4]
+    assert [i["position"] for i in result] == [0, 1, 2, 3]
+    assert [i["tier"] for i in result] == ["interrupt", "other", "other", "other"]
+    assert all(
+        set(i) == {"number", "title", "position", "tier", "aged", "ready", "interrupt"}
+        for i in result
     )
-
-    with _patch_backlog(fake):
-        await move_issue("owner/repo", 2, before=1)
-
-    # Had the move renumbered the effective order [3, 1, 2], issue 3 would land at 1.
-    assert fake.orders == [[2, 1, 3]]
-    assert fake.rows[3]["position"] == 2
 
 
 async def test_set_backlog_flags_sets_ready_without_touching_interrupt(
@@ -3410,7 +3350,7 @@ async def test_set_backlog_flags_unknown_issue_raises(
 async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """Position and readiness live in Lachesis, so a GitHub-side edit cannot disturb them."""
+    """Interrupt and readiness live in Lachesis, so a GitHub-side edit cannot disturb them."""
     _mock_open_issues(httpx_mock, [1, 2])
     httpx_mock.add_response(
         method="GET",
@@ -3435,16 +3375,269 @@ async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
     fake = _FakeBacklog()
 
     with _patch_backlog(fake):
-        await move_issue("owner/repo", 2, before=1)
-        await set_backlog_flags("owner/repo", 2, ready=True)
+        await set_backlog_flags("owner/repo", 2, ready=True, interrupt=True)
 
         await update_github_issue("owner/repo", 2, {"title": "Retitled elsewhere"})
 
         result = await get_backlog("owner/repo")
 
     assert result[0]["number"] == 2
-    assert result[0]["position"] == 0
+    assert result[0]["tier"] == "interrupt"
     assert result[0]["ready"] is True
+
+
+def _implementing(spec_change: int) -> str:
+    return append_reference("Body.", SpecReference(spec_change, "backlog"))
+
+
+def _milestone(milestone_id: int, spec_changes: list[int], *, started_days_ago: int) -> dict:
+    return {
+        "id": milestone_id,
+        "spec_changes": spec_changes,
+        "started_at": _BACKLOG_EPOCH - timedelta(days=started_days_ago),
+        "dropped_at": None,
+    }
+
+
+async def test_security_comes_before_milestone_work(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Scenario: Security before milestone work — the newer security gap still leads."""
+    _mock_open_issues(
+        httpx_mock,
+        [1, 2],
+        labels={2: ["security", "spec-gap"]},
+        bodies={1: _implementing(100)},
+        created={1: _BACKLOG_EPOCH - timedelta(days=1), 2: _BACKLOG_EPOCH},
+    )
+
+    with _patch_backlog(_FakeBacklog(), milestones=[_milestone(7, [100], started_days_ago=3)]):
+        result = await get_backlog("owner/repo")
+
+    assert [(i["number"], i["tier"]) for i in result] == [(2, "security"), (1, "milestone")]
+
+
+async def test_focusing_a_milestone_puts_its_issues_first(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Scenario: Focusing a milestone — B's issues come before A's once B is focused."""
+    _mock_open_issues(httpx_mock, [1, 2], bodies={1: _implementing(100), 2: _implementing(200)})
+    milestones = [
+        _milestone(1, [100], started_days_ago=9),
+        _milestone(2, [200], started_days_ago=3),
+    ]
+
+    with _patch_backlog(_FakeBacklog(), milestones=milestones):
+        unfocused = await get_backlog("owner/repo")
+    with _patch_backlog(
+        _FakeBacklog(),
+        milestones=milestones,
+        focus=[{"repo_name": "owner/repo", "milestone_id": 2}],
+    ):
+        focused = await get_backlog("owner/repo")
+
+    assert [(i["number"], i["tier"]) for i in unfocused] == [(1, "milestone"), (2, "milestone")]
+    assert [(i["number"], i["tier"]) for i in focused] == [(2, "focus"), (1, "milestone")]
+
+
+async def test_a_repository_focus_puts_all_its_issues_in_the_focus_tier(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_open_issues(httpx_mock, [1, 2], labels={2: ["security"]})
+
+    with _patch_backlog(_FakeBacklog(), focus=[{"repo_name": "owner/repo", "milestone_id": None}]):
+        result = await get_backlog("owner/repo")
+
+    assert [(i["number"], i["tier"]) for i in result] == [(2, "security"), (1, "focus")]
+
+
+async def test_a_focus_on_another_repository_changes_nothing(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_open_issues(httpx_mock, [1])
+
+    with _patch_backlog(_FakeBacklog(), focus=[{"repo_name": "owner/other", "milestone_id": None}]):
+        result = await get_backlog("owner/repo")
+
+    assert result[0]["tier"] == "other"
+
+
+async def test_the_nearest_done_milestone_comes_first(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Fewest open issues is nearest done, even against an older milestone's older work."""
+    _mock_open_issues(
+        httpx_mock,
+        [1, 2, 3, 4],
+        bodies={1: _implementing(100), 2: _implementing(100), 3: _implementing(100)}
+        | {4: _implementing(200)},
+    )
+    milestones = [
+        _milestone(1, [100], started_days_ago=9),
+        _milestone(2, [200], started_days_ago=3),
+    ]
+
+    with _patch_backlog(_FakeBacklog(), milestones=milestones):
+        result = await get_backlog("owner/repo")
+
+    assert [i["number"] for i in result] == [4, 1, 2, 3]
+
+
+async def test_planned_and_dropped_milestones_are_not_milestone_work(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_open_issues(httpx_mock, [1, 2], bodies={1: _implementing(100), 2: _implementing(200)})
+    planned = {**_milestone(1, [100], started_days_ago=0), "started_at": None}
+    dropped = {**_milestone(2, [200], started_days_ago=3), "dropped_at": _BACKLOG_EPOCH}
+
+    with _patch_backlog(
+        _FakeBacklog(),
+        milestones=[planned, dropped],
+        focus=[{"repo_name": "owner/repo", "milestone_id": 2}],
+    ):
+        result = await get_backlog("owner/repo")
+
+    assert [i["tier"] for i in result] == ["other", "other"]
+
+
+async def test_older_issues_come_first_within_a_tier(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_open_issues(
+        httpx_mock,
+        [1, 2],
+        created={1: _BACKLOG_EPOCH + timedelta(days=2), 2: _BACKLOG_EPOCH},
+    )
+
+    with _patch_backlog(_FakeBacklog()):
+        result = await get_backlog("owner/repo")
+
+    assert [(i["number"], i["position"]) for i in result] == [(2, 0), (1, 1)]
+
+
+def test_sprint_start_is_the_latest_reset_whichever_reset_is_reported() -> None:
+    now = datetime(2026, 10, 4, 12, tzinfo=UTC)
+    start = datetime(2026, 9, 29, 9, tzinfo=UTC)
+
+    assert _sprint_start(datetime(2026, 10, 6, 9, tzinfo=UTC), now) == start
+    assert _sprint_start(datetime(2026, 9, 22, 9, tzinfo=UTC), now) == start
+    assert _sprint_start(start, start) == start
+
+
+def _days_ago(days: int) -> datetime:
+    return datetime.now(UTC) - timedelta(days=days)
+
+
+async def _read_one_waiting_issue(
+    httpx_mock: HTTPXMock,
+    *,
+    created_days_ago: int = 30,
+    labels: list[str] | None = None,
+    body: str = "",
+    row: dict | None = None,
+    blockers: list[dict] | None = None,
+    fuel: bool = True,
+    milestones: list[dict] | None = None,
+) -> dict:
+    """Read the backlog of one issue 1, the current sprint having started four days ago.
+
+    Two whole sprints therefore lie behind anything that has waited 18 days or more.
+    *blockers* is mocked as issue 1's blocked_by listing; ``None`` expects no lookup.
+    """
+    _mock_open_issues(
+        httpx_mock,
+        [1],
+        labels={1: labels or []},
+        bodies={1: body},
+        created={1: _days_ago(created_days_ago)},
+    )
+    if blockers is not None:
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/owner/repo/issues/1/dependencies/blocked_by",
+            json=blockers,
+        )
+    report = {"weekly_resets_at": _days_ago(-3)} if fuel else None
+    fake = _FakeBacklog([{"issue_number": 1, **row}] if row else [])
+
+    with _patch_backlog(fake, fuel=report, milestones=milestones):
+        result = await get_backlog("owner/repo")
+    return result[0]
+
+
+async def test_starving_work_rises_a_tier(httpx_mock: HTTPXMock, set_user_id: str) -> None:
+    """Scenario: Starving work rises — two whole sprints ready and unblocked in the last tier."""
+    entry = await _read_one_waiting_issue(httpx_mock, blockers=[])
+
+    assert (entry["tier"], entry["aged"]) == ("milestone", True)
+
+
+async def test_starving_milestone_work_rises_into_the_focus_tier(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    entry = await _read_one_waiting_issue(
+        httpx_mock,
+        body=_implementing(100),
+        milestones=[_milestone(1, [100], started_days_ago=0)],
+        blockers=[],
+    )
+
+    assert (entry["tier"], entry["aged"]) == ("focus", True)
+
+
+async def test_a_blocker_closed_long_ago_does_not_stop_ageing(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    closed = _days_ago(20).isoformat()
+    entry = await _read_one_waiting_issue(
+        httpx_mock, blockers=[{"number": 9, "state": "closed", "closed_at": closed}]
+    )
+
+    assert entry["aged"] is True
+
+
+@pytest.mark.parametrize(
+    "waiting",
+    [
+        pytest.param({"created_days_ago": 10}, id="created-within-two-sprints"),
+        pytest.param({"row": {"ready_since": _days_ago(10)}}, id="unparked-recently"),
+        pytest.param(
+            {
+                "blockers": [
+                    {"number": 9, "state": "closed", "closed_at": _days_ago(10).isoformat()}
+                ]
+            },
+            id="unblocked-recently",
+        ),
+        pytest.param(
+            {"blockers": [{"number": 9, "state": "open", "closed_at": None}]}, id="still-blocked"
+        ),
+        pytest.param({"fuel": False}, id="no-sprint-known"),
+        pytest.param({"labels": ["archon:in-progress"]}, id="picked-up"),
+        pytest.param({"labels": ["needs-author"]}, id="waiting-on-the-author"),
+        pytest.param({"row": {"ready": False}}, id="parked"),
+    ],
+)
+async def test_work_that_has_not_starved_keeps_its_tier(
+    httpx_mock: HTTPXMock, set_user_id: str, waiting: dict
+) -> None:
+    entry = await _read_one_waiting_issue(httpx_mock, **waiting)
+
+    assert (entry["tier"], entry["aged"]) == ("other", False)
+
+
+@pytest.mark.parametrize(
+    ("waiting", "tier"),
+    [
+        pytest.param({"labels": ["security"]}, "security", id="security"),
+        pytest.param({"row": {"interrupt": True}}, "interrupt", id="interrupt"),
+    ],
+)
+async def test_interrupt_and_security_work_never_age(
+    httpx_mock: HTTPXMock, set_user_id: str, waiting: dict, tier: str
+) -> None:
+    entry = await _read_one_waiting_issue(httpx_mock, **waiting)
+
+    assert (entry["tier"], entry["aged"]) == (tier, False)
 
 
 # ---------------------------------------------------------------------------
@@ -3476,14 +3669,13 @@ async def test_create_github_issues_without_overrides_never_touches_the_db(
     with (
         patch("db.list_backlog", backlog_db.list_backlog),
         patch("db.upsert_backlog_flags", backlog_db.upsert_backlog_flags),
-        patch("db.set_backlog_order", backlog_db.set_backlog_order),
     ):
         result = await create_github_issues("owner/repo", [{"title": "One", "body": "b"}])
 
     backlog_db.assert_not_called()
     assert backlog_db.mock_calls == []
     assert result[0]["ready"] is True
-    assert result[0]["placed"] is False
+    assert "placed" not in result[0]
 
 
 async def test_create_github_issues_marks_ready_on_request(
@@ -3534,44 +3726,18 @@ async def test_create_github_issues_reports_a_failed_park(
     assert result[0]["ready"] is True
 
 
-async def test_create_github_issues_places_against_an_in_batch_anchor(
-    httpx_mock: HTTPXMock, set_user_id: str
+@pytest.mark.parametrize("anchor", ["before", "after"])
+async def test_create_github_issues_refuses_a_hand_placement_before_creating_anything(
+    httpx_mock: HTTPXMock, set_user_id: str, anchor: str
 ) -> None:
-    """An anchor naming an issue created earlier in the same batch resolves."""
-    _mock_created_issue(httpx_mock, 1)
-    _mock_created_issue(httpx_mock, 2)
-    _mock_open_issues(httpx_mock, [1, 2, 3])
-    fake = _FakeBacklog()
-
-    with _patch_backlog(fake):
-        result = await create_github_issues(
+    """The order is computed, so a before/after would be silently lost — refuse it."""
+    with pytest.raises(ValueError, match="computed"):
+        await create_github_issues(
             "owner/repo",
-            [
-                {"title": "One", "body": "b"},
-                {"title": "Two", "body": "b", "before": 1},
-            ],
+            [{"title": "One", "body": "b"}, {"title": "Two", "body": "b", anchor: 1}],
         )
 
-    assert result[1]["placed"] is True
-    assert fake.orders == [[2, 1, 3]]
-
-
-async def test_create_github_issues_reports_an_unresolvable_anchor_without_raising(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """The issue already exists on GitHub, so a failed placement must not raise."""
-    _mock_created_issue(httpx_mock, 1)
-    _mock_open_issues(httpx_mock, [1])
-    fake = _FakeBacklog()
-
-    with _patch_backlog(fake):
-        result = await create_github_issues(
-            "owner/repo", [{"title": "One", "body": "b", "after": 99}]
-        )
-
-    assert result[0]["number"] == 1
-    assert result[0]["placed"] is False
-    assert fake.orders == []
+    assert httpx_mock.get_requests() == []
 
 
 # ---------------------------------------------------------------------------
@@ -3625,21 +3791,19 @@ async def test_next_issue_returns_the_offered_issues_notes_oldest_first(
     _no_notes.assert_called_once_with("test-uid", "owner/repo", issue=160)
 
 
-async def test_next_issue_interrupt_beats_position(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    """An interrupt-marked issue outranks a ready issue sitting at position 0."""
-    _mock_open_issues(httpx_mock, [1, 2, 3])
-    _mock_blocked_by(httpx_mock, 3, [])
-    fake = _FakeBacklog(
-        [
-            {"issue_number": 1, "position": 0, "ready": True},
-            {"issue_number": 3, "position": 2, "ready": True, "interrupt": True},
-        ]
-    )
+async def test_next_issue_offers_an_interrupt_from_the_last_tier(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Scenario: Interrupt wins over every tier — issue 30 is last, ready and unblocked."""
+    _mock_open_issues(httpx_mock, [10, 20, 30], labels={10: ["security"]})
+    _mock_blocked_by(httpx_mock, 30, [])
+    fake = _FakeBacklog([{"issue_number": 30, "interrupt": True}])
 
-    with _patch_backlog(fake):
+    with _patch_backlog(fake, focus=[{"repo_name": "owner/repo", "milestone_id": None}]):
         result = await next_issue("owner/repo")
 
-    assert result["issue"]["number"] == 3
+    assert result["issue"]["number"] == 30
+    assert result["issue"]["tier"] == "interrupt"
     assert result["issue"]["interrupt"] is True
 
 
@@ -3721,8 +3885,8 @@ async def test_next_issue_reports_a_blocked_interrupt_rather_than_skipping_it(
     _mock_blocked_by(httpx_mock, 2, [3])
     fake = _FakeBacklog(
         [
-            {"issue_number": 1, "position": 0, "ready": True, "interrupt": True},
-            {"issue_number": 2, "position": 1, "ready": True, "interrupt": True},
+            {"issue_number": 1, "ready": True, "interrupt": True},
+            {"issue_number": 2, "ready": True, "interrupt": True},
         ]
     )
 
@@ -3811,7 +3975,7 @@ async def test_skip_work_already_in_progress(httpx_mock: HTTPXMock, set_user_id:
 
 
 async def test_waiting_on_the_author(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    """Scenario: Waiting on the author — skipped, then eligible again at its position."""
+    """Scenario: Waiting on the author — skipped, then eligible again in its place."""
     fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 2, "ready": True}])
 
     _mock_open_issues(httpx_mock, [1, 2], {1: ["needs-author"]})
@@ -3847,7 +4011,7 @@ async def test_next_issue_all_waiting_on_the_author(
 async def test_next_issue_interrupt_wins_across_repos(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """Interrupt is an authored override, so it outranks the repo tie-break."""
+    """Interrupt is an authored override, so it outranks older work in another repo."""
     _mock_open_issues(httpx_mock, [1])
     _mock_open_issues(httpx_mock, [5], repo="owner/other")
     _mock_blocked_by(httpx_mock, 1, [])
@@ -3866,10 +4030,32 @@ async def test_next_issue_interrupt_wins_across_repos(
     assert (result["issue"]["repo"], result["issue"]["number"]) == ("owner/other", 5)
 
 
+async def test_next_issue_takes_security_work_from_a_later_registered_repo(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Tiers compare across repos; registration order is only the last tie-break."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_open_issues(httpx_mock, [5], {5: ["security"]}, repo="owner/other")
+    _mock_blocked_by(httpx_mock, 1, [])
+    _mock_blocked_by(httpx_mock, 5, [], repo="owner/other")
+    registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
+
+    with (
+        _patch_backlog(_FakeBacklog()),
+        patch("tools.requirements.db.list_repos", return_value=registered),
+    ):
+        result = await next_issue()
+
+    assert (result["issue"]["repo"], result["issue"]["number"]) == ("owner/other", 5)
+    assert result["issue"]["tier"] == "security"
+    assert "sort_key" not in result["issue"]
+    assert "tier security" in result["explanation"]
+
+
 async def test_next_issue_names_the_runners_up_it_passed_over(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """The cross-repo tie-break is arbitrary, so what it lost has to be visible."""
+    """An unscoped call merges repos by tier and age; what it passed over is listed."""
     _mock_open_issues(httpx_mock, [1])
     _mock_open_issues(httpx_mock, [5], repo="owner/other")
     _mock_blocked_by(httpx_mock, 1, [])

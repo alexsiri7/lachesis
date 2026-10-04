@@ -296,7 +296,10 @@ async def _list_open_prs(repo: str) -> list[dict[str, Any]]:
 
 
 async def list_open_issues(repo: str) -> list[dict[str, Any]]:
-    """Return ``[{"number": int, "title": str, "labels": [str]}, ...]``, ascending by number.
+    """Return the open issues ascending by number.
+
+    Each is ``{"number": int, "title": str, "labels": [str], "body": str,
+    "created_at": str}``, ``created_at`` being GitHub's ISO 8601 timestamp.
 
     The /issues endpoint also returns pull requests; those are filtered out.
     """
@@ -316,6 +319,8 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
                 "number": i["number"],
                 "title": i["title"],
                 "labels": [lb["name"] for lb in i.get("labels", [])],
+                "body": i.get("body") or "",
+                "created_at": i["created_at"],
             }
             for i in issues
         ),
@@ -901,6 +906,31 @@ async def list_blocked_by_numbers(repo: str, issue_number: int) -> list[int] | N
         )
     resp.raise_for_status()
     return [item["number"] for item in resp.json()]
+
+
+async def list_blockers(repo: str, issue_number: int) -> list[dict[str, Any]] | None:
+    """Return ``[{"number", "state", "closed_at"}]`` for *issue_number*'s blockers, or
+    ``None`` on 404. ``closed_at`` is ``None`` for an open blocker.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/dependencies/blocked_by",
+            headers=_headers(),
+        )
+    if resp.status_code == 404:
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.list_blockers failed repo=%s issue=%s status=%s",
+            repo,
+            issue_number,
+            resp.status_code,
+        )
+    resp.raise_for_status()
+    return [
+        {"number": item["number"], "state": item.get("state"), "closed_at": item.get("closed_at")}
+        for item in resp.json()
+    ]
 
 
 async def create_repo(name: str, *, description: str, private: bool) -> dict[str, Any]:

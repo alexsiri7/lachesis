@@ -6,7 +6,8 @@ Tables (all namespaced lachesis_):
                             decides when its requirements count as in production
   lachesis_oauth_clients  — persisted OAuth client registrations
   lachesis_refresh_tokens — persisted refresh tokens (with expiry)
-  lachesis_backlog        — per-repo backlog overrides (position, ready, interrupt)
+  lachesis_backlog        — per-repo backlog flags (ready, interrupt, when last unparked)
+  lachesis_focus          — the repositories and milestones the author has focused on
   lachesis_ntfy_config    — per-account ntfy server, topic and token
   lachesis_notifications  — one row per requirement already notified (dedupe)
   lachesis_events         — append-only log of changes to the factory's records
@@ -303,13 +304,13 @@ def list_active_refresh_tokens() -> list[dict[str, Any]]:
 
 
 def list_backlog(user_id: str, repo_name: str) -> list[dict[str, Any]]:
-    """Return the backlog override rows for a repo, positioned rows first."""
+    """Return the backlog flag rows for a repo, by issue number."""
     sql = text(
         """
-        SELECT issue_number, position, ready, interrupt
+        SELECT issue_number, ready, interrupt, ready_since
         FROM lachesis_backlog
         WHERE user_id = :user_id AND repo_name = :repo_name
-        ORDER BY position ASC NULLS LAST, issue_number ASC
+        ORDER BY issue_number ASC
         """
     )
     with _engine().connect() as conn:
@@ -324,13 +325,16 @@ def upsert_backlog_flags(
     ready: bool | None = None,
     interrupt: bool | None = None,
 ) -> dict[str, Any]:
-    """Set the ready and/or interrupt flags for an issue. Leaves position untouched.
+    """Set the ready and/or interrupt flags for an issue.
 
     A flag passed as ``None`` keeps its current value; when the row is created here
     it falls to the column default — ready true, interrupt false — so a row written
     to set ``interrupt`` alone does not park the issue as a side effect. The
     COALESCE is what supplies it: the columns are NOT NULL and a bound NULL would
     violate that, since server defaults apply only to omitted columns.
+
+    Unparking an issue stamps ``ready_since``; setting ready on an issue already
+    ready leaves it, so ageing counts from the last unpark.
     """
     sql = text(
         """
@@ -341,6 +345,10 @@ def upsert_backlog_flags(
         )
         ON CONFLICT (user_id, repo_name, issue_number) DO UPDATE
             SET ready = COALESCE(:ready, lachesis_backlog.ready),
+                ready_since = CASE
+                    WHEN COALESCE(:ready, false) AND NOT lachesis_backlog.ready THEN now()
+                    ELSE lachesis_backlog.ready_since
+                END,
                 interrupt = COALESCE(:interrupt, lachesis_backlog.interrupt),
                 updated_at = now()
         RETURNING *
@@ -363,45 +371,51 @@ def upsert_backlog_flags(
     return dict(row)
 
 
-def set_backlog_order(user_id: str, repo_name: str, ordered_issue_numbers: list[int]) -> None:
-    """Persist *ordered_issue_numbers* as contiguous positions, clearing every other row.
+# ---------------------------------------------------------------------------
+# lachesis_focus
+# ---------------------------------------------------------------------------
 
-    Runs as one transaction so the backlog is never observed half-renumbered.
-    """
-    clear_sql = text(
+
+def add_focus(user_id: str, repo_name: str, milestone_id: int | None) -> None:
+    """Focus *repo_name*, or one of its milestones; focusing it again changes nothing."""
+    sql = text(
         """
-        UPDATE lachesis_backlog
-        SET position = NULL, updated_at = now()
-        WHERE user_id = :user_id
-          AND repo_name = :repo_name
-          AND position IS NOT NULL
-          AND NOT (issue_number = ANY(CAST(:numbers AS integer[])))
+        INSERT INTO lachesis_focus (user_id, repo_name, milestone_id)
+        VALUES (:user_id, :repo_name, :milestone_id)
+        ON CONFLICT DO NOTHING
         """
     )
-    place_sql = text(
-        """
-        INSERT INTO lachesis_backlog (user_id, repo_name, issue_number, position)
-        VALUES (:user_id, :repo_name, :issue_number, :position)
-        ON CONFLICT (user_id, repo_name, issue_number) DO UPDATE
-            SET position = EXCLUDED.position,
-                updated_at = now()
-        """
-    )
+    params = {"user_id": user_id, "repo_name": repo_name, "milestone_id": milestone_id}
     with _engine().begin() as conn:
-        conn.execute(
-            clear_sql,
-            {"user_id": user_id, "repo_name": repo_name, "numbers": ordered_issue_numbers},
-        )
-        for index, issue_number in enumerate(ordered_issue_numbers):
-            conn.execute(
-                place_sql,
-                {
-                    "user_id": user_id,
-                    "repo_name": repo_name,
-                    "issue_number": issue_number,
-                    "position": index,
-                },
-            )
+        conn.execute(sql, params)
+
+
+def remove_focus(user_id: str, repo_name: str, milestone_id: int | None) -> None:
+    """Clear exactly this focus: a repository's leaves its milestones' focuses alone."""
+    sql = text(
+        """
+        DELETE FROM lachesis_focus
+        WHERE user_id = :user_id AND repo_name = :repo_name
+          AND milestone_id IS NOT DISTINCT FROM :milestone_id
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "milestone_id": milestone_id}
+    with _engine().begin() as conn:
+        conn.execute(sql, params)
+
+
+def list_focus(user_id: str) -> list[dict[str, Any]]:
+    """Return every focus of the account, ``repo_name`` and ``milestone_id``, oldest first."""
+    sql = text(
+        """
+        SELECT repo_name, milestone_id
+        FROM lachesis_focus
+        WHERE user_id = :user_id
+        ORDER BY created_at, id
+        """
+    )
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
 
 
 # ---------------------------------------------------------------------------

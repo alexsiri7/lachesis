@@ -28,6 +28,7 @@ from settings import settings
 from tools import contents as contents_tools
 from tools import estimates as estimate_tools
 from tools import events as event_tools
+from tools import focus as focus_tools
 from tools import fuel as fuel_tools
 from tools import milestones as milestone_tools
 from tools import notes as note_tools
@@ -171,10 +172,11 @@ mcp.tool(
     description=(
         "Create one or more GitHub issues capturing implementation work. "
         "Issues are the task layer — they break down *how* a requirement's "
-        "desired behaviour will be built. Issues are created ready and last in the "
-        "backlog; pass `ready: false` on one to park it instead. Call `link_issues` "
-        "after to attach them to the requirement. In a repo that uses specs, every issue "
-        "must say what it implements: `capability` (the capability name) and exactly one "
+        "desired behaviour will be built. Issues are created ready and take their "
+        "computed place in the backlog; pass `ready: false` on one to park it instead. "
+        "Call `link_issues` after to attach them to the requirement. In a repo that uses "
+        "specs, every issue must say what it implements: `capability` (the capability "
+        "name) and exactly one "
         "of `spec_change` (the spec change's pull request number) or `spec_gap: true` "
         "(work bringing the code in line with the spec as it stands, such as an audit "
         "finding or a bug), plus an optional `requirement` within the capability. The "
@@ -353,7 +355,7 @@ mcp.tool(
     description=(
         "Answer an issue that is waiting on the author: answers the open question "
         "blocking it as answer_question does, with answerer author and outcome none, "
-        "making the issue eligible for pickup again at its original backlog position "
+        "making the issue eligible for pickup again in its computed place "
         "once no other open question blocks it. Refused if the issue is not waiting on "
         "the author, or if several open questions block it — answer each with "
         "answer_question. An issue labelled needs-author with no question recorded "
@@ -595,36 +597,52 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Return a repo's open issues in backlog order — the single ordered backlog. "
-        "Interrupt-marked issues lead the list; each entry reports its `position` in "
-        "the backlog itself plus its `ready` and `interrupt` flags. An issue is ready "
-        "unless it has been parked; parked issues are skipped for autonomous pickup."
+        "Return a repo's open issues in backlog order — the single ordered backlog, "
+        "computed, never set by hand. Tiers, highest first: interrupt; security (issues "
+        "labelled `security`); the author's focus (set_focus); work on an active "
+        "milestone, nearest done first; everything else. Older issues come first within "
+        "a tier. A ready issue that has waited unblocked for two whole sprints (counted "
+        "from the fuel report's weekly reset) moves up one tier. Each entry reports its "
+        "`position`, `tier`, `aged`, `ready` and `interrupt`. An issue is ready unless "
+        "it has been parked; parked issues are skipped for autonomous pickup."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_backlog)
 
 mcp.tool(
     description=(
-        "Move an issue to sit immediately before or after another open issue. "
-        "Pass exactly one of before/after — placement is always relative to a named "
-        "issue, never an absolute rank. Returns the reordered backlog."
-    ),
-)(req_tools.move_issue)
-
-mcp.tool(
-    description=(
         "Set an issue's backlog flags. `ready=false` parks the issue, holding it back "
         "from autonomous pickup, and `ready=true` unparks it; `interrupt` jumps it to "
-        "the front of the backlog regardless of position. "
+        "the backlog's top tier. "
         "An omitted flag is left as it is."
     ),
 )(req_tools.set_backlog_flags)
 
 mcp.tool(
     description=(
+        "Set the author's focus on a registered repository, or on one of its milestones "
+        "when `milestone` is given. On the next read of the backlog, their issues are in "
+        "the focus tier, below interrupt and security work. Never waits on anything. "
+        "Refused for a milestone that is not in the repository or was dropped. Returns "
+        "every focus as `repo` and `milestone` (null for a repository focus)."
+    ),
+)(focus_tools.set_focus)
+
+mcp.tool(
+    description=(
+        "Clear the author's focus on a repository, or on one of its milestones when "
+        "`milestone` is given; a repository focus and its milestones' focuses are "
+        "cleared separately. Takes effect on the next read of the backlog. Returns "
+        "every focus left, as set_focus does."
+    ),
+)(focus_tools.clear_focus)
+
+mcp.tool(
+    description=(
         "Return the issue to pick up next — the highest-ordered issue that is ready, "
         "has no open blocker, is not already in progress, and is not waiting on the "
-        "author (labelled needs-author). An interrupt-marked issue wins over position. "
+        "author (labelled needs-author). Issues are taken in computed backlog order, "
+        "across repos when `repo` is omitted. "
         "The offered issue's notes are returned with it under `notes`, oldest first. "
         "`repo` is optional: omit it to consider every registered repo. When nothing "
         "qualifies the result explains which case it is — everything ready is blocked, "

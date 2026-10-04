@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
+from collections import Counter
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime
-from typing import Any, NamedTuple, cast
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, NamedTuple
 
 import frontmatter
 import httpx
@@ -19,7 +21,7 @@ import groups
 import landing
 from auth import current_db_user_id
 from derive import ActivityFailure, IssueFacts, derive, linked_issue_numbers
-from spec_reference import SpecReference, append_reference
+from spec_reference import SpecReference, append_reference, parse_reference
 from status import INACTIVE_STATUSES, VALID_STATUSES, canonical_status
 
 from .repos import _require_user_id, normalize_repo
@@ -60,19 +62,23 @@ A requirement without linked issues is a draft. Archon will not act on drafts.
 """
 
 _BACKLOG = """\
-New issues are ready and last in the backlog, eligible for autonomous pickup as
-soon as they are created. Call set_backlog_flags with ready=False to park an issue
-that is knowingly unfinished, and ready=True to unpark it. Use move_issue to order
-the backlog by relative placement, and the interrupt flag for the one thing that
-must jump the queue. Call next_issue to ask what to pick up — it returns the top
-ready, unblocked issue, or explains why there is none.
+New issues are ready, eligible for autonomous pickup as soon as they are created. Call
+set_backlog_flags with ready=False to park an issue that is knowingly unfinished, and
+ready=True to unpark it. The backlog order is computed, never set by hand: interrupt,
+then security work (issues labelled security, for security incidents and security audit
+findings), then the author's focus, then work on active milestones nearest done first,
+then everything else, older first within each. Work ready and unblocked for two whole
+sprints moves up a tier. The author steers with set_focus and clear_focus on a repository
+or milestone, and the interrupt flag for the one thing that must jump the queue. Call
+next_issue to ask what to pick up — it returns the top ready, unblocked issue, or
+explains why there is none.
 
 Before asking anything, call search_answered_questions with the repository and the words
 of your question. If an answer already settles it, act on that answer instead of asking
 again.
 When you cannot tell what the spec intends for an issue, do not guess: call ask_author
 with your question and move on to other work. The issue is labelled needs-author and
-next_issue passes over it, keeping its backlog position, until answer_author posts the
+next_issue passes over it, keeping its computed place, until answer_author posts the
 answer and removes the label, once no other open question blocks the issue.
 For any other decision only the author can make — a spec contradiction, large work,
 maturity or an improvement — or one that blocks several issues, call ask_question.
@@ -956,18 +962,13 @@ async def link_issues(repo: str, id: str, issues: list[dict[str, Any]]) -> dict[
     return {"content": written.result, "pr": _pr_field(written.pr)}
 
 
-async def _apply_backlog_overrides(
+def _apply_backlog_overrides(
     repo: str, issues: list[dict[str, Any]], results: list[dict[str, Any]]
 ) -> None:
-    """Apply per-issue ``ready`` / ``before`` / ``after`` overrides to created issues.
-
-    The defaults they override are ready, last in the backlog, so the only flag
-    worth writing here is an explicit ``ready: false`` — the park.
+    """Apply per-issue ``ready`` overrides to created issues.
 
     Best-effort throughout: the GitHub issues already exist and cannot be
     un-created, so every failure is logged and reported through the result dict.
-    Anchors are resolved issue by issue, so one naming an issue created earlier in
-    the same batch works.
     """
     try:
         user_id = _require_user_id()
@@ -988,21 +989,6 @@ async def _apply_backlog_overrides(
                 logger.warning(
                     "create_github_issues: failed to set ready=%s on issue %s", requested, number
                 )
-
-        before = issue_input.get("before")
-        after = issue_input.get("after")
-        if before is None and after is None:
-            continue
-        try:
-            await move_issue(repo, number, before=before, after=after)
-            result["placed"] = True
-        except Exception:
-            logger.warning(
-                "create_github_issues: failed to place issue %s (before=%r, after=%r)",
-                number,
-                before,
-                after,
-            )
 
 
 SPEC_GAP_LABEL = "spec-gap"
@@ -1067,9 +1053,9 @@ async def create_github_issues(
 ) -> list[dict[str, Any]]:
     """Create one or more GitHub issues and return their numbers/titles/urls.
 
-    Each issue may carry ``ready`` (bool) and one of ``before`` / ``after`` (issue
-    numbers) to override the defaults — ready, last in the backlog. Passing
-    ``ready: false`` parks the issue, holding it back from autonomous pickup.
+    Issues are created ready; the backlog orders them. Passing ``ready: false``
+    parks an issue, holding it back from autonomous pickup. ``before`` / ``after``
+    are refused: the backlog order is computed, never set by hand.
 
     In a repository that uses specs, each issue must also carry ``capability`` and
     exactly one of ``spec_change`` (pull request number) or ``spec_gap: true``, and
@@ -1079,6 +1065,11 @@ async def create_github_issues(
     # specs imports this module, so it cannot be imported at the top.
     from .specs import uses_specs
 
+    if any(key in issue for issue in issues for key in ("before", "after")):
+        raise ValueError(
+            "before/after are no longer accepted: the backlog order is computed. "
+            "Steer it with set_focus or the interrupt flag. No issues were created."
+        )
     repo = await _resolve_repo(repo)
     references: list[SpecReference | None] = [None] * len(issues)
     if issues and await uses_specs(repo):
@@ -1104,7 +1095,6 @@ async def create_github_issues(
                 "blocked_by": [],
                 "added_to_project": False,
                 "ready": True,
-                "placed": False,
             }
         )
         number_to_id[result["number"]] = result["id"]
@@ -1136,8 +1126,8 @@ async def create_github_issues(
             result["blocked_by"].append(blocker_number)
 
     # Phase 3: Backlog overrides — the default path stays free of the DB and of auth
-    if any(key in issue for issue in issues for key in ("ready", "before", "after")):
-        await _apply_backlog_overrides(repo, issues, results)
+    if any("ready" in issue for issue in issues):
+        _apply_backlog_overrides(repo, issues, results)
 
     return results
 
@@ -1147,111 +1137,161 @@ async def create_github_issues(
 # ---------------------------------------------------------------------------
 
 
-_PUBLIC_BACKLOG_KEYS = ("number", "title", "position", "ready", "interrupt")
+SECURITY_LABEL = "security"
+_IN_PROGRESS_LABEL = "archon:in-progress"
+_NEEDS_AUTHOR_LABEL = "needs-author"
+_NEEDS_AUTHOR_COLOR = "fbca04"
 
+_TIERS = ("interrupt", "security", "focus", "milestone", "other")
+_INTERRUPT, _SECURITY, _FOCUS, _MILESTONE, _OTHER = range(len(_TIERS))
+_SPRINT = timedelta(days=7)
+_SPRINTS_TO_AGE = 2
+# Sorts after every active milestone, so issues outside the milestone tier, or aged
+# into it, fall back to age alone.
+_NO_MILESTONE = (math.inf, math.inf, math.inf)
 
-def _hoist_interrupts(base: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Effective order: interrupt-marked issues first, each group keeping base order."""
-    return [i for i in base if i["interrupt"]] + [i for i in base if not i["interrupt"]]
+_PUBLIC_BACKLOG_KEYS = ("number", "title", "position", "tier", "aged", "ready", "interrupt")
 
 
 def _public_backlog(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Project internal backlog entries onto the documented backlog response shape.
 
-    `_base_backlog_order` also carries each issue's GitHub labels, which `next_issue`
-    reads to skip work already in progress; they are not part of what the backlog
-    tools promise their callers.
+    `_backlog_order` also carries each issue's labels, creation time and sort key,
+    which `next_issue` reads to skip work in progress and to merge repos; they are
+    not part of what the backlog tools promise their callers.
     """
     return [{key: item[key] for key in _PUBLIC_BACKLOG_KEYS} for item in items]
 
 
-async def _base_backlog_order(repo: str, user_id: str) -> list[dict[str, Any]]:
-    """Return the repo's open issues in base backlog order.
+def _sprint_start(resets_at: datetime, now: datetime) -> datetime:
+    """Return when the sprint holding *now* started: sprints start at each weekly reset.
 
-    Positioned rows come first in position order, then every remaining open issue
-    by issue number ascending — which is creation order, so a new issue is last
-    without anything being written. An issue with no row is ready: a row exists
-    only to park, position or interrupt one. Closed issues drop out here; their
-    rows stay in the table, so the ready and interrupt flags survive a close and
-    reopen, though an explicit position does not — the next move clears it. Each entry's
-    ``position`` is its index in this list, never in the interrupt-hoisted one.
+    *resets_at* is any one reset, past or future.
+    """
+    return resets_at + ((now - resets_at) // _SPRINT) * _SPRINT
+
+
+async def _unblocked_since(repo: str, number: int, since: datetime) -> datetime | None:
+    """Return when *number* last became unblocked, no earlier than *since*.
+
+    ``None`` when a blocker is still open.
+    """
+    blockers = await github.list_blockers(repo, number) or []
+    if any(blocker["state"] != "closed" for blocker in blockers):
+        return None
+    closed = [
+        datetime.fromisoformat(b["closed_at"]) for b in blockers if b["closed_at"] is not None
+    ]
+    return max([since, *closed])
+
+
+async def _backlog_order(repo: str, user_id: str, now: datetime) -> list[dict[str, Any]]:
+    """Return the repo's open issues in computed backlog order.
+
+    Tiers, highest first: interrupt; security (labelled ``security``); the author's
+    focus, on the repo or on the milestone holding the issue's spec change; work on an
+    active milestone, the one with fewest open issues first; everything else. Older
+    issues come first within a tier. A ready issue that has waited, unblocked and not
+    in progress, for two whole sprints moves up one tier — interrupt and security work
+    never age. Sprints start at each weekly allowance reset, so with no fuel reported
+    nothing ages.
+
+    An issue with no backlog row is ready: a row exists only to park or interrupt one.
+    Closed issues drop out here; their rows stay, so the flags survive a close and
+    reopen. Each entry's ``position`` is its index in this order.
     """
     open_issues = await github.list_open_issues(repo)
-    titles = {issue["number"]: issue["title"] for issue in open_issues}
-    labels = {issue["number"]: issue["labels"] for issue in open_issues}
-    rows = {
-        row["issue_number"]: row
-        for row in db.list_backlog(user_id, repo)
-        if row["issue_number"] in titles
-    }
+    rows = {row["issue_number"]: row for row in db.list_backlog(user_id, repo)}
+    milestones = [m for m in db.list_milestones(user_id, repo) if m["dropped_at"] is None]
+    focuses = [focus for focus in db.list_focus(user_id) if focus["repo_name"] == repo]
+    fuel = db.get_fuel(user_id)
 
-    positioned = sorted(
-        (number for number, row in rows.items() if row["position"] is not None),
-        key=lambda number: (rows[number]["position"], number),
-    )
-    remaining = sorted(number for number in titles if number not in set(positioned))
+    repo_focused = any(focus["milestone_id"] is None for focus in focuses)
+    focused_ids = {focus["milestone_id"] for focus in focuses}
+    milestone_of = {change: m for m in milestones for change in m["spec_changes"]}
 
-    return [
-        {
-            "number": number,
-            "title": titles[number],
-            "labels": labels[number],
-            "position": index,
-            "ready": bool(rows[number]["ready"]) if number in rows else True,
-            "interrupt": bool(rows[number]["interrupt"]) if number in rows else False,
-        }
-        for index, number in enumerate(positioned + remaining)
-    ]
+    items: list[dict[str, Any]] = []
+    for issue in open_issues:
+        number = issue["number"]
+        row = rows.get(number)
+        reference = parse_reference(issue["body"])
+        milestone = milestone_of.get(reference.spec_change) if reference else None
+        created_at = datetime.fromisoformat(issue["created_at"])
+        ready_since = row["ready_since"] if row is not None else None
+        if row is not None and row["interrupt"]:
+            tier = _INTERRUPT
+        elif SECURITY_LABEL in issue["labels"]:
+            tier = _SECURITY
+        elif repo_focused or (milestone is not None and milestone["id"] in focused_ids):
+            tier = _FOCUS
+        elif milestone is not None and milestone["started_at"] is not None:
+            tier = _MILESTONE
+        else:
+            tier = _OTHER
+        items.append(
+            {
+                "number": number,
+                "title": issue["title"],
+                "labels": issue["labels"],
+                "created_at": created_at,
+                "waiting_since": max(created_at, ready_since or created_at),
+                "milestone": milestone,
+                "tier_rank": tier,
+                "aged": False,
+                "ready": bool(row["ready"]) if row is not None else True,
+                "interrupt": bool(row["interrupt"]) if row is not None else False,
+            }
+        )
+
+    if fuel is not None:
+        threshold = _sprint_start(fuel["weekly_resets_at"], now) - _SPRINTS_TO_AGE * _SPRINT
+        waiting = [
+            item
+            for item in items
+            if item["tier_rank"] > _SECURITY
+            and item["ready"]
+            and _IN_PROGRESS_LABEL not in item["labels"]
+            and _NEEDS_AUTHOR_LABEL not in item["labels"]
+            and item["waiting_since"] <= threshold
+        ]
+        unblocked_since = await asyncio.gather(
+            *(_unblocked_since(repo, item["number"], item["waiting_since"]) for item in waiting)
+        )
+        for item, since in zip(waiting, unblocked_since, strict=True):
+            if since is not None and since <= threshold:
+                item["tier_rank"] -= 1
+                item["aged"] = True
+
+    open_in_milestone = Counter(item["milestone"]["id"] for item in items if item["milestone"])
+    for item in items:
+        milestone = item.pop("milestone")
+        del item["waiting_since"]
+        milestone_key = _NO_MILESTONE
+        if item["tier_rank"] == _MILESTONE and not item["aged"]:
+            milestone_key = (
+                float(open_in_milestone[milestone["id"]]),
+                milestone["started_at"].timestamp(),
+                float(milestone["id"]),
+            )
+        item["sort_key"] = (item["tier_rank"], milestone_key, item["created_at"], item["number"])
+        item["tier"] = _TIERS[item.pop("tier_rank")]
+
+    items.sort(key=lambda item: item["sort_key"])
+    for position, item in enumerate(items):
+        item["position"] = position
+    return items
 
 
 async def get_backlog(repo: str) -> list[dict[str, Any]]:
-    """Return the repo's open issues in backlog order, interrupts first.
+    """Return the repo's open issues in computed backlog order.
 
-    Each entry has ``number``, ``title``, ``position``, ``ready`` and ``interrupt``.
-    ``position`` is the issue's place in the backlog itself, so an interrupt-marked
-    issue leads the list while still reporting the position it will fall back to.
+    Each entry has ``number``, ``title``, ``position``, ``tier`` (one of interrupt,
+    security, focus, milestone, other), ``aged`` (moved up a tier for waiting two
+    whole sprints), ``ready`` and ``interrupt``.
     """
     repo = await _resolve_repo(repo)
     user_id = _require_user_id()
-    return _public_backlog(_hoist_interrupts(await _base_backlog_order(repo, user_id)))
-
-
-async def move_issue(
-    repo: str, issue_number: int, before: int | None = None, after: int | None = None
-) -> list[dict[str, Any]]:
-    """Move an issue immediately before or after another open issue.
-
-    Exactly one of *before* / *after* is required — placement is always relative to
-    a named issue, never an absolute rank. Returns the backlog as `get_backlog` does.
-    """
-    if (before is None) == (after is None):
-        raise ValueError("exactly one of before/after is required")
-    anchor = before if before is not None else after
-    if anchor == issue_number:
-        raise ValueError("cannot move an issue relative to itself")
-
-    repo = await _resolve_repo(repo)
-    user_id = _require_user_id()
-    base = await _base_backlog_order(repo, user_id)
-    numbers = [item["number"] for item in base]
-    for number in (issue_number, anchor):
-        if number not in numbers:
-            raise FileNotFoundError(f"Issue #{number} is not an open issue in {repo!r}")
-
-    numbers.remove(issue_number)
-    anchor_index = numbers.index(cast(int, anchor))
-    numbers.insert(anchor_index if before is not None else anchor_index + 1, issue_number)
-
-    # The base order is what gets persisted — renumbering the interrupt-hoisted
-    # order would bake an interrupt's temporary lead into its stored position.
-    db.set_backlog_order(user_id, repo, numbers)
-
-    by_number = {item["number"]: item for item in base}
-    return _public_backlog(
-        _hoist_interrupts(
-            [{**by_number[number], "position": index} for index, number in enumerate(numbers)]
-        )
-    )
+    return _public_backlog(await _backlog_order(repo, user_id, datetime.now(UTC)))
 
 
 async def set_backlog_flags(
@@ -1273,11 +1313,6 @@ async def set_backlog_flags(
         "ready": bool(row["ready"]),
         "interrupt": bool(row["interrupt"]),
     }
-
-
-_IN_PROGRESS_LABEL = "archon:in-progress"
-_NEEDS_AUTHOR_LABEL = "needs-author"
-_NEEDS_AUTHOR_COLOR = "fbca04"
 
 
 class _RepoScan(NamedTuple):
@@ -1318,10 +1353,13 @@ async def _open_blockers(
 
 
 async def _scan_repo(
-    repo: str, user_id: str, cache: dict[tuple[str, int], dict[str, Any] | None]
+    repo: str,
+    user_id: str,
+    now: datetime,
+    cache: dict[tuple[str, int], dict[str, Any] | None],
 ) -> _RepoScan:
     """Walk one repo's backlog for the first pickable issue, reporting what it passed."""
-    order = _hoist_interrupts(await _base_backlog_order(repo, user_id))
+    order = await _backlog_order(repo, user_id, now)
     open_titles = {item["number"]: item["title"] for item in order}
     candidate: dict[str, Any] | None = None
     blocked: list[dict[str, Any]] = []
@@ -1358,7 +1396,9 @@ async def _scan_repo(
                 "number": item["number"],
                 "title": item["title"],
                 "position": item["position"],
+                "tier": item["tier"],
                 "interrupt": item["interrupt"],
+                "sort_key": item["sort_key"],
             }
 
     return _RepoScan(candidate, blocked, bool(order), saw_claimed, saw_waiting)
@@ -1380,10 +1420,9 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     """Return the issue the worker should pick up next, or explain why there is none.
 
     Considers only issues that are ready, free of open blockers, and carrying neither
-    the ``archon:in-progress`` nor the ``needs-author`` label; an interrupt-marked
-    issue wins over position, including across repos. Omitting *repo* considers every registered
-    repo, in which case runners-up are listed under ``also_eligible`` because
-    backlog position only orders issues within one repo.
+    the ``archon:in-progress`` nor the ``needs-author`` label, in computed backlog order.
+    Omitting *repo* considers every registered repo, merging their backlogs by tier and
+    age, in which case runners-up are listed under ``also_eligible``.
 
     Returns ``issue`` (``None`` when nothing qualifies) with its ``notes`` oldest
     first when one is selected, a ``reason`` of
@@ -1400,12 +1439,13 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     else:
         repos = [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]
 
+    now = datetime.now(UTC)
     cache: dict[tuple[str, int], dict[str, Any] | None] = {}
     scans: list[_RepoScan] = []
     unreadable: list[str] = []
     for repo_name in repos:
         try:
-            scans.append(await _scan_repo(repo_name, user_id, cache))
+            scans.append(await _scan_repo(repo_name, user_id, now, cache))
         except Exception:
             # A scoped call named this repo, so its failure is the answer. Unscoped, one
             # repo gone from the PAT's reach must not cost the worker every other backlog.
@@ -1419,10 +1459,11 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     candidates = [
         (index, scan.candidate) for index, scan in enumerate(scans) if scan.candidate is not None
     ]
-    # Interrupt is the author's explicit override, so it outranks everything. Below it
-    # there is no cross-repo order to appeal to, so registration order decides and
-    # `also_eligible` shows what that arbitrary tie-break passed over.
-    candidates.sort(key=lambda pair: (not pair[1]["interrupt"], pair[0], pair[1]["position"]))
+    # Tiers and creation times compare across repos; registration order only breaks a
+    # tie between issues of the same tier created at the same moment.
+    candidates.sort(key=lambda pair: (pair[1]["sort_key"], pair[0]))
+    for _, candidate in candidates:
+        del candidate["sort_key"]
     caveat = f" Could not read the backlog of {', '.join(unreadable)}." if unreadable else ""
 
     if candidates:
@@ -1431,7 +1472,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
             f"{chosen['repo']}#{chosen['number']} is marked interrupt, so it leads the backlog."
             if chosen["interrupt"]
             else f"{chosen['repo']}#{chosen['number']} is the highest-ordered ready issue "
-            "with no open blockers."
+            f"with no open blockers (tier {chosen['tier']})."
         )
         result = {
             "issue": chosen,
