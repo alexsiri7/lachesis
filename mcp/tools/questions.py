@@ -74,6 +74,10 @@ async def ask_question(
     from ever being labelled without both its question comment and its record;
     a failure part-way is raised and leaves what already landed.
 
+    A ``budget`` question blocks nothing, so work continues within the existing
+    cap: it is refused with *blocks*, and its *context* must say what the extra
+    spend would deliver.
+
     Returns ``{"id", "comments": [{"issue", "url"}, ...]}``.
     """
     question = question.strip()
@@ -89,6 +93,10 @@ async def ask_question(
         raise ValueError(
             f"kind must be one of {', '.join(get_args(db.QuestionKind))}, got {kind!r}"
         )
+    if kind == "budget" and blocked:
+        raise ValueError("a budget question blocks no issue; name the work it delivers in context")
+    if kind == "budget" and not context:
+        raise ValueError("a budget question's context must say what the extra spend would deliver")
     user_id = _require_user_id()
     repo = await _resolve_repo(repo, require_registered=True)
 

@@ -559,6 +559,7 @@ def _question(question_id: int, **about: Any) -> dict[str, Any]:
     return {
         "id": question_id,
         "repo_name": _REPO,
+        "kind": "clarification",
         "spec_change": None,
         "milestone": None,
         "blocks": [],
@@ -674,6 +675,8 @@ async def test_open_questions_blocking_the_work(questions: AsyncMock) -> None:
         _question(3, spec_change=170),
         _question(4, blocks=[999], milestone="8", spec_change=171),
         {**_question(5, blocks=[232]), "repo_name": "someone/else"},
+        _question(6, kind="budget", milestone="7"),
+        _question(7, kind="budget", spec_change=170),
     ]
 
     review = await _review(

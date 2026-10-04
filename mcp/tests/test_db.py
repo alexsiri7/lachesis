@@ -381,8 +381,9 @@ def test_questions_migration_allows_exactly_the_question_kinds() -> None:
     from pathlib import Path
     from typing import get_args
 
-    migration = (Path(db.__file__).parent / "alembic/versions/009_questions.py").read_text()
-    check = re.search(r"\"kind IN \((.*?)\)\"", migration.replace('"\n            "', ""))
+    versions = Path(db.__file__).parent / "alembic/versions"
+    migration = (versions / "013_budget_questions.py").read_text()
+    check = re.search(r"\"kind IN \((.*?)\)\"", migration.replace('"\n        "', ""))
     assert check is not None
     assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.QuestionKind))
 

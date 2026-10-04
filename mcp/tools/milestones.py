@@ -397,6 +397,7 @@ def _blocking_questions(
         question
         for question in db.list_open_questions(user_id)
         if question["repo_name"] == repo
+        and question["kind"] != "budget"
         and (
             issues.intersection(question["blocks"])
             or question["milestone"] == str(milestone)
@@ -410,7 +411,8 @@ async def review_milestone(repo: str, milestone: int) -> dict[str, Any]:
 
     ``gaps`` holds the requirements its spec changes add or change that no issue
     names, the issues closed without a merged pull request, the spec changes merged
-    but not yet in production, and the open questions blocking its work.  Gaps are
+    but not yet in production, and the open questions blocking its work (a budget
+    question never does).  Gaps are
     only claimed about what was read: ``unreadable`` lists the spec changes that
     could not be, which are never clean.
     """

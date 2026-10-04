@@ -78,6 +78,9 @@ For any other decision only the author can make — a spec contradiction, large 
 maturity or an improvement — or one that blocks several issues, call ask_question.
 answer_question records the author's answer to a question by id, with its outcome, and
 releases every issue it blocked that no other open question still blocks.
+When spending on models outside the Claude allowance reaches its cap, ask a budget
+question saying in its context what the extra spend would deliver; it blocks no issue, so
+keep working within the cap.
 
 Agents do not message each other: they leave notes on the work. When you stop working on
 an issue, finished or not, call add_note on it with type handoff, saying what you did and

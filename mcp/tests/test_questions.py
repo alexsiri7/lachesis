@@ -191,6 +191,51 @@ async def test_a_question_blocking_nothing_is_only_recorded(
     assert httpx_mock.get_requests() == []
 
 
+async def test_asking_for_more_budget(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question, sent: AsyncMock
+) -> None:
+    """Scenario: Asking for more budget — stored with what it delivers, issue 160 not labelled."""
+    result = await ask_question(
+        "lachesis",
+        "Raise the spending cap to $40 this week?",
+        "budget",
+        "archon",
+        context="The extra spend would deliver #160 two days sooner.",
+        issue=160,
+    )
+
+    assert result == {"id": 7, "comments": []}
+    assert record_question.call_args.args[3] == "budget"
+    assert record_question.call_args.kwargs["context"] == (
+        "The extra spend would deliver #160 two days sooner."
+    )
+    assert record_question.call_args.kwargs["blocks"] == []
+    assert httpx_mock.get_requests() == []
+    sent.assert_awaited_once()
+    assert sent.call_args.kwargs["title"] == "Budget question on alexsiri7/lachesis"
+
+
+async def test_a_budget_question_blocking_an_issue_is_refused(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question
+) -> None:
+    with pytest.raises(ValueError, match="blocks no issue"):
+        await ask_question(
+            "lachesis", "More budget?", "budget", "archon", blocks=[160], context="Ships #160."
+        )
+
+    record_question.assert_not_called()
+    assert httpx_mock.get_requests() == []
+
+
+async def test_a_budget_question_must_say_what_the_spend_delivers(
+    set_user_id: str, registered: None, record_question
+) -> None:
+    with pytest.raises(ValueError, match="what the extra spend would deliver"):
+        await ask_question("lachesis", "More budget?", "budget", "archon", context=" ")
+
+    record_question.assert_not_called()
+
+
 async def test_a_blocked_issue_named_twice_is_asked_once(
     httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question
 ) -> None:
