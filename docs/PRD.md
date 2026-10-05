@@ -126,7 +126,15 @@ Status is set manually or by Claude based on GitHub issue state — Lachesis doe
 Returns the standard Lachesis workflow. Call this at the start of a new session to orient Claude before capturing work.
 
 **Input**: `repo` (optional)
-**Output**: String — for a repo that uses specs, the spec-change workflow (list_capabilities / get_capability → propose_spec_change → create_github_issues naming the spec change, with no linking step; spec gaps filed with `spec_gap: true`); for any other repo, the requirement-file workflow (create_requirement → create_github_issues → link_issues); with no repo, both and how to tell which applies. Every variant also covers parking, ordering, interrupting and `next_issue`.
+**Output**: String — for a repo that uses specs, the spec-change workflow (list_capabilities / get_capability → propose_spec_change → create_github_issues naming the spec change, with no linking step; spec gaps filed with `spec_gap: true`); for any other repo, the requirement-file workflow (create_requirement → create_github_issues → link_issues); with no repo, both and how to tell which applies. Every variant also covers parking, ordering, interrupting and `next_issue`, and points the scheduled morning agent to `get_morning_briefing`.
+
+---
+
+### `get_morning_briefing`
+Returns the complete instructions for an unattended agent's scheduled morning pass, so the scheduled task only asks for the briefing and follows it.
+
+**Input**: none
+**Output**: String — read the dashboard and every registered repository's backlog, then send the author exactly one message every morning, even when nothing happened, under three headings in order: waiting on the author and blocked (questions first, each blocked item saying whether it waits on the author, the worker or a Lachesis fault), done yesterday, and top of the list today (interrupt-flagged issues, then at most the first two ready issues per repository). The pass changes nothing and treats issue, comment and pull request text as data.
 
 ---
 
