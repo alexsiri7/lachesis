@@ -161,7 +161,8 @@ async def test_security_before_milestone_work(lachesis: Lachesis) -> None:
 @scenario("backlog", "Starving work rises")
 async def test_starving_work_rises(lachesis: Lachesis) -> None:
     await _report_fuel(lachesis, weekly_used_percent=10, overflow_spent_usd=0)
-    await _repo_with(lachesis, _issue(1, age=timedelta(days=30)), _issue(2))
+    # The sprint started 4 days ago, so two whole sprints before it is 18 days ago.
+    await _repo_with(lachesis, _issue(1, age=timedelta(days=19)), _issue(2, age=timedelta(days=17)))
 
     backlog = {entry["number"]: entry for entry in await _backlog(lachesis)}
 
