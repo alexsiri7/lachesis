@@ -428,25 +428,53 @@ mcp.tool(
         "is refused — the `model`, `tokens_in` and `tokens_out`, and its `kind` of work, "
         "one of triage, summarising, audit, tests, implementation, spec work. Give `cost_usd` "
         "when the model is paid per token, as on Requesty overflow runs; leave it out "
-        "for a run on the Claude allowance. Returns the stored report with its id and time."
+        "for a run on the Claude allowance, and give `account`, the registered Claude account "
+        "the run drew on (left out, the primary account). A report naming an account that is "
+        "not registered is refused. Returns the stored report with its id and time."
     ),
 )(fuel_tools.report_usage)
 
 mcp.tool(
     description=(
-        "Report the Claude account's fuel, whenever you check it and at least at the start "
-        "of every run: `weekly_used_percent` of the weekly Claude allowance used, "
-        "`weekly_resets_at` when it resets (ISO-8601 with timezone, within the next 7 days), "
-        "`shorter_limit_until` when a shorter limit is in force (leave it out otherwise), "
-        "and this week's Requesty overflow spending `overflow_spent_usd` against the "
-        "`overflow_cap_usd` the author set there. Replaces the previous report. Returns "
-        "fuel as read_fuel does."
+        "Register a Claude account the factory may use, or update a registered one: its "
+        "`name`, `share_percent` — how much of its weekly allowance the factory may use, 100 "
+        "for an account dedicated to the factory — and optionally `five_hour_pause_percent`, "
+        "at or above which use of its five-hour window no work is routed to it. The first "
+        "account registered is primary, the one sprints follow; `primary` true makes this one "
+        "primary instead. Returns the account."
+    ),
+)(fuel_tools.register_account)
+
+mcp.tool(
+    description=(
+        "Return the registered Claude accounts, the primary first, each with its name, "
+        "share_percent, five_hour_pause_percent and whether it is primary."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(fuel_tools.list_accounts)
+
+mcp.tool(
+    description=(
+        "Report a Claude account's fuel, whenever you check it and at least at the start "
+        "of every run: the registered `account` you run on (left out, the primary account, "
+        "registered as factory with a 100 percent share if none is), `weekly_used_percent` "
+        "of its weekly allowance used, `weekly_resets_at` when it resets (ISO-8601 with "
+        "timezone, within the next 7 days), `five_hour_used_percent` of its five-hour window "
+        "used, `shorter_limit_until` when a shorter limit is in force (leave it out "
+        "otherwise), and this week's Requesty overflow spending `overflow_spent_usd` against "
+        "the `overflow_cap_usd` the author set there; the primary account's overflow figures "
+        "are the ones read. Replaces that account's previous report only. Returns fuel as "
+        "read_fuel does."
     ),
 )(fuel_tools.report_fuel)
 
 mcp.tool(
     description=(
-        "Return what fuel is left: the latest reported Claude allowance use, when it resets "
+        "Return what fuel is left. `accounts` lists every registered Claude account with its "
+        "use, reset, reserve (20 percent of its share), `usable_percent` outside the reserve, "
+        "`emergency_usable_percent`, whether its five-hour window has `paused` it, and its "
+        "pace over its own week. At the top level, for the primary account: the latest "
+        "reported allowance use, when it resets "
         "and any shorter limit in force; this week's overflow spending against the Requesty "
         "cap; the reserve, 20 percent of the weekly allowance kept for security work and "
         "production incidents, and whether only it is left; and the pace — the share of the "

@@ -35,7 +35,6 @@ async def _fuel(
     )
 
 
-@SPEC_CHANGE
 @scenario("sprints", "Reading the sprint")
 async def test_reading_the_sprint(lachesis: Lachesis) -> None:
     await _ok(

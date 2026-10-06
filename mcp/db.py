@@ -14,8 +14,10 @@ Tables (all namespaced lachesis_):
   lachesis_questions      — questions for the author and the issues each one blocks
   lachesis_milestones     — milestones and when the author started or dropped them
   lachesis_milestone_spec_changes — the spec changes each milestone groups, one milestone each
-  lachesis_fuel           — the latest Claude allowance status and overflow spend reported
-                            for the account
+  lachesis_accounts       — the Claude accounts the factory may use: share, five-hour
+                            pause threshold, and which one is primary
+  lachesis_fuel           — the latest allowance status and overflow spend reported for
+                            each account
   lachesis_estimates      — the current token estimate of each issue, with its kind,
                             capability and confidence
   lachesis_run_outcomes   — failures reported against a run: rework, a retry or an
@@ -880,17 +882,21 @@ def record_usage_report(
     tokens_in: int,
     tokens_out: int,
     cost_usd: float | None,
+    account: str | None = None,
 ) -> dict[str, Any]:
-    """Store one run's usage on *issue* and its ``usage_reported`` event."""
+    """Store one run's usage on *issue* and its ``usage_reported`` event; *account* names
+    the Claude account a run on an allowance drew on."""
     if kind not in get_args(UsageKind):
         raise ValueError(f"kind must be one of {', '.join(get_args(UsageKind))}, got {kind!r}")
     sql = text(
         """
         INSERT INTO lachesis_usage_reports
-            (user_id, repo_name, issue, model, kind, tokens_in, tokens_out, cost_usd)
+            (user_id, repo_name, issue, model, kind, tokens_in, tokens_out, cost_usd, account)
         VALUES
-            (:user_id, :repo_name, :issue, :model, :kind, :tokens_in, :tokens_out, :cost_usd)
-        RETURNING id, repo_name, issue, model, kind, tokens_in, tokens_out, cost_usd, created_at
+            (:user_id, :repo_name, :issue, :model, :kind, :tokens_in, :tokens_out, :cost_usd,
+             :account)
+        RETURNING id, repo_name, issue, model, kind, tokens_in, tokens_out, cost_usd, account,
+            created_at
         """
     )
     params = {
@@ -902,6 +908,7 @@ def record_usage_report(
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "cost_usd": cost_usd,
+        "account": account,
     }
     with _engine().begin() as conn:
         row = conn.execute(sql, params).mappings().first()
@@ -1083,58 +1090,160 @@ def list_estimates(user_id: str) -> list[dict[str, Any]]:
 # lachesis_fuel
 # ---------------------------------------------------------------------------
 
-_FUEL_COLUMNS = """weekly_used_percent, weekly_resets_at, shorter_limit_until,
-    overflow_spent_usd, overflow_cap_usd, reported_at"""
+_FUEL_COLUMNS = """f.weekly_used_percent, f.weekly_resets_at, f.shorter_limit_until,
+    f.five_hour_used_percent, f.overflow_spent_usd, f.overflow_cap_usd, f.reported_at"""
+
+_ACCOUNT_COLUMNS = 'a.name, a.share_percent, a.five_hour_pause_percent, a.is_primary AS "primary"'
+
+
+def register_account(
+    user_id: str,
+    name: str,
+    share_percent: float,
+    five_hour_pause_percent: float | None,
+    primary: bool,
+) -> dict[str, Any]:
+    """Register the account *name*, or update it if it is registered.
+
+    The first account a user registers is primary whatever *primary* says; making an
+    account primary makes every other one not primary.
+    """
+    with _engine().begin() as conn:
+        has_primary = conn.execute(
+            text(
+                "SELECT 1 FROM lachesis_accounts a WHERE a.user_id = :user_id"
+                " AND a.is_primary AND a.name <> :name"
+            ),
+            {"user_id": user_id, "name": name},
+        ).first()
+        primary = primary or has_primary is None
+        if primary:
+            conn.execute(
+                text(
+                    "UPDATE lachesis_accounts SET is_primary = false"
+                    " WHERE user_id = :user_id AND name <> :name"
+                ),
+                {"user_id": user_id, "name": name},
+            )
+        row = (
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO lachesis_accounts AS a
+                        (user_id, name, share_percent, five_hour_pause_percent, is_primary)
+                    VALUES (:user_id, :name, :share_percent, :pause, :primary)
+                    ON CONFLICT (user_id, name) DO UPDATE
+                        SET share_percent = EXCLUDED.share_percent,
+                            five_hour_pause_percent = EXCLUDED.five_hour_pause_percent,
+                            is_primary = EXCLUDED.is_primary OR a.is_primary
+                    RETURNING {_ACCOUNT_COLUMNS}
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "name": name,
+                    "share_percent": share_percent,
+                    "pause": five_hour_pause_percent,
+                    "primary": primary,
+                },
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        raise RuntimeError(f"register_account returned no row for {name!r}")
+    return dict(row)
+
+
+def list_accounts(user_id: str) -> list[dict[str, Any]]:
+    """Return the user's registered accounts, the primary first, then by name."""
+    sql = text(
+        f"SELECT {_ACCOUNT_COLUMNS} FROM lachesis_accounts a WHERE a.user_id = :user_id"
+        " ORDER BY a.is_primary DESC, a.name"
+    )
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
 
 
 def set_fuel(
     user_id: str,
+    account: str,
     weekly_used_percent: float,
     weekly_resets_at: datetime,
     shorter_limit_until: datetime | None,
+    five_hour_used_percent: float | None,
     overflow_spent_usd: float,
     overflow_cap_usd: float,
 ) -> dict[str, Any]:
-    """Replace the account's fuel report with this one."""
+    """Replace the fuel report of the registered *account* with this one."""
     sql = text(
         f"""
-        INSERT INTO lachesis_fuel
-            (user_id, weekly_used_percent, weekly_resets_at, shorter_limit_until,
-             overflow_spent_usd, overflow_cap_usd)
-        VALUES
-            (:user_id, :weekly_used_percent, :weekly_resets_at, :shorter_limit_until,
-             :overflow_spent_usd, :overflow_cap_usd)
-        ON CONFLICT (user_id) DO UPDATE
-            SET weekly_used_percent = EXCLUDED.weekly_used_percent,
-                weekly_resets_at = EXCLUDED.weekly_resets_at,
-                shorter_limit_until = EXCLUDED.shorter_limit_until,
-                overflow_spent_usd = EXCLUDED.overflow_spent_usd,
-                overflow_cap_usd = EXCLUDED.overflow_cap_usd,
-                reported_at = now()
-        RETURNING {_FUEL_COLUMNS}
+        WITH stored AS (
+            INSERT INTO lachesis_fuel
+                (user_id, account_id, weekly_used_percent, weekly_resets_at,
+                 shorter_limit_until, five_hour_used_percent, overflow_spent_usd,
+                 overflow_cap_usd)
+            SELECT :user_id, a.id, :weekly_used_percent, :weekly_resets_at,
+                   :shorter_limit_until, :five_hour_used_percent, :overflow_spent_usd,
+                   :overflow_cap_usd
+            FROM lachesis_accounts a
+            WHERE a.user_id = :user_id AND a.name = :account
+            ON CONFLICT (account_id) DO UPDATE
+                SET weekly_used_percent = EXCLUDED.weekly_used_percent,
+                    weekly_resets_at = EXCLUDED.weekly_resets_at,
+                    shorter_limit_until = EXCLUDED.shorter_limit_until,
+                    five_hour_used_percent = EXCLUDED.five_hour_used_percent,
+                    overflow_spent_usd = EXCLUDED.overflow_spent_usd,
+                    overflow_cap_usd = EXCLUDED.overflow_cap_usd,
+                    reported_at = now()
+            RETURNING *
+        )
+        SELECT {_FUEL_COLUMNS}, {_ACCOUNT_COLUMNS}
+        FROM stored f JOIN lachesis_accounts a ON a.id = f.account_id
         """
     )
     params = {
         "user_id": user_id,
+        "account": account,
         "weekly_used_percent": weekly_used_percent,
         "weekly_resets_at": weekly_resets_at,
         "shorter_limit_until": shorter_limit_until,
+        "five_hour_used_percent": five_hour_used_percent,
         "overflow_spent_usd": overflow_spent_usd,
         "overflow_cap_usd": overflow_cap_usd,
     }
     with _engine().begin() as conn:
         row = conn.execute(sql, params).mappings().first()
     if row is None:
-        raise RuntimeError(f"set_fuel returned no row for user_id={user_id!r}")
+        raise RuntimeError(f"set_fuel returned no row for account {account!r}")
     return dict(row)
 
 
-def get_fuel(user_id: str) -> dict[str, Any] | None:
-    """Return the account's latest fuel report, or None if fuel was never reported."""
-    sql = text(f"SELECT {_FUEL_COLUMNS} FROM lachesis_fuel WHERE user_id = :user_id")
+def list_fuel(user_id: str) -> list[dict[str, Any]]:
+    """Return every registered account with its latest fuel report, the primary first.
+
+    An account never reported has its fuel columns null.
+    """
+    sql = text(
+        f"""
+        SELECT {_ACCOUNT_COLUMNS}, {_FUEL_COLUMNS}
+        FROM lachesis_accounts a LEFT JOIN lachesis_fuel f ON f.account_id = a.id
+        WHERE a.user_id = :user_id
+        ORDER BY a.is_primary DESC, a.name
+        """
+    )
     with _engine().connect() as conn:
-        row = conn.execute(sql, {"user_id": user_id}).mappings().first()
-    return None if row is None else dict(row)
+        return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
+
+
+def get_fuel(user_id: str) -> dict[str, Any] | None:
+    """Return the primary account's latest fuel report, or None if it was never reported.
+
+    The overflow figures are the primary account's: overflow is the factory's own spending,
+    so the overflow figures other accounts report are kept but not read.
+    """
+    primary = next((row for row in list_fuel(user_id) if row["primary"]), None)
+    return None if primary is None or primary["reported_at"] is None else primary
 
 
 # ---------------------------------------------------------------------------
