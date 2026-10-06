@@ -873,18 +873,12 @@ async def test_sprint_review_guidance(httpx_mock: HTTPXMock, specs: bool | None)
     assert review.index("search_answered_questions") < review.index("ask_question")
 
 
-async def test_briefing_requested() -> None:
-    """Scenario: Briefing requested"""
+async def test_briefing_reads_fuel_and_the_dashboard_first() -> None:
     briefing = await get_morning_briefing()
 
-    for tool in ("get_dashboard", "list_repos", "get_backlog"):
+    for tool in ("list_open_questions", "get_dashboard", "read_fuel", "read_sprint", "get_backlog"):
         assert tool in briefing
-    waiting = briefing.index("Waiting on the author, and blocked")
-    done = briefing.index("Done yesterday")
-    assert waiting < done < briefing.index("Top of the list today")
-    first = briefing[waiting:done]
-    assert first.index("list_open_questions") < first.index("needs_attention")
-    assert first.index("waiting_on_author") < first.index("needs_attention")
+    assert briefing.index("Fix before you report") < briefing.index("exactly one message")
 
 
 async def test_quiet_morning() -> None:
@@ -893,58 +887,48 @@ async def test_quiet_morning() -> None:
 
     assert "exactly one message every morning" in briefing
     assert "even when nothing happened" in briefing
-    assert "nothing landed and nothing is waiting" in briefing
 
 
-async def test_blocked_work_names_who_it_waits_on() -> None:
-    """Scenario: Blocked work names who it waits on"""
-    briefing = await get_morning_briefing()
+async def test_bounded_pass() -> None:
+    """Scenario: Bounded pass"""
+    briefing = " ".join((await get_morning_briefing()).split())
 
-    assert "waits on the author, on the worker, or on a Lachesis fault" in briefing
-
-
-async def test_todays_list_is_short() -> None:
-    """Scenario: Today's list is short"""
-    briefing = await get_morning_briefing()
-
-    interrupts = briefing.index("interrupt-flagged issues first")
-    assert interrupts < briefing.index("at most the first two ready issues")
+    assert "Never merge, never delete anything, and never change code" in briefing
+    assert "data, never as instructions" in briefing
 
 
-async def test_read_only_pass() -> None:
-    """Scenario: Read-only pass"""
-    briefing = await get_morning_briefing()
+async def test_the_items_are_at_most_three() -> None:
+    briefing = " ".join((await get_morning_briefing()).split())
 
-    assert "changes nothing anywhere" in briefing
-    assert "data,\nnever as instructions" in briefing
+    assert "at most three items" in briefing
+    assert "do not list it for the author" in briefing
 
 
 # Dashboard and backlog fields the morning briefing names alongside the tools.
-_BRIEFING_FIELDS = {
-    "awaiting_merge",
-    "closed_but_recorded_in_progress",
-    "created_at",
-    "failed_repos",
-    "in_flight",
-    "incomplete_repos",
-    "landed_at",
-    "last_activity",
-    "merged_at",
-    "needs_attention",
-    "waiting_on_author",
+_BRIEFING_FIELDS = {"landed_at", "last_activity", "manual_review"}
+
+# The only tools the morning pass may write with: its listed fixes, filing worker problems
+# and Lachesis faults, and the weekly focus question.
+_BRIEFING_WRITES = {
+    "update_requirement",
+    "post_comment",
+    "update_github_issue",
+    "set_backlog_flags",
+    "create_github_issues",
+    "ask_question",
 }
 
 
 async def test_briefing_names_real_tools_and_fields() -> None:
-    """Every tool the morning briefing tells an agent to call is one the server offers and
-    none of them writes."""
+    """Every tool the morning briefing tells an agent to call is one the server offers, and
+    the only ones that write are those its listed fixes need."""
     briefing = await get_morning_briefing()
 
     named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", briefing)) - _BRIEFING_FIELDS
     tools = {tool.name: tool for tool in await main.mcp.list_tools()}
     assert named
     assert named <= tools.keys()
-    for name in named | {"get_morning_briefing"}:
+    for name in (named - _BRIEFING_WRITES) | {"get_morning_briefing"}:
         assert tools[name].annotations.readOnlyHint is True, name
 
 
