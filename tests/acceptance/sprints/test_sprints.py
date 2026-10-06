@@ -10,7 +10,6 @@ import pytest
 from harness import Lachesis, scenario
 
 NOW = datetime.now(UTC)
-SPEC_CHANGE = pytest.mark.xfail(strict=True, reason="spec change #256")
 
 
 async def _ok(lachesis: Lachesis, tool: str, arguments: dict[str, Any]) -> Any:
@@ -53,7 +52,7 @@ async def test_reading_the_sprint(lachesis: Lachesis) -> None:
         assert key in sprint
 
 
-@SPEC_CHANGE
+@pytest.mark.xfail(strict=True, reason="spec change #256")
 @scenario("sprints", "Shared account adds to the budget")
 async def test_shared_account_adds_to_the_budget(lachesis: Lachesis) -> None:
     await _ok(
