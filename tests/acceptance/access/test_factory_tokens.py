@@ -19,7 +19,6 @@ def _as(lachesis: Lachesis, token: str) -> Lachesis:
     return Lachesis(lachesis.base_url, token, lachesis.github)
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #285")
 @scenario("access", "A script reports with its token")
 async def test_a_script_reports_with_its_token(lachesis: Lachesis) -> None:
     token = await _create(lachesis, "cron")
@@ -36,7 +35,6 @@ async def test_a_script_reports_with_its_token(lachesis: Lachesis) -> None:
     assert token not in listed.text
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #285")
 @scenario("access", "Revoked token")
 async def test_revoked_token(lachesis: Lachesis) -> None:
     token = await _create(lachesis, "cron")
@@ -52,7 +50,6 @@ async def test_revoked_token(lachesis: Lachesis) -> None:
     assert refused
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #285")
 @scenario("access", "A token cannot mint tokens")
 async def test_a_token_cannot_mint_tokens(lachesis: Lachesis) -> None:
     token = await _create(lachesis, "cron")

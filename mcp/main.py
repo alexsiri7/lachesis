@@ -23,6 +23,7 @@ from auth import (
     current_user_id,
     decode_jwt_ignoring_expiry,
     resolve_user_id_from_jwt,
+    via_factory_token,
 )
 from settings import settings
 from tools import contents as contents_tools
@@ -41,6 +42,7 @@ from tools import routing as routing_tools
 from tools import scorecard as scorecard_tools
 from tools import specs as spec_tools
 from tools import sprints as sprint_tools
+from tools import tokens as token_tools
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +414,30 @@ mcp.tool(
         "Returns the stored note with its id and time."
     ),
 )(note_tools.add_note)
+
+mcp.tool(
+    description=(
+        "Create a factory token named `name`: a key an unattended script presents as its "
+        "bearer token to act as the author until it is revoked. The `token` is returned "
+        "once and never again; only its hash is stored. Refused when called with a factory "
+        "token."
+    ),
+)(token_tools.create_factory_token)
+
+mcp.tool(
+    description=(
+        "List the active factory tokens by name, with when each was created and last used, "
+        "never their values."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(token_tools.list_factory_tokens)
+
+mcp.tool(
+    description=(
+        "Revoke the factory token named `name`: it is refused from then on. Refused when "
+        "called with a factory token."
+    ),
+)(token_tools.revoke_factory_token)
 
 mcp.tool(
     description=(
@@ -1054,6 +1080,18 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
             _apply_user_context(user_id, email, lachesis_uid)
             await app(scope, receive, send)
             return
+
+        if token.startswith(token_tools.TOKEN_PREFIX):
+            try:
+                factory = _db.resolve_factory_token(token_tools.token_hash(token))
+            except Exception as exc:
+                logger.warning("middleware: factory token lookup failed: %s", exc)
+                factory = None
+            if factory is not None:
+                _apply_user_context(factory["google_id"], factory["email"], factory["lachesis_uid"])
+                via_factory_token.set(True)
+                await app(scope, receive, send)
+                return
 
         # JWT failed validation — check if it's an expired (but otherwise valid) token
         if token:
