@@ -12,6 +12,17 @@ from auth import current_db_user_id
 from tools.fuel import fuel_status
 from tools.routing import prices, route, route_run
 
+
+@pytest.fixture(autouse=True)
+def _no_accounts_or_overflow():
+    """No registered accounts and no overflow report unless a test says otherwise."""
+    with (
+        patch("db.list_fuel", return_value=[]),
+        patch("db.get_overflow", return_value=None),
+    ):
+        yield
+
+
 _REPO = "alexsiri7/lachesis"
 _DEEPSEEK = "deepseek/deepseek-chat"
 _CLAUDE_PRICE = 5.0
@@ -239,6 +250,7 @@ async def test_route_run_routes_from_the_users_runs_issues_and_fuel(set_user_id:
         ) as list_all_issues,
         patch("tools.routing.db.get_fuel", return_value=row) as get_fuel,
         patch("tools.fuel.db.list_fuel", return_value=[]),
+        patch("db.get_overflow", return_value={"spent_usd": 12.0, "cap_usd": 40.0}),
     ):
         result = await route_run("triage")
 
@@ -297,3 +309,14 @@ def test_choose_account_holds_ordinary_work_for_pace_but_not_emergencies() -> No
     ahead = _status("main", within_pace=False)
     assert choose_account([ahead], False) == (None, True)
     assert choose_account([ahead], True) == (ahead, False)
+
+
+def test_overflow_never_reported_is_never_routed_to() -> None:
+    fuel = {
+        **fuel_status(None, _NOW),
+        "overflow": {"reported": False, "at_cap": False},
+    }
+    result = _route(_trusted(), fuel=fuel)
+
+    assert result["overflow_available"] is False
+    assert result["via"] != "requesty"

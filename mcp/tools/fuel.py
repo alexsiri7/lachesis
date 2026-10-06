@@ -119,24 +119,23 @@ def _parse_time(name: str, value: str) -> datetime:
 async def report_fuel(
     weekly_used_percent: float,
     weekly_resets_at: str,
-    overflow_spent_usd: float,
-    overflow_cap_usd: float,
+    overflow_spent_usd: float | None = None,
+    overflow_cap_usd: float | None = None,
     shorter_limit_until: str | None = None,
     account: str | None = None,
     five_hour_used_percent: float | None = None,
 ) -> dict[str, Any]:
-    """Record an account's latest allowance status and this week's Requesty overflow spend.
+    """Record an account's latest allowance status.
 
     *account* is the registered account reported on; left out, the primary account,
     which is registered as ``factory`` with a 100 percent share if no account is.
-    Replaces that account's previous report only. Returns fuel as :func:`read_fuel` does.
+    Replaces that account's previous report only. *overflow_spent_usd* and
+    *overflow_cap_usd* are accepted for older callers and ignored: only
+    :func:`report_overflow` changes the overflow figures. Returns fuel as
+    :func:`read_fuel` does.
     """
     _check_percent("weekly_used_percent", weekly_used_percent, allow_zero=True)
     _check_percent("five_hour_used_percent", five_hour_used_percent, allow_zero=True)
-    if overflow_spent_usd < 0:
-        raise ValueError(f"overflow_spent_usd must not be negative, got {overflow_spent_usd}")
-    if overflow_cap_usd < 0:
-        raise ValueError(f"overflow_cap_usd must not be negative, got {overflow_cap_usd}")
     resets_at = _parse_time("weekly_resets_at", weekly_resets_at)
     now = datetime.now(UTC)
     if not now < resets_at <= now + _WEEK:
@@ -163,10 +162,40 @@ async def report_fuel(
         resets_at,
         limit_until,
         five_hour_used_percent,
-        overflow_spent_usd,
-        overflow_cap_usd,
     )
     return _read(user_id)
+
+
+async def report_overflow(spent_usd: float, cap_usd: float) -> dict[str, Any]:
+    """Record the money spent through Requesty this sprint and the cap the author set
+    there, replacing the previous overflow report. Returns fuel as :func:`read_fuel` does.
+    """
+    if spent_usd < 0:
+        raise ValueError(f"spent_usd must not be negative, got {spent_usd}")
+    if cap_usd < 0:
+        raise ValueError(f"cap_usd must not be negative, got {cap_usd}")
+    user_id = _require_user_id()
+    db.set_overflow(user_id, spent_usd, cap_usd)
+    return _read(user_id)
+
+
+def overflow_status(spent: float | None, cap: float | None) -> dict[str, Any]:
+    """Return the overflow figures; until overflow is reported the cap is unknown."""
+    if cap is None or spent is None:
+        return {
+            "reported": False,
+            "spent_usd": None,
+            "cap_usd": None,
+            "left_usd": None,
+            "at_cap": False,
+        }
+    return {
+        "reported": True,
+        "spent_usd": spent,
+        "cap_usd": cap,
+        "left_usd": round(max(0.0, cap - spent), 2),
+        "at_cap": spent >= cap,
+    }
 
 
 def fuel_status(row: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
@@ -181,8 +210,6 @@ def fuel_status(row: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
     used = row["weekly_used_percent"]
     resets_at = row["weekly_resets_at"]
     limit_until = row["shorter_limit_until"]
-    spent = row["overflow_spent_usd"]
-    cap = row["overflow_cap_usd"]
     outside_reserve = 100 - RESERVE_PERCENT
     current = now < resets_at
     pace = None
@@ -203,12 +230,7 @@ def fuel_status(row: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
             "left_outside_reserve_percent": round(max(0.0, outside_reserve - used), 2),
             "only_reserve_left": used >= outside_reserve,
         },
-        "overflow": {
-            "spent_usd": spent,
-            "cap_usd": cap,
-            "left_usd": round(max(0.0, cap - spent), 2),
-            "at_cap": spent >= cap,
-        },
+        "overflow": overflow_status(row["overflow_spent_usd"], row["overflow_cap_usd"]),
         "pace": pace,
     }
 
@@ -265,13 +287,25 @@ def accounts_status(user_id: str, now: datetime) -> list[dict[str, Any]]:
     return [account_status(row, now) for row in db.list_fuel(user_id)]
 
 
+def read(user_id: str, now: datetime) -> dict[str, Any]:
+    """Return fuel at *now*: the primary account's figures at the top level, the overflow
+    figures whoever reported, and every account's status."""
+    overflow = db.get_overflow(user_id)
+    return {
+        **fuel_status(db.get_fuel(user_id), now),
+        "overflow": overflow_status(
+            overflow["spent_usd"] if overflow else None, overflow["cap_usd"] if overflow else None
+        ),
+        "accounts": accounts_status(user_id, now),
+    }
+
+
 def _read(user_id: str) -> dict[str, Any]:
-    now = datetime.now(UTC)
-    return {**fuel_status(db.get_fuel(user_id), now), "accounts": accounts_status(user_id, now)}
+    return read(user_id, datetime.now(UTC))
 
 
 async def read_fuel() -> dict[str, Any]:
     """Return what fuel is left: every account's status with its reserve, pause and pace,
-    the overflow spending against the cap, and, at the top level, the primary account's
-    allowance and pace."""
+    the overflow spending against the cap as last reported, and, at the top level, the
+    primary account's allowance and pace."""
     return _read(_require_user_id())

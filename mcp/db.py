@@ -16,8 +16,8 @@ Tables (all namespaced lachesis_):
   lachesis_milestone_spec_changes — the spec changes each milestone groups, one milestone each
   lachesis_accounts       — the Claude accounts the factory may use: share, five-hour
                             pause threshold, and which one is primary
-  lachesis_fuel           — the latest allowance status and overflow spend reported for
-                            each account
+  lachesis_fuel           — the latest allowance status reported for each account
+  lachesis_overflow       — the latest Requesty overflow spend and cap reported
   lachesis_estimates      — the current token estimate of each issue, with its kind,
                             capability and confidence
   lachesis_run_outcomes   — failures reported against a run: rework, a retry or an
@@ -996,7 +996,7 @@ def list_runs(
     sql = text(
         """
         SELECT r.id, r.repo_name, r.issue, r.model, r.kind,
-               r.tokens_in, r.tokens_out, r.cost_usd,
+               r.tokens_in, r.tokens_out, r.cost_usd, r.account,
                COUNT(o.id) FILTER (WHERE o.outcome = 'rework') AS rework,
                COUNT(o.id) FILTER (WHERE o.outcome = 'retry') AS retries,
                COUNT(o.id) FILTER (WHERE o.outcome = 'audit_finding') AS audit_findings
@@ -1091,7 +1091,7 @@ def list_estimates(user_id: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 _FUEL_COLUMNS = """f.weekly_used_percent, f.weekly_resets_at, f.shorter_limit_until,
-    f.five_hour_used_percent, f.overflow_spent_usd, f.overflow_cap_usd, f.reported_at"""
+    f.five_hour_used_percent, f.reported_at"""
 
 _ACCOUNT_COLUMNS = 'a.name, a.share_percent, a.five_hour_pause_percent, a.is_primary AS "primary"'
 
@@ -1172,8 +1172,6 @@ def set_fuel(
     weekly_resets_at: datetime,
     shorter_limit_until: datetime | None,
     five_hour_used_percent: float | None,
-    overflow_spent_usd: float,
-    overflow_cap_usd: float,
 ) -> dict[str, Any]:
     """Replace the fuel report of the registered *account* with this one."""
     sql = text(
@@ -1181,11 +1179,9 @@ def set_fuel(
         WITH stored AS (
             INSERT INTO lachesis_fuel
                 (user_id, account_id, weekly_used_percent, weekly_resets_at,
-                 shorter_limit_until, five_hour_used_percent, overflow_spent_usd,
-                 overflow_cap_usd)
+                 shorter_limit_until, five_hour_used_percent)
             SELECT :user_id, a.id, :weekly_used_percent, :weekly_resets_at,
-                   :shorter_limit_until, :five_hour_used_percent, :overflow_spent_usd,
-                   :overflow_cap_usd
+                   :shorter_limit_until, :five_hour_used_percent
             FROM lachesis_accounts a
             WHERE a.user_id = :user_id AND a.name = :account
             ON CONFLICT (account_id) DO UPDATE
@@ -1193,8 +1189,6 @@ def set_fuel(
                     weekly_resets_at = EXCLUDED.weekly_resets_at,
                     shorter_limit_until = EXCLUDED.shorter_limit_until,
                     five_hour_used_percent = EXCLUDED.five_hour_used_percent,
-                    overflow_spent_usd = EXCLUDED.overflow_spent_usd,
-                    overflow_cap_usd = EXCLUDED.overflow_cap_usd,
                     reported_at = now()
             RETURNING *
         )
@@ -1209,8 +1203,6 @@ def set_fuel(
         "weekly_resets_at": weekly_resets_at,
         "shorter_limit_until": shorter_limit_until,
         "five_hour_used_percent": five_hour_used_percent,
-        "overflow_spent_usd": overflow_spent_usd,
-        "overflow_cap_usd": overflow_cap_usd,
     }
     with _engine().begin() as conn:
         row = conn.execute(sql, params).mappings().first()
@@ -1236,14 +1228,51 @@ def list_fuel(user_id: str) -> list[dict[str, Any]]:
         return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
 
 
-def get_fuel(user_id: str) -> dict[str, Any] | None:
-    """Return the primary account's latest fuel report, or None if it was never reported.
+def set_overflow(user_id: str, spent_usd: float, cap_usd: float) -> dict[str, Any]:
+    """Replace the user's overflow report: the money spent through Requesty this sprint
+    and the cap the author set there."""
+    sql = text(
+        """
+        INSERT INTO lachesis_overflow (user_id, spent_usd, cap_usd)
+        VALUES (:user_id, :spent_usd, :cap_usd)
+        ON CONFLICT (user_id) DO UPDATE
+            SET spent_usd = EXCLUDED.spent_usd,
+                cap_usd = EXCLUDED.cap_usd,
+                reported_at = now()
+        RETURNING spent_usd, cap_usd, reported_at
+        """
+    )
+    params = {"user_id": user_id, "spent_usd": spent_usd, "cap_usd": cap_usd}
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    if row is None:
+        raise RuntimeError(f"set_overflow returned no row for user_id={user_id!r}")
+    return dict(row)
 
-    The overflow figures are the primary account's: overflow is the factory's own spending,
-    so the overflow figures other accounts report are kept but not read.
-    """
+
+def get_overflow(user_id: str) -> dict[str, Any] | None:
+    """Return the user's latest overflow report, or None if overflow was never reported."""
+    sql = text(
+        "SELECT spent_usd, cap_usd, reported_at FROM lachesis_overflow WHERE user_id = :user_id"
+    )
+    with _engine().connect() as conn:
+        row = conn.execute(sql, {"user_id": user_id}).mappings().first()
+    return None if row is None else dict(row)
+
+
+def get_fuel(user_id: str) -> dict[str, Any] | None:
+    """Return the primary account's latest fuel report with the overflow figures, which
+    are None until overflow is reported, or None if the primary account was never
+    reported."""
     primary = next((row for row in list_fuel(user_id) if row["primary"]), None)
-    return None if primary is None or primary["reported_at"] is None else primary
+    if primary is None or primary["reported_at"] is None:
+        return None
+    overflow = get_overflow(user_id)
+    return {
+        **primary,
+        "overflow_spent_usd": overflow["spent_usd"] if overflow else None,
+        "overflow_cap_usd": overflow["cap_usd"] if overflow else None,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -11,11 +11,24 @@ from auth import current_db_user_id
 from tools.fuel import (
     account_status,
     fuel_status,
+    overflow_status,
     read_fuel,
     register_account,
     report_fuel,
+    report_overflow,
     report_usage,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_accounts_or_overflow():
+    """No registered accounts and no overflow report unless a test says otherwise."""
+    with (
+        patch("db.list_fuel", return_value=[]),
+        patch("db.get_overflow", return_value=None),
+    ):
+        yield
+
 
 _REGISTERED = [{"id": "r1", "repo_name": "alexsiri7/lachesis", "created_at": "t"}]
 
@@ -183,7 +196,13 @@ def test_reading_fuel_returns_both_figures_with_the_reset_time_and_the_reserve()
     assert allowance["reserve_percent"] == 20
     assert allowance["left_outside_reserve_percent"] == 20
     assert allowance["only_reserve_left"] is False
-    assert result["overflow"] == {"spent_usd": 12, "cap_usd": 40, "left_usd": 28, "at_cap": False}
+    assert result["overflow"] == {
+        "reported": True,
+        "spent_usd": 12,
+        "cap_usd": 40,
+        "left_usd": 28,
+        "at_cap": False,
+    }
 
 
 def test_an_early_burst_is_outside_the_pace() -> None:
@@ -236,7 +255,18 @@ async def test_nothing_reported(set_user_id: str) -> None:
         patch("tools.fuel.db.get_fuel", return_value=None) as get,
         patch("tools.fuel.db.list_fuel", return_value=[]),
     ):
-        assert await read_fuel() == {"reported": False, "reserve_percent": 20.0, "accounts": []}
+        assert await read_fuel() == {
+            "reported": False,
+            "reserve_percent": 20.0,
+            "overflow": {
+                "reported": False,
+                "spent_usd": None,
+                "cap_usd": None,
+                "left_usd": None,
+                "at_cap": False,
+            },
+            "accounts": [],
+        }
     get.assert_called_once_with("test-uid")
 
 
@@ -254,7 +284,7 @@ async def test_report_fuel_stores_the_status(set_user_id: str) -> None:
             60, resets_at.isoformat(), 12, 40, shorter_limit_until=limit_until.isoformat()
         )
 
-    store.assert_called_once_with("test-uid", "factory", 60, resets_at, limit_until, None, 12, 40)
+    store.assert_called_once_with("test-uid", "factory", 60, resets_at, limit_until, None)
     assert result["reported"] is True
     assert result["allowance"]["resets_at"] == resets_at
 
@@ -275,7 +305,7 @@ async def test_report_fuel_accepts_a_shorter_limit_that_has_already_lifted(
             60, resets_at.isoformat(), 12, 40, shorter_limit_until=lifted_at.isoformat()
         )
 
-    store.assert_called_once_with("test-uid", "factory", 60, resets_at, lifted_at, None, 12, 40)
+    store.assert_called_once_with("test-uid", "factory", 60, resets_at, lifted_at, None)
     assert result["reported"] is True
 
 
@@ -288,8 +318,6 @@ def _in_days(days: float) -> str:
     [
         ((-1, _in_days(3), 12, 40), {}, "weekly_used_percent"),
         ((101, _in_days(3), 12, 40), {}, "weekly_used_percent"),
-        ((60, _in_days(3), -1, 40), {}, "overflow_spent_usd"),
-        ((60, _in_days(3), 12, -1), {}, "overflow_cap_usd"),
         ((60, "2026-10-11T09:00:00", 12, 40), {}, "weekly_resets_at"),
         ((60, "next tuesday", 12, 40), {}, "weekly_resets_at"),
         ((60, _in_days(-1), 12, 40), {}, "weekly_resets_at"),
@@ -333,7 +361,7 @@ async def test_report_fuel_names_the_account_and_its_five_hour_window(
             20, resets_at.isoformat(), 0, 40, account=" main ", five_hour_used_percent=35
         )
 
-    store.assert_called_once_with("test-uid", "main", 20, resets_at, None, 35, 0, 40)
+    store.assert_called_once_with("test-uid", "main", 20, resets_at, None, 35)
 
 
 async def test_report_fuel_refuses_an_unregistered_account(
@@ -421,3 +449,47 @@ def test_an_account_never_reported_or_reset_counts_as_unused() -> None:
 
     assert never["used_percent"] == 0 and never["usable_percent"] == 52
     assert reset["used_percent"] == 0 and reset["current"] is False
+
+
+async def test_report_fuel_ignores_overflow_figures(set_user_id: str, accounts: None) -> None:
+    resets_at = (datetime.now(UTC) + timedelta(days=3)).replace(microsecond=0)
+    with (
+        patch("tools.fuel.db.set_fuel"),
+        patch("tools.fuel.db.set_overflow") as set_overflow,
+    ):
+        await report_fuel(20, resets_at.isoformat(), 12, 40, account="main")
+
+    set_overflow.assert_not_called()
+
+
+async def test_report_overflow_stores_spending_and_cap(set_user_id: str) -> None:
+    with (
+        patch("tools.fuel.db.set_overflow") as store,
+        patch("tools.fuel.db.get_overflow", return_value={"spent_usd": 3.0, "cap_usd": 10.0}),
+        patch("tools.fuel.db.get_fuel", return_value=None),
+    ):
+        result = await report_overflow(3, 10)
+
+    store.assert_called_once_with("test-uid", 3, 10)
+    assert result["overflow"]["cap_usd"] == 10
+    assert result["overflow"]["left_usd"] == 7
+
+
+@pytest.mark.parametrize(("spent", "cap", "field"), [(-1, 10, "spent_usd"), (1, -1, "cap_usd")])
+async def test_report_overflow_refuses_negative_amounts(
+    set_user_id: str, spent: float, cap: float, field: str
+) -> None:
+    with patch("tools.fuel.db.set_overflow") as store, pytest.raises(ValueError, match=field):
+        await report_overflow(spent, cap)
+
+    store.assert_not_called()
+
+
+def test_overflow_never_reported_has_no_cap_and_is_not_at_it() -> None:
+    assert overflow_status(None, None) == {
+        "reported": False,
+        "spent_usd": None,
+        "cap_usd": None,
+        "left_usd": None,
+        "at_cap": False,
+    }

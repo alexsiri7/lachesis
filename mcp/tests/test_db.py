@@ -835,7 +835,7 @@ def test_set_fuel_replaces_the_accounts_report() -> None:
     row = {"weekly_used_percent": 60.0, "weekly_resets_at": resets_at}
     mock = _mock_engine([row])
     with patch("db._engine", return_value=mock):
-        result = db.set_fuel("uid", "main", 60.0, resets_at, None, 35.0, 12.0, 40.0)
+        result = db.set_fuel("uid", "main", 60.0, resets_at, None, 35.0)
 
     assert result == row
     mock.begin.assert_called_once()
@@ -849,8 +849,6 @@ def test_set_fuel_replaces_the_accounts_report() -> None:
         "weekly_resets_at": resets_at,
         "shorter_limit_until": None,
         "five_hour_used_percent": 35.0,
-        "overflow_spent_usd": 12.0,
-        "overflow_cap_usd": 40.0,
     }
 
 
@@ -862,8 +860,15 @@ def test_get_fuel_is_the_primary_accounts_report() -> None:
         {"name": "factory", "primary": True, "reported_at": now, "weekly_used_percent": 60.0},
         {"name": "main", "primary": False, "reported_at": now, "weekly_used_percent": 20.0},
     ]
-    with patch("db.list_fuel", return_value=rows):
-        assert db.get_fuel("uid") == rows[0]
+    with (
+        patch("db.list_fuel", return_value=rows),
+        patch("db.get_overflow", return_value={"spent_usd": 3.0, "cap_usd": 10.0}),
+    ):
+        assert db.get_fuel("uid") == {
+            **rows[0],
+            "overflow_spent_usd": 3.0,
+            "overflow_cap_usd": 10.0,
+        }
     with patch("db.list_fuel", return_value=[{**rows[0], "reported_at": None}, rows[1]]):
         assert db.get_fuel("uid") is None
 
@@ -1107,3 +1112,24 @@ def test_sprint_reports_migration_keeps_one_report_per_sprint() -> None:
     migration = (Path(db.__file__).parent / "alembic/versions/019_sprint_reports.py").read_text()
     assert 'sa.UniqueConstraint("user_id", "sprint_end"' in migration
     assert 'down_revision: str | None = "018"' in migration
+
+
+def test_set_overflow_replaces_the_users_overflow_report() -> None:
+    row = {"spent_usd": 3.0, "cap_usd": 10.0}
+    mock = _mock_engine([row])
+    with patch("db._engine", return_value=mock):
+        assert db.set_overflow("uid", 3.0, 10.0) == row
+
+    sql, params = mock.begin.return_value.execute.call_args[0]
+    assert "INSERT INTO lachesis_overflow" in str(sql)
+    assert "ON CONFLICT (user_id)" in str(sql)
+    assert params == {"user_id": "uid", "spent_usd": 3.0, "cap_usd": 10.0}
+
+
+def test_overflow_migration_moves_the_primary_accounts_figures() -> None:
+    from pathlib import Path
+
+    migration = (Path(db.__file__).parent / "alembic/versions/021_overflow.py").read_text()
+    assert "WHERE a.is_primary" in migration
+    assert 'op.drop_column("lachesis_fuel", "overflow_cap_usd")' in migration
+    assert 'down_revision: str | None = "020"' in migration

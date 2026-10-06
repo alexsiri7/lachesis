@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -118,7 +116,6 @@ async def test_run_on_a_shared_account(lachesis: Lachesis) -> None:
     assert unknown.is_error
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Reading fuel")
 async def test_reading_fuel(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -139,7 +136,6 @@ async def test_reading_fuel(lachesis: Lachesis) -> None:
     assert fuel["overflow"]["cap_usd"] == 40
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Reports do not overwrite each other")
 async def test_reports_do_not_overwrite_each_other(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -150,7 +146,6 @@ async def test_reports_do_not_overwrite_each_other(lachesis: Lachesis) -> None:
     assert _account(await _ok(lachesis, "read_fuel", {}), "factory")["used_percent"] == 60
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Only emergencies use the reserve")
 async def test_only_emergencies_use_the_reserve(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -166,7 +161,6 @@ async def test_only_emergencies_use_the_reserve(lachesis: Lachesis) -> None:
     assert emergency["account"] in {"factory", "main"}
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "The share is never exceeded")
 async def test_the_share_is_never_exceeded(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -178,7 +172,6 @@ async def test_the_share_is_never_exceeded(lachesis: Lachesis) -> None:
     assert routed["account"] != "main"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Five-hour window too full")
 async def test_five_hour_window_too_full(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -192,7 +185,6 @@ async def test_five_hour_window_too_full(lachesis: Lachesis) -> None:
     assert _account(fuel, "main")["paused"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Reaching the cap")
 async def test_reaching_the_cap(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -206,7 +198,6 @@ async def test_reaching_the_cap(lachesis: Lachesis) -> None:
     assert "cap" in routed["reason"]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Early burst held back")
 async def test_early_burst_held_back(lachesis: Lachesis) -> None:
     # Two days into main's week (it resets in five): its usable share outside the
@@ -222,7 +213,6 @@ async def test_early_burst_held_back(lachesis: Lachesis) -> None:
     assert routed["account"] != "main"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Account reports leave overflow alone")
 async def test_account_reports_leave_overflow_alone(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -253,7 +243,6 @@ def _closed_issue(number: int) -> dict[str, Any]:
     }
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Overflow never reported")
 async def test_overflow_never_reported(lachesis: Lachesis) -> None:
     # A cheap model trusted for triage: five clean triage runs on closed issues.
