@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -32,21 +34,21 @@ async def _report(
     used: float,
     *,
     five_hour: float | None = None,
-    spent: float = 0,
-    cap: float = 40,
     resets_in: timedelta = timedelta(days=3),
 ) -> Any:
     arguments: dict[str, Any] = {
         "weekly_used_percent": used,
         "weekly_resets_at": (NOW + resets_in).isoformat(),
-        "overflow_spent_usd": spent,
-        "overflow_cap_usd": cap,
     }
     if account is not None:
         arguments["account"] = account
     if five_hour is not None:
         arguments["five_hour_used_percent"] = five_hour
     return await _ok(lachesis, "report_fuel", arguments)
+
+
+async def _overflow(lachesis: Lachesis, spent: float, cap: float) -> Any:
+    return await _ok(lachesis, "report_overflow", {"spent_usd": spent, "cap_usd": cap})
 
 
 def _account(fuel: dict[str, Any], name: str) -> dict[str, Any]:
@@ -116,11 +118,13 @@ async def test_run_on_a_shared_account(lachesis: Lachesis) -> None:
     assert unknown.is_error
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Reading fuel")
 async def test_reading_fuel(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
-    await _report(lachesis, "factory", 60, spent=12, cap=40)
+    await _report(lachesis, "factory", 60)
     await _report(lachesis, "main", 20)
+    await _overflow(lachesis, 12, 40)
 
     fuel = await _ok(lachesis, "read_fuel", {})
 
@@ -135,6 +139,7 @@ async def test_reading_fuel(lachesis: Lachesis) -> None:
     assert fuel["overflow"]["cap_usd"] == 40
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Reports do not overwrite each other")
 async def test_reports_do_not_overwrite_each_other(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -145,10 +150,12 @@ async def test_reports_do_not_overwrite_each_other(lachesis: Lachesis) -> None:
     assert _account(await _ok(lachesis, "read_fuel", {}), "factory")["used_percent"] == 60
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Only emergencies use the reserve")
 async def test_only_emergencies_use_the_reserve(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
-    await _report(lachesis, "factory", 85, spent=40, cap=40)
+    await _overflow(lachesis, 40, 40)
+    await _report(lachesis, "factory", 85)
     await _report(lachesis, "main", 55)
 
     ordinary = await _route(lachesis, "implementation")
@@ -159,6 +166,7 @@ async def test_only_emergencies_use_the_reserve(lachesis: Lachesis) -> None:
     assert emergency["account"] in {"factory", "main"}
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "The share is never exceeded")
 async def test_the_share_is_never_exceeded(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -170,6 +178,7 @@ async def test_the_share_is_never_exceeded(lachesis: Lachesis) -> None:
     assert routed["account"] != "main"
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Five-hour window too full")
 async def test_five_hour_window_too_full(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -183,10 +192,12 @@ async def test_five_hour_window_too_full(lachesis: Lachesis) -> None:
     assert _account(fuel, "main")["paused"] is True
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Reaching the cap")
 async def test_reaching_the_cap(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
-    await _report(lachesis, "factory", 80, spent=40, cap=40)
+    await _overflow(lachesis, 40, 40)
+    await _report(lachesis, "factory", 80)
     await _report(lachesis, "main", 52)
 
     routed = await _route(lachesis, "implementation")
@@ -195,6 +206,7 @@ async def test_reaching_the_cap(lachesis: Lachesis) -> None:
     assert "cap" in routed["reason"]
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #269")
 @scenario("fuel", "Early burst held back")
 async def test_early_burst_held_back(lachesis: Lachesis) -> None:
     # Two days into main's week (it resets in five): its usable share outside the
@@ -208,3 +220,64 @@ async def test_early_burst_held_back(lachesis: Lachesis) -> None:
 
     assert _account(fuel, "main")["within_pace"] is False
     assert routed["account"] != "main"
+
+
+@pytest.mark.xfail(strict=True, reason="spec change #269")
+@scenario("fuel", "Account reports leave overflow alone")
+async def test_account_reports_leave_overflow_alone(lachesis: Lachesis) -> None:
+    await _two_accounts(lachesis)
+    await _overflow(lachesis, 12, 40)
+
+    await _report(lachesis, "main", 20)
+
+    overflow = (await _ok(lachesis, "read_fuel", {}))["overflow"]
+    assert overflow["spent_usd"] == 12
+    assert overflow["cap_usd"] == 40
+
+
+def _closed_issue(number: int) -> dict[str, Any]:
+    return {
+        "number": number,
+        "id": 2000 + number,
+        "node_id": f"I_{number}",
+        "title": f"Issue {number}",
+        "body": "",
+        "state": "closed",
+        "labels": [],
+        "assignees": [],
+        "html_url": f"https://github.com/{REPO}/issues/{number}",
+        "created_at": (NOW - timedelta(days=2)).isoformat(),
+        "updated_at": (NOW - timedelta(days=1)).isoformat(),
+        "closed_at": (NOW - timedelta(days=1)).isoformat(),
+        "state_reason": "completed",
+    }
+
+
+@pytest.mark.xfail(strict=True, reason="spec change #269")
+@scenario("fuel", "Overflow never reported")
+async def test_overflow_never_reported(lachesis: Lachesis) -> None:
+    # A cheap model trusted for triage: five clean triage runs on closed issues.
+    await lachesis.call_tool("register_repo", {"repo": REPO})
+    lachesis.github.on("GET", f"/repos/{REPO}/issues", json=[_closed_issue(n) for n in range(1, 6)])
+    for number in range(1, 6):
+        await _ok(
+            lachesis,
+            "report_usage",
+            {
+                "repo": REPO,
+                "issue": number,
+                "model": "deepseek/deepseek-chat",
+                "kind": "triage",
+                "tokens_in": 10_000,
+                "tokens_out": 1_000,
+                "cost_usd": 0.001,
+            },
+        )
+    await _two_accounts(lachesis)
+    await _report(lachesis, "factory", 85)
+    await _report(lachesis, "main", 55)
+
+    routed = await _route(lachesis, "triage")
+
+    assert routed["via"] != "requesty"
+    assert routed["model"] != "deepseek/deepseek-chat"
