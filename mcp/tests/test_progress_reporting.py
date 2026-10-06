@@ -779,6 +779,51 @@ async def test_a_pull_request_linked_in_place_of_an_issue(httpx_mock: HTTPXMock)
     assert requirement["derived"]["status"] == "done"
 
 
+async def test_a_refused_check_status_does_not_stop_the_later_batches(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A token that may not read commit statuses is refused one field in the first batch;
+    the issues in the batches after it are still read (#249)."""
+    from github import _ISSUE_ACTIVITY_CHUNK, get_issue_activity
+
+    first = list(range(1, _ISSUE_ACTIVITY_CHUNK + 1))
+    later = _ISSUE_ACTIVITY_CHUNK + 1
+    refused = {
+        "type": "FORBIDDEN",
+        "path": [
+            "repository",
+            "i1",
+            "closedByPullRequestsReferences",
+            "nodes",
+            0,
+            "commits",
+            "nodes",
+            0,
+            "commit",
+            "statusCheckRollup",
+        ],
+        "message": "Resource not accessible by personal access token",
+    }
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={
+            "data": {"repository": {f"i{n}": _issue_node(n, state="OPEN") for n in first}},
+            "errors": [refused],
+        },
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {f"i{later}": _issue_node(later, state="OPEN")}}},
+    )
+
+    activity = await get_issue_activity("owner/repo", [*first, later])
+
+    assert activity["failure"] is None
+    assert later in activity["facts"]
+
+
 async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
     repos = [{"repo_name": "owner/specs"}, {"repo_name": "owner/quiet"}, {"repo_name": "owner/app"}]
     with (

@@ -1275,13 +1275,34 @@ def _missing_node(error: dict[str, Any]) -> bool:
     )
 
 
+def _field_refused(error: dict[str, Any]) -> bool:
+    """True when an error refuses only one field inside an issue or pull request.
+
+    A token without read access to, say, commit statuses gets a ``FORBIDDEN`` at
+    ``["repository", "i151", "closedByPullRequestsReferences", ..., "statusCheckRollup"]``
+    while the rest of the node reads, and GitHub returns that field as null. Only the
+    field is unknown; the repo is not inaccessible.
+    """
+    path = error.get("path") or []
+    return (
+        error.get("type") == "FORBIDDEN"
+        and len(path) > 2
+        and path[0] == "repository"
+        and bool(_NODE_ALIAS.fullmatch(str(path[1])))
+    )
+
+
 def _graphql_failure(errors: list[dict[str, Any]]) -> ActivityFailure | None:
-    """Classify what is left of *errors* once the merely-missing issues are dropped.
+    """Classify what is left of *errors* once the merely-missing issues and the
+    refusals of single fields are dropped.
 
     Dropping those first is load-bearing: classified the other way round, one
-    linked number that is a pull request marks its whole repo unreadable.
+    linked number that is a pull request, or one check status the token may not
+    read, marks its whole repo unreadable.
     """
-    remaining = [error for error in errors if not _missing_node(error)]
+    remaining = [
+        error for error in errors if not _missing_node(error) and not _field_refused(error)
+    ]
     if not remaining:
         return None
     types = {error.get("type") for error in remaining}
