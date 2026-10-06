@@ -8,7 +8,7 @@ Progress reporting answers what happened to the work: what landed, what was drop
 
 ### Requirement: Status is derived from the work
 
-For every unit of work, the system SHALL derive a status from its issues and their pull requests: "done" when every issue closed with a merged pull request and, for a spec change, every scenario it adds or modifies passes on the default branch; "in-progress" when work has started but not finished; and none when it has no issues. For a spec change, its issues SHALL be those whose reference block names it; for a requirement file, those linked to it. The system SHALL say where the derived status came from: the issues, no issues, or GitHub being unreadable, with the cause.
+For every unit of work, the system SHALL derive a status from its issues and their pull requests: "done" when every issue closed with a merged pull request and, for a spec change, every scenario it adds or modifies passes on the default branch; "in-progress" when work has started but not finished; and none when it has no issues.
 
 #### Scenario: Spec change fully built
 - GIVEN merged spec change #152
@@ -17,17 +17,21 @@ For every unit of work, the system SHALL derive a status from its issues and the
 - WHEN progress is reported
 - THEN spec change #152 is "done"
 
-#### Scenario: Requirement file shipped but never updated
-- GIVEN a requirement file recorded as "idea"
-- AND all its linked issues closed with merged pull requests
-- WHEN it is listed
-- THEN its derived status is "done"
-
 #### Scenario: Built but not yet passing
 - GIVEN every issue for spec change #170 closed with a merged pull request
 - AND one of its scenarios is still expected to fail on the default branch
 - WHEN progress is reported
 - THEN #170 is "in-progress" and names the scenario still pending
+
+### Requirement: Derived status says what it was read from
+
+For a spec change, its issues SHALL be those whose reference block names it; for a requirement file, those linked to it. The system SHALL say where the derived status came from: the issues, no issues, or GitHub being unreadable, with the cause.
+
+#### Scenario: Requirement file shipped but never updated
+- GIVEN a requirement file recorded as "idea"
+- AND all its linked issues closed with merged pull requests
+- WHEN it is listed
+- THEN its derived status is "done"
 
 ### Requirement: Scenario results are visible per capability
 
@@ -68,13 +72,17 @@ Every unit of work SHALL carry the time its pull request or issues last moved, n
 
 ### Requirement: Silent failures are named
 
-The system SHALL report explicitly: issues closed with no merged pull request; a pull request failing checks, with since when; all issues closed while a requirement file is recorded in progress; and a unit with no issues, distinguishing one awaiting its own pull request from one that never had any. An issue SHALL count as closed with a merged pull request when GitHub links a merged pull request to it, when a commit closed it, or when a comment on it by someone with write access to the repository names a pull request that merged. A linked number that is a pull request rather than an issue SHALL stand for that pull request.
+The system SHALL report explicitly: issues closed with no merged pull request; a pull request failing checks, with since when; all issues closed while a requirement file is recorded in progress; and a unit with no issues, distinguishing one awaiting its own pull request from one that never had any.
 
 #### Scenario: Merged spec change with no issues
 - GIVEN a spec change that merged ten days ago
 - AND no issue names it
 - WHEN progress is reported
 - THEN it is flagged as having no issues
+
+### Requirement: Merged work is recognised however it was linked
+
+An issue SHALL count as closed with a merged pull request when GitHub links a merged pull request to it, when a commit closed it, or when a comment on it by someone with write access to the repository names a pull request that merged. A linked number that is a pull request rather than an issue SHALL stand for that pull request.
 
 #### Scenario: Issue closed by hand naming the merged pull request
 - GIVEN issue 370 closed with no linked pull request
