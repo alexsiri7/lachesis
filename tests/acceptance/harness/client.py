@@ -44,6 +44,18 @@ class Lachesis:
             text = "".join(c.text for c in result.content if isinstance(c, TextContent))
         return ToolResult(is_error=result.isError, text=text)
 
+    async def web_page(self, path: str = "/web/") -> str:
+        """GET a web page as the signed-in author, returning its HTML."""
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            cookies={"lachesis_web_session": self._token},
+            timeout=30,
+            follow_redirects=False,
+        ) as http:
+            response = await http.get(path)
+        response.raise_for_status()
+        return response.text
+
 
 def _unwrap(structured: dict[str, Any]) -> Any:
     # FastMCP wraps a tool's non-object return value as {"result": value}.
