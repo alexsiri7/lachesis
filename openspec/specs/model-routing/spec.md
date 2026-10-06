@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Not every kind of work needs the most capable model. The factory decides which models are good enough for which kinds of work, from evidence it gathers itself, and keeps revising that as models change. Trust is earned on low-risk work first and lost on failure.
+Not every kind of work needs the most capable model. The factory decides which models are good enough for which kinds of work, from evidence it gathers itself, and keeps revising that as models change. Trust is earned on low-risk work first and lost on failure. When Claude is chosen, the factory also decides which of its accounts pays for the run.
 
 ## Requirements
 
@@ -23,6 +23,22 @@ For each run the system SHALL choose the cheapest model trusted for its kind of 
 - GIVEN a model trusted for triage that costs less than Claude
 - WHEN a triage run is routed
 - THEN that model is chosen
+
+### Requirement: Routing names the account
+
+When a run is routed to Claude, the system SHALL name the account to use: among the accounts that are not paused, are within their pace and have allowance the run may use as described in fuel, the one with the most such allowance left, the primary account winning a tie. When no account qualifies, the run SHALL be routed as fuel describes for overflow.
+
+#### Scenario: Two accounts available
+- GIVEN the factory account with 10 percent of its allowance usable
+- AND the account main with 30 percent usable and not paused
+- WHEN an implementation run is routed
+- THEN Claude on the account main is chosen
+
+#### Scenario: Shared account paused
+- GIVEN the account main is paused
+- AND the factory account has allowance usable
+- WHEN an implementation run is routed
+- THEN Claude on the factory account is chosen
 
 ### Requirement: Trust is earned and lost
 

@@ -2,13 +2,13 @@
 
 ## Purpose
 
-The Claude allowance resets weekly, so the factory works in weekly sprints aligned with it. It estimates work in tokens, plans what fits, measures everything and reports once a week. The sprint is the factory's own governor: a regular point to stop, measure and re-plan without the author acting as the brake. Carryover is information, not failure.
+The primary Claude account's allowance resets weekly, so the factory works in weekly sprints aligned with it. It estimates work in tokens, plans what fits, measures everything and reports once a week. The sprint is the factory's own governor: a regular point to stop, measure and re-plan without the author acting as the brake. Carryover is information, not failure.
 
 ## Requirements
 
 ### Requirement: Sprints follow the allowance
 
-Each sprint SHALL start when the weekly Claude allowance resets and end at the next reset. The system SHALL return the current sprint with its dates, plan, budget and what has been spent.
+Each sprint SHALL start when the primary account's weekly allowance resets and end at its next reset. The system SHALL return the current sprint with its dates, plan, budget and what has been spent.
 
 #### Scenario: Reading the sprint
 - GIVEN a sprint in progress
@@ -26,12 +26,19 @@ Every issue SHALL carry an estimate in tokens, made from the measured usage of p
 
 ### Requirement: The factory plans the sprint
 
-At the start of each sprint the factory SHALL plan it: take the computed backlog in order and include issues until their estimates fill the sprint budget, the allowance and overflow cap less the reserve. The plan SHALL never wait on the author. When the author changes focus during a sprint, the plan SHALL be redone from the new order.
+At the start of each sprint the factory SHALL plan it: take the computed backlog in order and include issues until their estimates fill the sprint budget, which is the factory share of every registered account's weekly allowance less its reserve, plus the overflow cap. The plan SHALL never wait on the author. When the author changes focus during a sprint, the plan SHALL be redone from the new order.
 
 #### Scenario: Plan fills the budget
 - GIVEN a sprint budget of 100 units and backlog estimates of 40, 40 and 30
 - WHEN the sprint is planned
 - THEN the first two issues are planned and the third is not
+
+#### Scenario: Shared account adds to the budget
+- GIVEN the factory account's usable allowance is 80 units
+- AND the account main's 65 percent share less its reserve is 52 units
+- AND no overflow cap
+- WHEN the sprint budget is read
+- THEN it is 132 units
 
 #### Scenario: Focus changes mid-sprint
 - GIVEN a sprint in progress
@@ -40,13 +47,13 @@ At the start of each sprint the factory SHALL plan it: take the computed backlog
 
 ### Requirement: The week is reported
 
-At the end of each sprint the author SHALL receive one push notification and a report saying what was delivered and is available, what was spent on Claude and on overflow, how estimates compared with actual usage, and what carried over.
+At the end of each sprint the author SHALL receive one push notification and a report saying what was delivered and is available, what was spent on each Claude account and on overflow, how estimates compared with actual usage, and what carried over.
 
 #### Scenario: Sprint ends
 - GIVEN a sprint that delivered two milestones and carried over three issues
 - WHEN it ends
 - THEN exactly one push notification arrives
-- AND the report lists the delivered work, the spending, estimate accuracy and the three carried-over issues
+- AND the report lists the delivered work, the spending per account and on overflow, estimate accuracy and the three carried-over issues
 
 ### Requirement: The factory reviews itself
 
