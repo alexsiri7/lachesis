@@ -1259,7 +1259,14 @@ def _public_backlog(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     which `next_issue` reads to skip work in progress and to merge repos; they are
     not part of what the backlog tools promise their callers.
     """
-    return [{key: item[key] for key in _PUBLIC_BACKLOG_KEYS} for item in items]
+    return [
+        {
+            **{key: item[key] for key in _PUBLIC_BACKLOG_KEYS},
+            "in_progress": _IN_PROGRESS_LABEL in item["labels"],
+            "waiting_on_author": _NEEDS_AUTHOR_LABEL in item["labels"],
+        }
+        for item in items
+    ]
 
 
 def _sprint_start(resets_at: datetime, now: datetime) -> datetime:
@@ -1389,7 +1396,7 @@ async def get_backlog(repo: str) -> list[dict[str, Any]]:
 
     Each entry has ``number``, ``title``, ``position``, ``tier`` (one of interrupt,
     security, focus, milestone, other), ``aged`` (moved up a tier for waiting two
-    whole sprints), ``ready`` and ``interrupt``.
+    whole sprints), ``ready``, ``interrupt``, ``in_progress`` and ``waiting_on_author``.
     """
     repo = await _resolve_repo(repo)
     user_id = _require_user_id()

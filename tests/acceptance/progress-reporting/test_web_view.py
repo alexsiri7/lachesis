@@ -11,8 +11,6 @@ from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -77,7 +75,6 @@ def _issue(
     }
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #275")
 @scenario("progress-reporting", "Two accounts on the page")
 async def test_two_accounts_on_the_page(lachesis: Lachesis) -> None:
     await _ok(lachesis, "register_account", {"name": "factory", "share_percent": 100})
@@ -116,7 +113,6 @@ async def test_two_accounts_on_the_page(lachesis: Lachesis) -> None:
     assert datetime.fromisoformat(sprint["data-sprint-end"]) == datetime.fromisoformat(resets)
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #275")
 @scenario("progress-reporting", "No fuel reported")
 async def test_no_fuel_reported(lachesis: Lachesis) -> None:
     fuel = _section(await lachesis.web_page(), "fuel")
@@ -124,7 +120,6 @@ async def test_no_fuel_reported(lachesis: Lachesis) -> None:
     assert "No fuel has been reported" in fuel
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #275")
 @scenario("progress-reporting", "Next up")
 async def test_next_up(lachesis: Lachesis) -> None:
     await _ok(lachesis, "register_repo", {"repo": REPO})
@@ -145,7 +140,6 @@ async def test_next_up(lachesis: Lachesis) -> None:
     assert next_up["data-next-repo"] == REPO
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #275")
 @scenario("progress-reporting", "Active milestone")
 async def test_active_milestone(lachesis: Lachesis) -> None:
     await _ok(lachesis, "register_repo", {"repo": REPO})

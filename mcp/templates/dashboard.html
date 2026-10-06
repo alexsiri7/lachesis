@@ -47,6 +47,116 @@
   </ul>
 </section>
 {% endif %}
+
+<section id="fuel" class="mb-8 bg-white rounded-lg border border-gray-200 p-5">
+  <h2 class="font-semibold text-base mb-4">Fuel and sprint</h2>
+  {% if fuel.error %}
+  <p class="text-sm text-red-700">Fuel could not be read: {{ fuel.error }}.</p>
+  {% elif not fuel.fuel.reported and not (fuel.fuel.accounts | selectattr("reported") | list) %}
+  <p class="text-sm text-gray-600">No fuel has been reported.</p>
+  {% else %}
+  <table class="w-full text-sm mb-4">
+    <thead class="text-left text-xs text-gray-500">
+      <tr><th>Account</th><th>Used</th><th>Reserve</th><th>Usable</th><th>Pace</th><th>Resets</th></tr>
+    </thead>
+    <tbody>
+      {% for a in fuel.fuel.accounts %}
+      <tr data-account="{{ a.name }}" data-used="{{ a.used_percent }}" data-reserve="{{ a.reserve_percent }}"
+          data-usable="{{ a.usable_percent }}" data-paused="{{ a.paused | lower }}" data-within-pace="{{ a.within_pace | lower }}">
+        <td class="font-mono">{{ a.name }}{% if a.primary %} <span class="text-xs text-gray-400">primary</span>{% endif %}
+          <span class="text-xs text-gray-400">({{ a.share_percent | round(0) | int }}% share)</span></td>
+        <td>{% if a.reported %}{{ a.used_percent }}%{% else %}<span class="text-gray-400">not reported</span>{% endif %}</td>
+        <td>{{ a.reserve_percent }}%</td>
+        <td>{{ a.usable_percent }}%{% if a.paused %} <span class="text-xs text-orange-700">paused (5-hour {{ a.five_hour_used_percent }}%)</span>{% endif %}</td>
+        <td>{% if a.pace %}{% if a.within_pace %}within{% else %}<span class="text-orange-700">ahead</span>{% endif %} (limit {{ a.pace.limit_percent }}% today){% else %}–{% endif %}</td>
+        <td class="text-xs text-gray-500">{{ a.resets_at.strftime("%a %d %b %H:%M UTC") if a.resets_at else "–" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% set o = fuel.fuel.overflow %}
+  {% if o.reported %}
+  <p class="text-sm mb-2" data-overflow-spent="{{ o.spent_usd }}" data-overflow-cap="{{ o.cap_usd }}">
+    Requesty overflow: ${{ "%.2f" | format(o.spent_usd) }} of ${{ "%.2f" | format(o.cap_usd) }} this sprint{% if o.at_cap %} <span class="text-orange-700">(at cap)</span>{% endif %}.
+  </p>
+  {% else %}
+  <p class="text-sm mb-2 text-gray-500">Requesty overflow has not been reported, so nothing is routed to it.</p>
+  {% endif %}
+  {% if fuel.sprint %}
+  {% set sp = fuel.sprint %}
+  <p class="text-sm" data-sprint-budget="{{ sp.budget_tokens }}" data-sprint-spent="{{ sp.spent_tokens }}"
+     data-sprint-left="{{ sp.left_tokens }}" data-sprint-end="{{ sp.end.isoformat() }}">
+    Sprint: {{ "{:,}".format(sp.spent_tokens) }} of {{ "{:,}".format(sp.budget_tokens) }} tokens spent,
+    {{ "{:,}".format(sp.left_tokens) }} left; ends {{ sp.end.strftime("%a %d %b %H:%M UTC") }}.
+  </p>
+  {% else %}
+  <p class="text-sm text-gray-500">No sprint yet: the primary account has not reported fuel.</p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section id="backlog" class="mb-8 bg-white rounded-lg border border-gray-200 p-5">
+  <h2 class="font-semibold text-base mb-4">Backlog and next up</h2>
+  {% set nx = backlog.next %}
+  {% if nx.issue %}
+  <p class="text-sm mb-4" data-next-issue="{{ nx.issue.number }}" data-next-repo="{{ nx.issue.repo }}">
+    Next up: <a href="https://github.com/{{ nx.issue.repo }}/issues/{{ nx.issue.number }}" target="_blank"
+      class="font-mono hover:underline">{{ nx.issue.repo }}#{{ nx.issue.number }}</a> {{ nx.issue.title }}
+  </p>
+  {% else %}
+  <p class="text-sm mb-4 text-gray-600">Nothing to pick up: {{ nx.explanation }}</p>
+  {% endif %}
+  {% for b in backlog.backlogs %}
+  <details class="mb-2" {% if loop.first %}open{% endif %}>
+    <summary class="text-sm font-mono cursor-pointer">{{ b.repo }} ({{ b.issues | length }})
+      {%- if b.error %} <span class="text-red-700">could not be read: {{ b.error }}</span>{% endif %}</summary>
+    <ol class="mt-2 ml-4 space-y-1 text-sm">
+      {% for i in b.issues %}
+      <li data-repo="{{ b.repo }}" data-issue="{{ i.number }}" data-tier="{{ i.tier }}"
+          data-in-progress="{{ i.in_progress | lower }}" data-waiting-on-author="{{ i.waiting_on_author | lower }}">
+        <span class="text-xs text-gray-400 w-16 inline-block">{{ i.tier }}</span>
+        <a href="https://github.com/{{ b.repo }}/issues/{{ i.number }}" target="_blank" class="font-mono text-gray-500 hover:underline">#{{ i.number }}</a>
+        {{ i.title }}
+        {%- if i.in_progress %} <span class="text-xs text-blue-700">in progress</span>{% endif %}
+        {%- if i.waiting_on_author %} <span class="text-xs text-yellow-700">waiting on you</span>{% endif %}
+        {%- if not i.ready %} <span class="text-xs text-gray-400">parked</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% endfor %}
+</section>
+
+<section id="milestones" class="mb-8 bg-white rounded-lg border border-gray-200 p-5">
+  <h2 class="font-semibold text-base mb-4">Milestones</h2>
+  {% for m in milestones.started %}
+  {% set work = m.work or [] %}
+  <div class="mb-4 text-sm" data-milestone="{{ m.title }}" data-goal="{{ m.goal }}" data-state="{{ m.state }}"
+       data-issues-done="{{ work | sum(attribute='issues_done') }}" data-issues-total="{{ work | sum(attribute='issues') }}">
+    <div class="font-medium">{{ m.title }} <span class="text-xs text-gray-500">{{ m.repo }} · {{ m.state }}</span></div>
+    <div class="text-gray-600">{{ m.goal }}</div>
+    {% if m.error %}<div class="text-red-700">{{ m.error }}</div>{% endif %}
+    <ul class="ml-4 mt-1">
+      {% for w in work %}
+      <li data-spec-change="{{ w.spec_change }}">#{{ w.spec_change }} {{ w.title or "" }} — {{ w.status }}, {{ w.issues_done }}/{{ w.issues }} issues done</li>
+      {% endfor %}
+    </ul>
+    {% if m.gaps %}{% set g = m.gaps %}
+    {% set gap_count = (g.requirements_without_issues | length) + (g.issues_closed_without_merge | length) + (g.merges_not_in_production | length) + (g.open_questions | length) %}
+    <div class="text-xs {% if gap_count %}text-orange-700{% else %}text-gray-500{% endif %}">{{ gap_count }} gap{{ "" if gap_count == 1 else "s" }}</div>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="text-sm text-gray-500">No active or verifying milestones.</p>
+  {% endfor %}
+  {% if milestones.counts %}
+  <p class="text-xs text-gray-500">Also: {% for state, n in milestones.counts | dictsort %}{{ n }} {{ state }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+  {% endif %}
+  {% if milestones.unreadable %}
+  <p class="text-xs text-red-700">Could not read milestones of {{ milestones.unreadable | join(", ") }}.</p>
+  {% endif %}
+</section>
+
 {% if not repos %}
   <p class="text-gray-500">No repos registered yet.</p>
 {% endif %}
