@@ -41,6 +41,17 @@ from tools.requirements import (
     update_requirement,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_accounts_or_overflow():
+    """No registered accounts and no overflow report unless a test says otherwise."""
+    with (
+        patch("db.list_fuel", return_value=[]),
+        patch("db.get_overflow", return_value=None),
+    ):
+        yield
+
+
 _NAME = "001-user-auth.md"
 _PATH = "requirements/001-user-auth.md"
 _LIST_RESP = [{"name": _NAME, "path": _PATH}]

@@ -23,6 +23,17 @@ from tools.sprints import (
     sprint_spending,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_accounts_or_overflow():
+    """No registered accounts and no overflow report unless a test says otherwise."""
+    with (
+        patch("db.list_fuel", return_value=[]),
+        patch("db.get_overflow", return_value=None),
+    ):
+        yield
+
+
 _RESETS_AT = datetime(2026, 10, 11, 9, tzinfo=UTC)
 _NOW = _RESETS_AT - timedelta(days=2)
 
@@ -284,7 +295,12 @@ def test_spending_splits_claude_runs_from_overflow_runs() -> None:
 
     spending = sprint_spending(runs, _fuel(resets_at=_END), _END)
 
-    assert spending["claude"] == {"runs": 2, "tokens": 220, "allowance_used_percent": 40.0}
+    assert spending["claude"] == {
+        "runs": 2,
+        "tokens": 220,
+        "allowance_used_percent": 40.0,
+        "accounts": [{"name": "unnamed", "runs": 2, "tokens": 220}],
+    }
     assert spending["overflow"] == {
         "runs": 2,
         "tokens": 220,
@@ -494,7 +510,7 @@ async def test_report_sprint_reports_the_sprint_that_ended(set_user_id: str) -> 
     assert push["title"] == "Sprint report: 2026-09-27 to 2026-10-04"
     assert push["body"].splitlines() == [
         "Delivered: 2 milestones, 2 issues.",
-        "Spent: 330 Claude tokens; 110 overflow tokens, $0.25.",
+        "Spent: 330 Claude tokens (unnamed: 330); 110 overflow tokens, $0.25.",
         "Estimates: actual 4.64x estimated over 2 issues.",
         "Carried over: 3 issues.",
         "Findings: 2.",
@@ -551,3 +567,46 @@ async def test_report_sprint_is_registered_as_a_write() -> None:
     assert tools["report_sprint"].annotations is None or not (
         tools["report_sprint"].annotations.readOnlyHint
     )
+
+
+def test_spending_splits_claude_runs_by_account() -> None:
+    runs = [{**_run(1), "account": "main"}, {**_run(2), "account": "factory"}, _run(3, cost=0.1)]
+
+    claude = sprint_spending(runs, None, _END)["claude"]
+
+    assert claude["accounts"] == [
+        {"name": "factory", "runs": 1, "tokens": 110},
+        {"name": "main", "runs": 1, "tokens": 110},
+    ]
+
+
+def test_the_budget_counts_every_accounts_share_less_its_reserve() -> None:
+    now = _END - timedelta(days=3)
+    accounts = [
+        {
+            "name": "factory",
+            "share_percent": 100.0,
+            "reserve_percent": 20.0,
+            "used_percent": 10.0,
+            "within_pace": False,
+            "usable_percent": 70.0,
+            "paused": False,
+        },
+        {
+            "name": "main",
+            "share_percent": 65.0,
+            "reserve_percent": 13.0,
+            "used_percent": 60.0,
+            "within_pace": True,
+            "usable_percent": 0.0,
+            "paused": False,
+        },
+    ]
+
+    budget = sprint_budget(_fuel(resets_at=_END), now, 1_000, 5.0, accounts)
+
+    # factory 80 + main 52 of 1000 tokens; main's 60 used counts only up to its 52.
+    assert budget["allowance"]["budget_tokens"] == 800 + 520
+    assert budget["allowance"]["spent_tokens"] == 100 + 520
+    # factory is behind pace and main has nothing usable left: nothing is within pace.
+    assert budget["within_pace"] is False

@@ -460,13 +460,22 @@ mcp.tool(
         "registered as factory with a 100 percent share if none is), `weekly_used_percent` "
         "of its weekly allowance used, `weekly_resets_at` when it resets (ISO-8601 with "
         "timezone, within the next 7 days), `five_hour_used_percent` of its five-hour window "
-        "used, `shorter_limit_until` when a shorter limit is in force (leave it out "
-        "otherwise), and this week's Requesty overflow spending `overflow_spent_usd` against "
-        "the `overflow_cap_usd` the author set there; the primary account's overflow figures "
-        "are the ones read. Replaces that account's previous report only. Returns fuel as "
-        "read_fuel does."
+        "used, and `shorter_limit_until` when a shorter limit is in force (leave it out "
+        "otherwise). Replaces that account's previous report only. `overflow_spent_usd` and "
+        "`overflow_cap_usd` are accepted for older callers and ignored: report overflow with "
+        "report_overflow. Returns fuel as read_fuel does."
     ),
 )(fuel_tools.report_fuel)
+
+mcp.tool(
+    description=(
+        "Report Requesty overflow, apart from any Claude account: `spent_usd`, the money "
+        "spent through Requesty this sprint, and `cap_usd`, the cap the author set there. "
+        "Replaces the previous overflow report; only this changes the overflow figures, and "
+        "nothing is routed to overflow until it has been reported. Returns fuel as read_fuel "
+        "does."
+    ),
+)(fuel_tools.report_overflow)
 
 mcp.tool(
     description=(

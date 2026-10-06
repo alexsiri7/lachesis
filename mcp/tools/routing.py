@@ -8,7 +8,7 @@ from typing import Any, get_args
 import db
 from settings import settings
 
-from .fuel import accounts_status, fuel_status
+from .fuel import read
 from .repos import _require_user_id
 from .scorecard import closed_issues, scorecard
 
@@ -43,10 +43,17 @@ def fuel_available(fuel: dict[str, Any], emergency: bool) -> tuple[bool, bool]:
     With no report the allowance is assumed available and the overflow cap unknown; once
     the reported week has reset, both start again.
     """
+    overflow = fuel.get("overflow") or {"reported": False}
+    if not overflow.get("reported", True):
+        overflow_ok = False
+    elif fuel["reported"] and not fuel["current"]:
+        overflow_ok = overflow["cap_usd"] > 0
+    else:
+        overflow_ok = not overflow["at_cap"]
     if not fuel["reported"]:
-        return True, False
+        return True, overflow_ok
     if not fuel["current"]:
-        return True, fuel["overflow"]["cap_usd"] > 0
+        return True, overflow_ok
     allowance = fuel["allowance"]
     if allowance["shorter_limit_in_force"] or allowance["used_percent"] >= 100:
         claude = False
@@ -54,7 +61,7 @@ def fuel_available(fuel: dict[str, Any], emergency: bool) -> tuple[bool, bool]:
         claude = emergency
     else:
         claude = True
-    return claude, not fuel["overflow"]["at_cap"]
+    return claude, overflow_ok
 
 
 def choose_account(
@@ -157,7 +164,8 @@ def route(
             "the Requesty cap is reached: ask a budget question, then continue with the fuel "
             "left or wait for the reset",
         )
-    if fuel["reported"] and fuel["current"] and fuel["overflow"]["at_cap"]:
+    at_cap = (fuel.get("overflow") or {}).get("at_cap", False)
+    if at_cap and not (fuel["reported"] and not fuel["current"]):
         return choose(
             None,
             None,
@@ -179,9 +187,13 @@ async def route_run(kind: db.UsageKind, emergency: bool = False) -> dict[str, An
     user_id = _require_user_id()
     runs = db.list_runs(user_id)
     closed = await closed_issues(runs)
-    now = datetime.now(UTC)
-    fuel = fuel_status(db.get_fuel(user_id), now)
-    accounts = accounts_status(user_id, now)
+    fuel = read(user_id, datetime.now(UTC))
     return route(
-        kind, runs, closed, fuel, settings.claude_usd_per_million_tokens, emergency, accounts
+        kind,
+        runs,
+        closed,
+        fuel,
+        settings.claude_usd_per_million_tokens,
+        emergency,
+        fuel["accounts"],
     )

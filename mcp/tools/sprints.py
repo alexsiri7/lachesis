@@ -12,7 +12,7 @@ import github
 import notify
 from settings import settings
 
-from .fuel import RESERVE_PERCENT, fuel_status
+from .fuel import RESERVE_PERCENT, accounts_status, fuel_status
 from .repos import _require_user_id, normalize_repo
 from .requirements import _NEEDS_AUTHOR_LABEL, _SPRINT, _backlog_order, _sprint_start
 
@@ -28,12 +28,16 @@ def sprint_budget(
     now: datetime,
     allowance_tokens: int,
     usd_per_million: float,
+    accounts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Return the sprint holding *now* and its budget in tokens, from the fuel report *row*.
+    """Return the sprint holding *now* and its budget in tokens, from the primary
+    account's fuel report *row*, whose week the sprint follows.
 
-    The budget is the weekly allowance outside the reserve plus the overflow cap,
-    converted at the Claude price. Once the reported week has reset, nothing is
-    known to be spent in the new one. ``None`` when fuel was never reported.
+    The budget is what the factory may use of every account outside its reserve, plus
+    the overflow cap converted at the Claude price. With *accounts*
+    (:func:`accounts_status`) every account counts, each at its share less its reserve;
+    without, the primary alone at its whole allowance. An account whose reported week
+    has reset counts nothing spent. ``None`` when the primary account was never reported.
     """
     if row is None:
         return None
@@ -42,13 +46,35 @@ def sprint_budget(
     outside_reserve = 100 - RESERVE_PERCENT
     current = fuel["current"]
     used = row["weekly_used_percent"]
-    cap = row["overflow_cap_usd"]
-    spent_usd = row["overflow_spent_usd"]
+    cap = row["overflow_cap_usd"] or 0.0
+    spent_usd = row["overflow_spent_usd"] or 0.0
 
-    allowance_budget = round(allowance_tokens * outside_reserve / 100)
-    allowance_spent = round(allowance_tokens * min(used, outside_reserve) / 100) if current else 0
+    by_account: list[dict[str, Any]] = []
+    if accounts:
+        for account in accounts:
+            usable = account["share_percent"] - account["reserve_percent"]
+            account_used = min(account["used_percent"], usable)
+            by_account.append(
+                {
+                    "name": account["name"],
+                    "budget_tokens": round(allowance_tokens * usable / 100),
+                    "spent_tokens": round(allowance_tokens * account_used / 100),
+                }
+            )
+        allowance_budget = sum(a["budget_tokens"] for a in by_account)
+        allowance_spent = sum(a["spent_tokens"] for a in by_account)
+    else:
+        allowance_budget = round(allowance_tokens * outside_reserve / 100)
+        allowance_spent = (
+            round(allowance_tokens * min(used, outside_reserve) / 100) if current else 0
+        )
     overflow_budget = _usd_to_tokens(cap, usd_per_million)
     overflow_spent = _usd_to_tokens(min(spent_usd, cap), usd_per_million) if current else 0
+    within_pace = fuel["pace"]["within_pace"] if fuel["pace"] else None
+    if accounts:
+        within_pace = any(
+            a["within_pace"] and a["usable_percent"] > 0 and not a["paused"] for a in accounts
+        )
 
     budget = allowance_budget + overflow_budget
     spent = allowance_spent + overflow_spent
@@ -58,13 +84,14 @@ def sprint_budget(
         "budget_tokens": budget,
         "spent_tokens": spent,
         "left_tokens": max(0, budget - spent),
-        "within_pace": fuel["pace"]["within_pace"] if fuel["pace"] else None,
+        "within_pace": within_pace,
         "allowance": {
             "weekly_tokens": allowance_tokens,
             "reserve_percent": RESERVE_PERCENT,
             "used_percent": used,
             "budget_tokens": allowance_budget,
             "spent_tokens": allowance_spent,
+            "accounts": by_account,
         },
         "overflow": {
             "cap_usd": cap,
@@ -135,6 +162,7 @@ async def read_sprint() -> dict[str, Any]:
         now,
         settings.claude_weekly_allowance_tokens,
         settings.claude_usd_per_million_tokens,
+        accounts_status(user_id, now),
     )
     if budget is None:
         return {
@@ -200,11 +228,17 @@ def sprint_spending(
     claude = [run for run in runs if run["cost_usd"] is None]
     overflow = [run for run in runs if run["cost_usd"] is not None]
     fuel = row if row is not None and row["weekly_resets_at"] == end else None
+    by_account: dict[str, dict[str, int]] = {}
+    for run in claude:
+        entry = by_account.setdefault(run.get("account") or "unnamed", {"runs": 0, "tokens": 0})
+        entry["runs"] += 1
+        entry["tokens"] += _tokens(run)
     return {
         "claude": {
             "runs": len(claude),
             "tokens": sum(_tokens(run) for run in claude),
             "allowance_used_percent": fuel["weekly_used_percent"] if fuel else None,
+            "accounts": [{"name": name, **by_account[name]} for name in sorted(by_account)],
         },
         "overflow": {
             "runs": len(overflow),
@@ -347,8 +381,9 @@ def _push_body(report: dict[str, Any]) -> str:
         [
             f"Delivered: {len(delivered['milestones'])} milestones, "
             f"{len(delivered['issues'])} issues.",
-            f"Spent: {claude['tokens']} Claude tokens; {overflow['tokens']} overflow tokens, "
-            f"${overflow['cost_usd']:.2f}.",
+            f"Spent: {claude['tokens']} Claude tokens"
+            + "".join(f" ({a['name']}: {a['tokens']})" for a in claude.get("accounts", []))
+            + f"; {overflow['tokens']} overflow tokens, ${overflow['cost_usd']:.2f}.",
             estimates,
             f"Carried over: {len(report['carryover'])} issues.",
             f"Findings: {len(report['findings'])}.",

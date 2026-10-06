@@ -107,10 +107,12 @@ past issues of that kind and capability, and is low confidence until there are f
 
 At the start of every run, call report_fuel for the Claude account you run on (account,
 as list_accounts names it): its allowance used this week, when it resets, its five-hour
-window's use and any shorter limit in force, and the overflow spent this week against the
-Requesty cap. read_fuel returns what is left on every account: its reserve, 20 percent of
-the share the factory may use of it, kept for security work and production incidents,
-whether its five-hour window has paused it, and its pace for today.
+window's use and any shorter limit in force. If you can see Requesty, call report_overflow
+with the money spent there this sprint and the cap the author set; nothing is routed to
+overflow until it has been reported. read_fuel returns what is left on every account: its
+reserve, 20 percent of the share the factory may use of it, kept for security work and
+production incidents, whether its five-hour window has paused it, and its pace for today;
+and the overflow figures.
 Then call route_run with the kind of work, and emergency true only for security work or a
 production incident, and run the model it chooses: Claude on the allowance, or any other
 model through Requesty. When it names an account other than the one you run on, or chooses
@@ -118,7 +120,7 @@ none, do not start the work on your account: leave it, or follow its reason. Giv
 account in report_usage for every run on a Claude allowance.
 
 Sprints run from one weekly allowance reset to the next. read_sprint returns the sprint's
-dates, its budget in tokens — the allowance and overflow cap less the reserve — what is
+dates, its budget in tokens — every account's share less its reserve, and the overflow cap — what is
 spent and left, and the plan: the backlog in order, as far as estimates fit what is left.
 It is derived on every read, so a new focus re-plans it. next_issue offers work other than
 security work only while it fits the budget left and spending is within pace, and says
@@ -1573,6 +1575,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         repos = [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]
 
     # sprints imports this module, so it cannot be imported at the top.
+    from .fuel import accounts_status
     from .sprints import estimates_by_issue, sprint_budget
 
     now = datetime.now(UTC)
@@ -1581,6 +1584,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         now,
         settings.claude_weekly_allowance_tokens,
         settings.claude_usd_per_million_tokens,
+        accounts_status(user_id, now),
     )
     estimates = estimates_by_issue(user_id) if budget is not None else {}
     cache: dict[tuple[str, int], dict[str, Any] | None] = {}
