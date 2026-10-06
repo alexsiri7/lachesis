@@ -105,13 +105,17 @@ Every issue carries an estimate in tokens. When you create or triage an issue, c
 estimate_issue with the issue and the kind of work it mostly is; the estimate comes from
 past issues of that kind and capability, and is low confidence until there are five.
 
-At the start of every run, call report_fuel with the Claude allowance used this week, when
-it resets and any shorter limit in force, and the overflow spent this week against the
-Requesty cap. read_fuel returns what is left, the 20 percent reserve kept for security work
-and production incidents, and the pace for today.
+At the start of every run, call report_fuel for the Claude account you run on (account,
+as list_accounts names it): its allowance used this week, when it resets, its five-hour
+window's use and any shorter limit in force, and the overflow spent this week against the
+Requesty cap. read_fuel returns what is left on every account: its reserve, 20 percent of
+the share the factory may use of it, kept for security work and production incidents,
+whether its five-hour window has paused it, and its pace for today.
 Then call route_run with the kind of work, and emergency true only for security work or a
 production incident, and run the model it chooses: Claude on the allowance, or any other
-model through Requesty. When it chooses none, follow its reason.
+model through Requesty. When it names an account other than the one you run on, or chooses
+none, do not start the work on your account: leave it, or follow its reason. Give the
+account in report_usage for every run on a Claude allowance.
 
 Sprints run from one weekly allowance reset to the next. read_sprint returns the sprint's
 dates, its budget in tokens — the allowance and overflow cap less the reserve — what is

@@ -11,6 +11,7 @@ from .repos import _require_user_id
 from .requirements import _resolve_repo
 
 RESERVE_PERCENT = 20.0
+DEFAULT_ACCOUNT = "factory"
 _WEEK = timedelta(days=7)
 
 
@@ -22,11 +23,14 @@ async def report_usage(
     tokens_in: int,
     tokens_out: int,
     cost_usd: float | None = None,
+    account: str | None = None,
 ) -> dict[str, Any]:
     """Record one run's usage on *issue* in *repo*.
 
     *cost_usd* is the money spent where the model is paid per token, and is left
-    out for a run on the Claude allowance. Returns the stored report.
+    out for a run on the Claude allowance. *account* names the registered Claude
+    account a run on an allowance drew on; left out, such a run is the primary
+    account's. Returns the stored report.
     """
     model = model.strip()
     if issue < 1:
@@ -40,10 +44,66 @@ async def report_usage(
     if cost_usd is not None and cost_usd < 0:
         raise ValueError(f"cost_usd must not be negative, got {cost_usd}")
     user_id = _require_user_id()
+    if account is not None:
+        account = _registered(user_id, account)["name"]
+    elif cost_usd is None:
+        primary = _primary(user_id)
+        account = primary["name"] if primary is not None else None
     repo = await _resolve_repo(repo, require_registered=True)
     return db.record_usage_report(
-        user_id, repo, issue, model, kind, tokens_in, tokens_out, cost_usd
+        user_id, repo, issue, model, kind, tokens_in, tokens_out, cost_usd, account
     )
+
+
+def _primary(user_id: str) -> dict[str, Any] | None:
+    return next((row for row in db.list_accounts(user_id) if row["primary"]), None)
+
+
+def _registered(user_id: str, account: str) -> dict[str, Any]:
+    """Return the registered account named *account*, or refuse naming the registered ones."""
+    accounts = db.list_accounts(user_id)
+    for row in accounts:
+        if row["name"] == account.strip():
+            return row
+    known = ", ".join(row["name"] for row in accounts) or "none"
+    raise ValueError(f"no registered account is named {account!r}; registered: {known}")
+
+
+def _check_percent(name: str, value: float | None, *, allow_zero: bool) -> None:
+    if value is None:
+        return
+    low_ok = value >= 0 if allow_zero else value > 0
+    if not low_ok or value > 100:
+        bound = "between 0 and 100" if allow_zero else "above 0 and at most 100"
+        raise ValueError(f"{name} must be {bound}, got {value}")
+
+
+async def register_account(
+    name: str,
+    share_percent: float,
+    five_hour_pause_percent: float | None = None,
+    primary: bool = False,
+) -> dict[str, Any]:
+    """Register a Claude account the factory may use, or update a registered one.
+
+    *share_percent* is how much of its weekly allowance the factory may use, 100 for an
+    account dedicated to the factory. While its five-hour window is at or above
+    *five_hour_pause_percent*, no work is routed to it. The first account registered is
+    primary, and *primary* makes this one the primary instead. Returns the account.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("name must not be empty")
+    _check_percent("share_percent", share_percent, allow_zero=False)
+    _check_percent("five_hour_pause_percent", five_hour_pause_percent, allow_zero=False)
+    return db.register_account(
+        _require_user_id(), name, share_percent, five_hour_pause_percent, primary
+    )
+
+
+async def list_accounts() -> dict[str, Any]:
+    """Return the registered accounts with their settings, the primary first."""
+    return {"accounts": db.list_accounts(_require_user_id())}
 
 
 def _parse_time(name: str, value: str) -> datetime:
@@ -62,15 +122,17 @@ async def report_fuel(
     overflow_spent_usd: float,
     overflow_cap_usd: float,
     shorter_limit_until: str | None = None,
+    account: str | None = None,
+    five_hour_used_percent: float | None = None,
 ) -> dict[str, Any]:
-    """Record the latest Claude allowance status and this week's Requesty overflow spend.
+    """Record an account's latest allowance status and this week's Requesty overflow spend.
 
-    Replaces the account's previous report. Returns fuel as :func:`read_fuel` does.
+    *account* is the registered account reported on; left out, the primary account,
+    which is registered as ``factory`` with a 100 percent share if no account is.
+    Replaces that account's previous report only. Returns fuel as :func:`read_fuel` does.
     """
-    if not 0 <= weekly_used_percent <= 100:
-        raise ValueError(
-            f"weekly_used_percent must be between 0 and 100, got {weekly_used_percent}"
-        )
+    _check_percent("weekly_used_percent", weekly_used_percent, allow_zero=True)
+    _check_percent("five_hour_used_percent", five_hour_used_percent, allow_zero=True)
     if overflow_spent_usd < 0:
         raise ValueError(f"overflow_spent_usd must not be negative, got {overflow_spent_usd}")
     if overflow_cap_usd < 0:
@@ -87,14 +149,28 @@ async def report_fuel(
         else _parse_time("shorter_limit_until", shorter_limit_until)
     )
     user_id = _require_user_id()
-    row = db.set_fuel(
-        user_id, weekly_used_percent, resets_at, limit_until, overflow_spent_usd, overflow_cap_usd
+    if account is not None:
+        name = _registered(user_id, account)["name"]
+    else:
+        primary = _primary(user_id) or db.register_account(
+            user_id, DEFAULT_ACCOUNT, 100.0, None, True
+        )
+        name = primary["name"]
+    db.set_fuel(
+        user_id,
+        name,
+        weekly_used_percent,
+        resets_at,
+        limit_until,
+        five_hour_used_percent,
+        overflow_spent_usd,
+        overflow_cap_usd,
     )
-    return fuel_status(row, datetime.now(UTC))
+    return _read(user_id)
 
 
 def fuel_status(row: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
-    """Return what fuel is left at *now*, from the account's latest fuel report *row*.
+    """Return what fuel is left at *now*, from the primary account's latest fuel report *row*.
 
     The reported week is the 7 days up to ``weekly_resets_at``. The pace is the share
     of the allowance outside the reserve that may be used by the end of today when
@@ -137,6 +213,65 @@ def fuel_status(row: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
     }
 
 
+def account_status(row: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Return what the factory may still use of one account at *now*, from a
+    :func:`db.list_fuel` row: its reserve (the reserve percent of its share), what is
+    usable outside the reserve and in an emergency, whether its five-hour window has
+    paused it, and its pace over its own week.
+
+    An account never reported, or whose reported week has reset, counts as unused.
+    """
+    share = row["share_percent"]
+    reserve = round(share * RESERVE_PERCENT / 100, 2)
+    reported = row["reported_at"] is not None
+    current = reported and now < row["weekly_resets_at"]
+    used = row["weekly_used_percent"] if current else 0.0
+    limit_until = row["shorter_limit_until"] if reported else None
+    limit_in_force = limit_until is not None and now < limit_until
+    five_hour = row["five_hour_used_percent"] if reported else None
+    pause_at = row["five_hour_pause_percent"]
+    paused = pause_at is not None and five_hour is not None and five_hour >= pause_at
+    pace = None
+    if current:
+        resets_at = row["weekly_resets_at"]
+        day = min(max((now - (resets_at - _WEEK)) // timedelta(days=1) + 1, 1), 7)
+        limit = round((share - reserve) * day / 7, 2)
+        pace = {"day": day, "days": 7, "limit_percent": limit, "within_pace": used <= limit}
+    return {
+        "name": row["name"],
+        "primary": row["primary"],
+        "share_percent": share,
+        "five_hour_pause_percent": pause_at,
+        "reported": reported,
+        "reported_at": row["reported_at"],
+        "current": current,
+        "used_percent": used,
+        "resets_at": row["weekly_resets_at"] if reported else None,
+        "shorter_limit_until": limit_until,
+        "shorter_limit_in_force": limit_in_force,
+        "five_hour_used_percent": five_hour,
+        "paused": paused,
+        "reserve_percent": reserve,
+        "usable_percent": round(max(0.0, share - reserve - used), 2),
+        "emergency_usable_percent": round(max(0.0, share - used), 2),
+        "only_reserve_left": used >= share - reserve,
+        "pace": pace,
+        "within_pace": pace["within_pace"] if pace else True,
+    }
+
+
+def accounts_status(user_id: str, now: datetime) -> list[dict[str, Any]]:
+    """Return :func:`account_status` for every registered account, the primary first."""
+    return [account_status(row, now) for row in db.list_fuel(user_id)]
+
+
+def _read(user_id: str) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    return {**fuel_status(db.get_fuel(user_id), now), "accounts": accounts_status(user_id, now)}
+
+
 async def read_fuel() -> dict[str, Any]:
-    """Return what fuel is left: the latest report, the reserve and today's pace."""
-    return fuel_status(db.get_fuel(_require_user_id()), datetime.now(UTC))
+    """Return what fuel is left: every account's status with its reserve, pause and pace,
+    the overflow spending against the cap, and, at the top level, the primary account's
+    allowance and pace."""
+    return _read(_require_user_id())

@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 NOW = datetime.now(UTC)
@@ -44,7 +42,6 @@ async def _accounts_reporting(
         )
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #256")
 @scenario("model-routing", "Two accounts available")
 async def test_two_accounts_available(lachesis: Lachesis) -> None:
     # factory: 80 - 70 = 10 usable; main: 52 - 22 = 30 usable.
@@ -56,7 +53,6 @@ async def test_two_accounts_available(lachesis: Lachesis) -> None:
     assert routed["account"] == "main"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #256")
 @scenario("model-routing", "Shared account paused")
 async def test_shared_account_paused(lachesis: Lachesis) -> None:
     await _accounts_reporting(lachesis, factory=50, main=5, five_hour_used_percent=61)

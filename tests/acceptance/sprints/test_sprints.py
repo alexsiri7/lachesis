@@ -34,7 +34,6 @@ async def _fuel(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #256")
 @scenario("sprints", "Reading the sprint")
 async def test_reading_the_sprint(lachesis: Lachesis) -> None:
     await _ok(

@@ -634,6 +634,7 @@ def test_record_usage_report_stores_the_report_and_its_event_in_one_transaction(
         "tokens_in": 120_000,
         "tokens_out": 8_000,
         "cost_usd": 0.42,
+        "account": None,
     }
     assert event_call[0][1] == {
         "user_id": "uid",
@@ -834,21 +835,47 @@ def test_set_fuel_replaces_the_accounts_report() -> None:
     row = {"weekly_used_percent": 60.0, "weekly_resets_at": resets_at}
     mock = _mock_engine([row])
     with patch("db._engine", return_value=mock):
-        result = db.set_fuel("uid", 60.0, resets_at, None, 12.0, 40.0)
+        result = db.set_fuel("uid", "main", 60.0, resets_at, None, 35.0, 12.0, 40.0)
 
     assert result == row
     mock.begin.assert_called_once()
     sql, params = mock.begin.return_value.execute.call_args[0]
     assert "INSERT INTO lachesis_fuel" in str(sql)
-    assert "ON CONFLICT (user_id)" in str(sql)
+    assert "ON CONFLICT (account_id)" in str(sql)
     assert params == {
         "user_id": "uid",
+        "account": "main",
         "weekly_used_percent": 60.0,
         "weekly_resets_at": resets_at,
         "shorter_limit_until": None,
+        "five_hour_used_percent": 35.0,
         "overflow_spent_usd": 12.0,
         "overflow_cap_usd": 40.0,
     }
+
+
+def test_get_fuel_is_the_primary_accounts_report() -> None:
+    from datetime import UTC, datetime
+
+    now = datetime(2026, 10, 6, tzinfo=UTC)
+    rows = [
+        {"name": "factory", "primary": True, "reported_at": now, "weekly_used_percent": 60.0},
+        {"name": "main", "primary": False, "reported_at": now, "weekly_used_percent": 20.0},
+    ]
+    with patch("db.list_fuel", return_value=rows):
+        assert db.get_fuel("uid") == rows[0]
+    with patch("db.list_fuel", return_value=[{**rows[0], "reported_at": None}, rows[1]]):
+        assert db.get_fuel("uid") is None
+
+
+def test_accounts_migration_moves_each_report_to_a_primary_factory_account() -> None:
+    from pathlib import Path
+
+    migration = (Path(db.__file__).parent / "alembic/versions/020_accounts.py").read_text()
+    assert "SELECT user_id, 'factory', 100, true FROM lachesis_fuel" in migration
+    assert '"lachesis_fuel_account_id_key", "lachesis_fuel", ["account_id"]' in migration
+    assert 'postgresql_where=sa.text("is_primary")' in migration
+    assert 'down_revision: str | None = "019"' in migration
 
 
 def test_list_estimates_reads_the_accounts_estimates() -> None:

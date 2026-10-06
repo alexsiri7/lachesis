@@ -8,7 +8,7 @@ from typing import Any, get_args
 import db
 from settings import settings
 
-from .fuel import fuel_status
+from .fuel import accounts_status, fuel_status
 from .repos import _require_user_id
 from .scorecard import closed_issues, scorecard
 
@@ -57,6 +57,29 @@ def fuel_available(fuel: dict[str, Any], emergency: bool) -> tuple[bool, bool]:
     return claude, not fuel["overflow"]["at_cap"]
 
 
+def choose_account(
+    accounts: list[dict[str, Any]], emergency: bool
+) -> tuple[dict[str, Any] | None, bool]:
+    """Return the Claude account a run should draw on, from :func:`accounts_status`, and
+    whether some account was passed over only for being ahead of its pace.
+
+    An account qualifies when no shorter limit is in force, its five-hour window has not
+    paused it, and it has allowance the run may use: outside the reserve and within its
+    pace, or for an *emergency* anything up to its share. Of those, the one with the most
+    such allowance left, the primary winning a tie.
+    """
+    usable = "emergency_usable_percent" if emergency else "usable_percent"
+    open_accounts = [
+        account
+        for account in accounts
+        if not account["shorter_limit_in_force"] and not account["paused"] and account[usable] > 0
+    ]
+    paced = [a for a in open_accounts if emergency or a["within_pace"]]
+    if not paced:
+        return None, bool(open_accounts)
+    return max(paced, key=lambda a: (a[usable], a["primary"])), False
+
+
 def route(
     kind: str,
     runs: list[dict[str, Any]],
@@ -64,10 +87,14 @@ def route(
     fuel: dict[str, Any],
     claude_price: float,
     emergency: bool,
+    accounts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Choose the model for a *kind* run: the cheapest overflow model trusted for *kind*
     that costs less than *claude_price* while overflow is available, else Claude on the
-    allowance, else the cheapest trusted overflow model, else none."""
+    allowance, else the cheapest trusted overflow model, else none.
+
+    With registered *accounts*, Claude is available only through an account
+    :func:`choose_account` picks, and the choice names it as ``account``."""
     known = prices(runs)
     trusted = [
         entry["model"]
@@ -78,12 +105,18 @@ def route(
     ]
     candidates = sorted(trusted, key=lambda model: (known[model], model))
     claude_available, overflow_available = fuel_available(fuel, emergency)
+    account: dict[str, Any] | None = None
+    held_by_pace = False
+    if accounts:
+        account, held_by_pace = choose_account(accounts, emergency)
+        claude_available = account is not None
 
     def choose(model: str | None, via: str | None, reason: str) -> dict[str, Any]:
         return {
             "kind": kind,
             "model": model,
             "via": via,
+            "account": account["name"] if account is not None and via == "allowance" else None,
             "reason": reason,
             "claude_available": claude_available,
             "overflow_available": overflow_available,
@@ -99,7 +132,17 @@ def route(
             cheaper[0], "requesty", f"{cheaper[0]} is trusted for {kind} and cheaper than Claude"
         )
     if claude_available:
-        return choose(CLAUDE, "allowance", "Claude is trusted for every kind of work")
+        reason = "Claude is trusted for every kind of work"
+        if account is not None:
+            reason += f"; account {account['name']} has the most allowance the run may use"
+        return choose(CLAUDE, "allowance", reason)
+    if held_by_pace:
+        return choose(
+            None,
+            None,
+            "every Claude account with allowance left is ahead of its pace: wait until "
+            "spending is back within the pace",
+        )
     if overflow_available and candidates:
         return choose(
             candidates[0],
@@ -113,6 +156,13 @@ def route(
             None,
             "the Requesty cap is reached: ask a budget question, then continue with the fuel "
             "left or wait for the reset",
+        )
+    if fuel["reported"] and fuel["current"] and fuel["overflow"]["at_cap"]:
+        return choose(
+            None,
+            None,
+            f"no Claude account has allowance left for {kind} and the Requesty cap is reached: "
+            "ask a budget question, then wait for a reset",
         )
     return choose(
         None,
@@ -129,5 +179,9 @@ async def route_run(kind: db.UsageKind, emergency: bool = False) -> dict[str, An
     user_id = _require_user_id()
     runs = db.list_runs(user_id)
     closed = await closed_issues(runs)
-    fuel = fuel_status(db.get_fuel(user_id), datetime.now(UTC))
-    return route(kind, runs, closed, fuel, settings.claude_usd_per_million_tokens, emergency)
+    now = datetime.now(UTC)
+    fuel = fuel_status(db.get_fuel(user_id), now)
+    accounts = accounts_status(user_id, now)
+    return route(
+        kind, runs, closed, fuel, settings.claude_usd_per_million_tokens, emergency, accounts
+    )

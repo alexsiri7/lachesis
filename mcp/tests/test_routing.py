@@ -238,6 +238,7 @@ async def test_route_run_routes_from_the_users_runs_issues_and_fuel(set_user_id:
             "tools.scorecard.github.list_all_issues", new=AsyncMock(return_value=issues)
         ) as list_all_issues,
         patch("tools.routing.db.get_fuel", return_value=row) as get_fuel,
+        patch("tools.fuel.db.list_fuel", return_value=[]),
     ):
         result = await route_run("triage")
 
@@ -254,3 +255,45 @@ async def test_route_run_refuses_an_unknown_kind(set_user_id: str) -> None:
             await route_run("deploy")  # type: ignore[arg-type]
 
     list_runs.assert_not_called()
+
+
+def _status(name: str, *, primary: bool = False, **overrides: object) -> dict:
+    return {
+        "name": name,
+        "primary": primary,
+        "shorter_limit_in_force": False,
+        "paused": False,
+        "usable_percent": 10.0,
+        "emergency_usable_percent": 30.0,
+        "within_pace": True,
+        **overrides,
+    }
+
+
+def test_choose_account_takes_the_one_with_most_allowance_the_primary_on_a_tie() -> None:
+    from tools.routing import choose_account
+
+    factory = _status("factory", primary=True)
+    main = _status("main", usable_percent=30.0)
+    assert choose_account([factory, main], False) == (main, False)
+    assert choose_account([factory, _status("main")], False) == (factory, False)
+
+
+def test_choose_account_skips_paused_limited_and_spent_accounts() -> None:
+    from tools.routing import choose_account
+
+    accounts = [
+        _status("paused", paused=True, usable_percent=50.0),
+        _status("limited", shorter_limit_in_force=True, usable_percent=50.0),
+        _status("spent", usable_percent=0.0, emergency_usable_percent=5.0),
+    ]
+    assert choose_account(accounts, False) == (None, False)
+    assert choose_account(accounts, True)[0]["name"] == "spent"
+
+
+def test_choose_account_holds_ordinary_work_for_pace_but_not_emergencies() -> None:
+    from tools.routing import choose_account
+
+    ahead = _status("main", within_pace=False)
+    assert choose_account([ahead], False) == (None, True)
+    assert choose_account([ahead], True) == (ahead, False)
