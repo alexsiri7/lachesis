@@ -651,7 +651,9 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Review a started milestone in a registered repository and return its `gaps`: "
+        "Review a started milestone in a registered repository: each spec change in `work` "
+        "with its `issues` and `issues_done` (closed with a merged pull request), and its "
+        "`gaps`: "
         "`requirements_without_issues` (requirements its spec changes add or change that no "
         "issue names — an issue names one through the Requirement line of its spec "
         "reference), `issues_closed_without_merge`, `merges_not_in_production` (spec changes "
@@ -692,8 +694,9 @@ mcp.tool(
         "milestone, nearest done first; everything else. Older issues come first within "
         "a tier. A ready issue that has waited unblocked for two whole sprints (counted "
         "from the fuel report's weekly reset) moves up one tier. Each entry reports its "
-        "`position`, `tier`, `aged`, `ready` and `interrupt`. An issue is ready unless "
-        "it has been parked; parked issues are skipped for autonomous pickup."
+        "`position`, `tier`, `aged`, `ready`, `interrupt`, `in_progress` (labelled "
+        "archon:in-progress) and `waiting_on_author` (labelled needs-author). An issue is "
+        "ready unless it has been parked; parked issues are skipped for autonomous pickup."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_backlog)

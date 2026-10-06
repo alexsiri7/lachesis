@@ -3278,6 +3278,8 @@ async def test_get_backlog_defaults_new_issues_to_ready(
             "aged": False,
             "ready": True,
             "interrupt": False,
+            "in_progress": False,
+            "waiting_on_author": False,
         }
     ]
 
@@ -3311,7 +3313,18 @@ async def test_get_backlog_lists_the_interrupt_first_with_every_entrys_flags(
     assert [i["position"] for i in result] == [0, 1, 2, 3]
     assert [i["tier"] for i in result] == ["interrupt", "other", "other", "other"]
     assert all(
-        set(i) == {"number", "title", "position", "tier", "aged", "ready", "interrupt"}
+        set(i)
+        == {
+            "number",
+            "title",
+            "position",
+            "tier",
+            "aged",
+            "ready",
+            "interrupt",
+            "in_progress",
+            "waiting_on_author",
+        }
         for i in result
     )
 

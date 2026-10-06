@@ -21,11 +21,18 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import db
 import github
+from auth import current_db_user_id
 from oauth import create_jwt, exchange_google_code
 from settings import settings
 from status import canonical_status
+from tools import fuel as fuel_tools
+from tools import milestones as milestone_tools
+from tools import requirements as requirement_tools
+from tools.fuel import accounts_status
+from tools.repos import normalize_repo
 from tools.requirements import waiting_on_author
 from tools.specs import read_spec_progress, spec_change_status, uses_specs
+from tools.sprints import sprint_budget
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +69,70 @@ _OAUTH_STATE_COOKIE = "lachesis_oauth_state"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+_STARTED_MILESTONES = ("active", "verifying")
+
+
+async def _factory_sections(lachesis_uid: str, repos: list[str]) -> dict[str, Any]:
+    """Return fuel and the sprint, each repository's backlog and what is next, and the
+    started milestones, read through the same tool functions the MCP tools are, so the
+    page and the tools agree. A section that cannot be read carries its error instead."""
+    token = current_db_user_id.set(lachesis_uid)
+    try:
+        sections: dict[str, Any] = {}
+        now = datetime.now(UTC)
+        try:
+            fuel = await fuel_tools.read_fuel()
+            budget = sprint_budget(
+                db.get_fuel(lachesis_uid),
+                now,
+                settings.claude_weekly_allowance_tokens,
+                settings.claude_usd_per_million_tokens,
+                accounts_status(lachesis_uid, now),
+            )
+            sections["fuel"] = {"fuel": fuel, "sprint": budget}
+        except Exception as exc:
+            logger.warning("web: could not read fuel: %r", exc)
+            sections["fuel"] = {"error": "could not read fuel"}
+
+        backlogs: list[dict[str, Any]] = []
+        for repo in repos:
+            try:
+                backlogs.append({"repo": repo, "issues": await requirement_tools.get_backlog(repo)})
+            except Exception as exc:
+                cause = github.failure_from_exception(exc).replace("_", " ")
+                backlogs.append({"repo": repo, "issues": [], "error": cause})
+        try:
+            next_up: dict[str, Any] = await requirement_tools.next_issue()
+        except Exception as exc:
+            logger.warning("web: could not read the next issue: %r", exc)
+            next_up = {"issue": None, "explanation": "could not read the next issue"}
+        sections["backlog"] = {"backlogs": backlogs, "next": next_up}
+
+        started: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+        unreadable: list[str] = []
+        for repo in repos:
+            try:
+                listed = await milestone_tools.list_milestones(repo)
+            except Exception as exc:
+                logger.warning("web: could not list the milestones of %s: %r", repo, exc)
+                unreadable.append(repo)
+                continue
+            for milestone in listed:
+                if milestone["state"] not in _STARTED_MILESTONES:
+                    counts[milestone["state"]] = counts.get(milestone["state"], 0) + 1
+                    continue
+                try:
+                    started.append(await milestone_tools.review_milestone(repo, milestone["id"]))
+                except Exception as exc:
+                    logger.warning("web: could not review milestone %s: %r", milestone["id"], exc)
+                    started.append({**milestone, "error": "could not be reviewed"})
+        sections["milestones"] = {"started": started, "counts": counts, "unreadable": unreadable}
+        return sections
+    finally:
+        current_db_user_id.reset(token)
 
 
 def _render(template_name: str, **ctx: Any) -> HTMLResponse:
@@ -242,6 +313,9 @@ async def web_index(request: Request) -> Response:
         ],
         waiting_on_author_unreadable=waiting.unreadable,
         repos=repos_data,
+        **await _factory_sections(
+            lachesis_uid, [normalize_repo(row["repo_name"]) for row in repos_raw]
+        ),
     )
 
 

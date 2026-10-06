@@ -444,6 +444,17 @@ async def review_milestone(repo: str, milestone: int) -> dict[str, Any]:
         progress.references,
     )
     unreadable = set(unread_entries) | unread_requirements
+    for item in view.get("work", []):
+        entry = entries.get(item["spec_change"])
+        linked = sorted(entry["derived"]["linked_issues"]) if entry else []
+        item["issues"] = len(linked)
+        item["issues_done"] = sum(
+            1
+            for n in linked
+            if (facts := progress.facts.get(n)) is not None
+            and facts["state"] == "CLOSED"
+            and landed(facts)
+        )
     return {
         **view,
         "gaps": {
