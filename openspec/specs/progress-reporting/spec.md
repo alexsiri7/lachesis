@@ -141,3 +141,39 @@ The system SHALL offer a web page showing the same cross-repository summary as t
 - GIVEN a visitor who is not signed in
 - WHEN they open the web view
 - THEN they are asked to connect and no data is shown
+
+### Requirement: The web view shows fuel and the sprint
+
+The web view SHALL show fuel as reading fuel returns it: for every registered Claude account, its use of the week, its reserve, what is usable, whether it is paused and whether it is within its pace, and when it resets; the overflow spent against the cap, or that overflow has not been reported; and the current sprint's budget, spending, what is left and when it ends. When no fuel has been reported, it SHALL say so.
+
+#### Scenario: Two accounts on the page
+- GIVEN the account factory reported 100 percent used and the account main 19 percent used of a 65 percent share
+- AND overflow reported 0 dollars of a 10 dollar cap
+- WHEN the signed-in author opens the web view
+- THEN both accounts are shown with their use, reserve and usable allowance
+- AND the overflow shows 0 of 10 dollars
+- AND the sprint's budget, spending and end are shown
+
+#### Scenario: No fuel reported
+- GIVEN no fuel has been reported
+- WHEN the signed-in author opens the web view
+- THEN the fuel section says no fuel has been reported
+
+### Requirement: The web view shows the backlog and what is next
+
+The web view SHALL show each registered repository's backlog in its computed order, each issue with its number, title and tier, marking those in progress and those waiting on the author; and the issue next_issue would offer now, or the reason it would offer none. A repository whose backlog cannot be read SHALL be named with the cause.
+
+#### Scenario: Next up
+- GIVEN a registered repository with an interrupt issue 7 and an ordinary issue 3
+- WHEN the signed-in author opens the web view
+- THEN issue 7 is listed before issue 3 with its tier
+- AND issue 7 is shown as next up
+
+### Requirement: The web view shows milestones
+
+The web view SHALL show every milestone that is active or verifying, with its goal, its spec changes and each one's status, how many of its issues are done, and the gaps reviewing it would report. Planned, done and dropped milestones SHALL be counted, not listed.
+
+#### Scenario: Active milestone
+- GIVEN an active milestone grouping spec change 5, with two issues of which one is closed with a merged pull request
+- WHEN the signed-in author opens the web view
+- THEN the milestone is shown with its goal, spec change 5, and one of two issues done
