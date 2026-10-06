@@ -17,7 +17,7 @@ The system SHALL read and write managed files only through the GitHub API and SH
 
 ### Requirement: Writes respect branch protection
 
-When the default branch is protected, the system SHALL make every write through a pull request it opens, and SHALL enable automerge on that pull request.
+When the default branch is protected, the system SHALL make every write through a pull request it opens, and SHALL enable automerge on that pull request so that it merges once the repository's required checks pass, with no action from the author.
 
 #### Scenario: Protected default branch
 - GIVEN the default branch rejects direct pushes
@@ -25,6 +25,22 @@ When the default branch is protected, the system SHALL make every write through 
 - THEN the file is committed to a new Lachesis branch
 - AND a pull request is opened for it with automerge enabled
 - AND the caller is told the pull request number
+
+#### Scenario: Status update merges by itself
+- GIVEN a registered repository whose default branch is protected
+- WHEN a requirement's status is updated to done
+- THEN the pull request Lachesis opens for it merges once its required checks pass
+- AND the author is never asked to merge it
+
+### Requirement: A Lachesis pull request that cannot merge by itself is a Lachesis fault
+
+When the system cannot enable automerge on a pull request it opens, it SHALL tell the caller why in terms they can act on. Any open Lachesis pull request that cannot merge without a human SHALL be reported as a Lachesis fault naming the reason, and SHALL NOT be reported as waiting on the author.
+
+#### Scenario: Automerge refused
+- GIVEN a registered repository where automerge cannot be enabled
+- WHEN Lachesis opens a pull request there
+- THEN the caller is told automerge could not be enabled and why
+- AND the dashboard reports the pull request as a Lachesis fault, not as waiting on the author
 
 ### Requirement: Pending files are fully usable
 

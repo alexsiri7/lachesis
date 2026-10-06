@@ -37,6 +37,15 @@ The system SHALL create a spec change from a title, a why, and the complete new 
 - AND its description holds the why
 - AND the caller receives its number
 
+### Requirement: Spec changes merge without the author
+
+The system SHALL enable automerge on every spec change's pull request, so that it merges once the checks described in delivery pass, with no approval or merge from the author.
+
+#### Scenario: Spec change with its tests merges by itself
+- GIVEN a spec change whose acceptance tests have been added to its branch
+- WHEN every required check passes
+- THEN the spec change merges with no action from the author
+
 ### Requirement: Spec changes are checked before they are opened
 
 The system SHALL refuse a spec change whose content is malformed, and SHALL list every problem found. Each capability SHALL have a title, a Purpose section and a Requirements section; every requirement SHALL use SHALL or MUST and SHALL have at least one scenario.

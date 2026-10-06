@@ -24,6 +24,29 @@ Registering an already registered repository without giving a landing signal SHA
 - WHEN it is registered again with no landing signal
 - THEN its landing signal is still "deployment"
 
+### Requirement: Registered repositories are prepared for unattended merges
+
+When a repository is registered, re-registered or created, and for every repository already registered, the system SHALL configure it so that its pull requests can merge without a human: auto-merge allowed, merged branches deleted, and no approving review required on the default branch. It SHALL leave required status checks in place. Whatever it cannot configure, it SHALL report to the caller, and the dashboard SHALL report that repository as a Lachesis fault naming the setting.
+
+#### Scenario: Registering a repository with auto-merge off
+- GIVEN a repository with auto-merge disabled and one approving review required on its default branch
+- WHEN it is registered
+- THEN auto-merge is allowed on it
+- AND its default branch no longer requires an approving review
+- AND its required status checks are unchanged
+
+#### Scenario: Setting cannot be changed
+- GIVEN a repository whose settings the system is not permitted to change
+- WHEN it is registered
+- THEN registration succeeds
+- AND the caller is told which settings could not be changed and why
+- AND the dashboard reports the repository as a Lachesis fault
+
+#### Scenario: Already registered repositories
+- GIVEN a repository registered before this behaviour existed, with auto-merge disabled
+- WHEN the system next starts
+- THEN auto-merge is allowed on it
+
 ### Requirement: A new project can be created in one step
 
 The system SHALL let the author create a new project by giving a repository name, a purpose, and optionally one or more initial capabilities. In one operation it SHALL create the GitHub repository under the author's account, seed its default branch with openspec/specs containing the given capabilities, and register the repository. When no capabilities are given, the system SHALL seed a single capability whose Purpose is the given purpose.
