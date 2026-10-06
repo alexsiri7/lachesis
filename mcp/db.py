@@ -18,6 +18,7 @@ Tables (all namespaced lachesis_):
                             pause threshold, and which one is primary
   lachesis_fuel           — the latest allowance status reported for each account
   lachesis_overflow       — the latest Requesty overflow spend and cap reported
+  lachesis_factory_tokens — named, revocable keys scripts use to act as the author
   lachesis_estimates      — the current token estimate of each issue, with its kind,
                             capability and confidence
   lachesis_run_outcomes   — failures reported against a run: rework, a retry or an
@@ -1273,6 +1274,72 @@ def get_fuel(user_id: str) -> dict[str, Any] | None:
         "overflow_spent_usd": overflow["spent_usd"] if overflow else None,
         "overflow_cap_usd": overflow["cap_usd"] if overflow else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# lachesis_factory_tokens
+# ---------------------------------------------------------------------------
+
+
+def create_factory_token(user_id: str, name: str, token_hash: str) -> dict[str, Any]:
+    """Store a factory token's hash under *name*; refused while an active one has the name."""
+    sql = text(
+        """
+        INSERT INTO lachesis_factory_tokens (user_id, name, token_hash)
+        VALUES (:user_id, :name, :token_hash)
+        ON CONFLICT DO NOTHING
+        RETURNING name, created_at
+        """
+    )
+    with _engine().begin() as conn:
+        row = (
+            conn.execute(sql, {"user_id": user_id, "name": name, "token_hash": token_hash})
+            .mappings()
+            .first()
+        )
+    if row is None:
+        raise ValueError(f"a factory token named {name!r} already exists; revoke it first")
+    return dict(row)
+
+
+def list_factory_tokens(user_id: str) -> list[dict[str, Any]]:
+    """Return the user's active factory tokens by name, without their hashes."""
+    sql = text(
+        """
+        SELECT name, created_at, last_used_at FROM lachesis_factory_tokens
+        WHERE user_id = :user_id AND revoked_at IS NULL ORDER BY name
+        """
+    )
+    with _engine().connect() as conn:
+        return [dict(r) for r in conn.execute(sql, {"user_id": user_id}).mappings().all()]
+
+
+def revoke_factory_token(user_id: str, name: str) -> bool:
+    """Revoke the user's active factory token *name*; False when there is none."""
+    sql = text(
+        """
+        UPDATE lachesis_factory_tokens SET revoked_at = now()
+        WHERE user_id = :user_id AND name = :name AND revoked_at IS NULL
+        RETURNING id
+        """
+    )
+    with _engine().begin() as conn:
+        return conn.execute(sql, {"user_id": user_id, "name": name}).first() is not None
+
+
+def resolve_factory_token(token_hash: str) -> dict[str, Any] | None:
+    """Return the user an active factory token acts for, recording its use, or None."""
+    sql = text(
+        """
+        UPDATE lachesis_factory_tokens t SET last_used_at = now()
+        FROM lachesis_users u
+        WHERE t.token_hash = :token_hash AND t.revoked_at IS NULL AND u.id = t.user_id
+        RETURNING u.id AS lachesis_uid, u.google_id, u.email
+        """
+    )
+    with _engine().begin() as conn:
+        row = conn.execute(sql, {"token_hash": token_hash}).mappings().first()
+    return None if row is None else {**row, "lachesis_uid": str(row["lachesis_uid"])}
 
 
 # ---------------------------------------------------------------------------

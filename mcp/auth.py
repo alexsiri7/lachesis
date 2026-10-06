@@ -17,6 +17,8 @@ from settings import settings
 current_user_id: ContextVar[str] = ContextVar("current_user_id")
 # default=None because lachesis_uid is conditionally set — consumers must handle None
 current_db_user_id: ContextVar[str | None] = ContextVar("current_db_user_id", default=None)
+# True when this request authenticated with a factory token rather than a Google sign-in.
+via_factory_token: ContextVar[bool] = ContextVar("via_factory_token", default=False)
 
 
 def _decode_jwt(token: str, verify_exp: bool = True) -> tuple[str, str, str | None] | None:
