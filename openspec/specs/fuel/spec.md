@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The factory runs on one or more Claude accounts, each with a weekly allowance, and overflows to other models through Requesty under a spending cap the author sets there. Some accounts are the factory's own; others are shared with the author, who needs part of their allowance for their own use. Fuel is how the factory knows what it has spent, what it has left on each account and what to keep back, so it can pace itself without the author watching.
+The factory runs on one or more Claude accounts, each with a weekly allowance, and overflows to other models through Requesty under a spending cap the author sets there. Some accounts are the factory's own; others are shared with the author, who needs part of their allowance for their own use. Requesty is a budget of its own, in dollars, separate from every account. Fuel is how the factory knows what it has spent, what it has left on each account and on Requesty, and what to keep back, so it can pace itself without the author watching.
 
 ## Requirements
 
@@ -31,12 +31,12 @@ The worker SHALL report, for every run on an issue, the model used, tokens in an
 
 ### Requirement: The system knows what is left
 
-The system SHALL keep, for each account, the latest allowance status reported for it: the weekly use, when the weekly allowance resets, the five-hour window's use, and any shorter limit in force; and the overflow money spent this week against the Requesty cap. A report for one account SHALL NOT change another's. Reading fuel SHALL return every account's status with its reserve and what the factory may still use of it, and the overflow figures.
+The system SHALL keep, for each account, the latest allowance status reported for it: the weekly use, when the weekly allowance resets, the five-hour window's use, and any shorter limit in force. A report for one account SHALL NOT change another's, nor the overflow figures. Reading fuel SHALL return every account's status with its reserve and what the factory may still use of it, and the overflow figures.
 
 #### Scenario: Reading fuel
 - GIVEN the factory account reported 60 percent of its weekly allowance used
 - AND the account main reported 20 percent used
-- AND 12 dollars of a 40 dollar cap spent
+- AND overflow reported 12 dollars of a 40 dollar cap spent
 - WHEN fuel is read
 - THEN both accounts are returned with their use, reset time and reserve, and the overflow figures
 
@@ -44,6 +44,21 @@ The system SHALL keep, for each account, the latest allowance status reported fo
 - GIVEN the factory account reported 60 percent used
 - WHEN the account main reports 20 percent used
 - THEN the factory account still reads 60 percent used
+
+### Requirement: Overflow is reported on its own
+
+The system SHALL keep the latest overflow report, the money spent through Requesty this sprint and the cap the author set there, separately from every account. Only an overflow report SHALL change the overflow figures. Until overflow is first reported, the cap SHALL be unknown and no work SHALL be routed to overflow.
+
+#### Scenario: Account reports leave overflow alone
+- GIVEN overflow reported 12 dollars of a 40 dollar cap spent
+- WHEN the account main reports its fuel
+- THEN fuel still reads 12 dollars of a 40 dollar cap spent
+
+#### Scenario: Overflow never reported
+- GIVEN no overflow report
+- AND no account has allowance left outside its reserve
+- WHEN a run is routed
+- THEN it is not routed to an overflow model
 
 ### Requirement: A reserve is kept for emergencies
 
