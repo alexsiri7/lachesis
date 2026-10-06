@@ -1,0 +1,222 @@
+"""Fuel: each Claude account's allowance, the overflow cap, and what the factory may use."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+
+from harness import Lachesis, scenario
+
+REPO = "owner/repo"
+NOW = datetime.now(UTC)
+SPEC_CHANGE = pytest.mark.xfail(strict=True, reason="spec change #256")
+
+
+async def _ok(lachesis: Lachesis, tool: str, arguments: dict[str, Any]) -> Any:
+    result = await lachesis.call_tool(tool, arguments)
+    assert not result.is_error, result.text
+    return result.json()
+
+
+async def _register(lachesis: Lachesis, name: str, share: float, **extra: Any) -> Any:
+    return await _ok(lachesis, "register_account", {"name": name, "share_percent": share, **extra})
+
+
+async def _two_accounts(lachesis: Lachesis) -> None:
+    await _register(lachesis, "factory", 100, primary=True)
+    await _register(lachesis, "main", 65, five_hour_pause_percent=60)
+
+
+async def _report(
+    lachesis: Lachesis,
+    account: str | None,
+    used: float,
+    *,
+    five_hour: float | None = None,
+    spent: float = 0,
+    cap: float = 40,
+    resets_in: timedelta = timedelta(days=3),
+) -> Any:
+    arguments: dict[str, Any] = {
+        "weekly_used_percent": used,
+        "weekly_resets_at": (NOW + resets_in).isoformat(),
+        "overflow_spent_usd": spent,
+        "overflow_cap_usd": cap,
+    }
+    if account is not None:
+        arguments["account"] = account
+    if five_hour is not None:
+        arguments["five_hour_used_percent"] = five_hour
+    return await _ok(lachesis, "report_fuel", arguments)
+
+
+def _account(fuel: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(a for a in fuel["accounts"] if a["name"] == name)
+
+
+async def _route(lachesis: Lachesis, kind: str, *, emergency: bool = False) -> Any:
+    return await _ok(lachesis, "route_run", {"kind": kind, "emergency": emergency})
+
+
+@SPEC_CHANGE
+@scenario("fuel", "Registering a shared account")
+async def test_registering_a_shared_account(lachesis: Lachesis) -> None:
+    await _two_accounts(lachesis)
+
+    accounts = {a["name"]: a for a in (await _ok(lachesis, "list_accounts", {}))["accounts"]}
+
+    assert accounts["factory"]["primary"] is True
+    assert accounts["factory"]["share_percent"] == 100
+    assert accounts["main"]["primary"] is False
+    assert accounts["main"]["share_percent"] == 65
+    assert accounts["main"]["five_hour_pause_percent"] == 60
+
+
+@scenario("fuel", "Run on overflow model")
+async def test_run_on_overflow_model(lachesis: Lachesis) -> None:
+    await lachesis.call_tool("register_repo", {"repo": REPO})
+
+    report = await _ok(
+        lachesis,
+        "report_usage",
+        {
+            "repo": REPO,
+            "issue": 160,
+            "model": "deepseek/deepseek-chat",
+            "kind": "triage",
+            "tokens_in": 1000,
+            "tokens_out": 200,
+            "cost_usd": 0.01,
+        },
+    )
+
+    assert report["issue"] == 160
+    assert report["model"] == "deepseek/deepseek-chat"
+    assert report["cost_usd"] == 0.01
+    assert report["kind"] == "triage"
+
+
+@SPEC_CHANGE
+@scenario("fuel", "Run on a shared account")
+async def test_run_on_a_shared_account(lachesis: Lachesis) -> None:
+    await lachesis.call_tool("register_repo", {"repo": REPO})
+    await _two_accounts(lachesis)
+    usage = {
+        "repo": REPO,
+        "issue": 161,
+        "model": "claude-opus-5-5",
+        "kind": "implementation",
+        "tokens_in": 5000,
+        "tokens_out": 900,
+    }
+
+    report = await _ok(lachesis, "report_usage", {**usage, "account": "main"})
+    unknown = await lachesis.call_tool("report_usage", {**usage, "account": "nobody"})
+
+    assert report["issue"] == 161
+    assert report["account"] == "main"
+    assert report["kind"] == "implementation"
+    assert unknown.is_error
+
+
+@SPEC_CHANGE
+@scenario("fuel", "Reading fuel")
+async def test_reading_fuel(lachesis: Lachesis) -> None:
+    await _two_accounts(lachesis)
+    await _report(lachesis, "factory", 60, spent=12, cap=40)
+    await _report(lachesis, "main", 20)
+
+    fuel = await _ok(lachesis, "read_fuel", {})
+
+    factory, main = _account(fuel, "factory"), _account(fuel, "main")
+    assert factory["used_percent"] == 60
+    assert main["used_percent"] == 20
+    assert factory["resets_at"] and main["resets_at"]
+    assert factory["reserve_percent"] == 20  # 20% of a 100% share
+    assert main["reserve_percent"] == 13  # 20% of a 65% share
+    assert main["usable_percent"] == 32  # 65 - 13 - 20
+    assert fuel["overflow"]["spent_usd"] == 12
+    assert fuel["overflow"]["cap_usd"] == 40
+
+
+@SPEC_CHANGE
+@scenario("fuel", "Reports do not overwrite each other")
+async def test_reports_do_not_overwrite_each_other(lachesis: Lachesis) -> None:
+    await _two_accounts(lachesis)
+    await _report(lachesis, "factory", 60)
+
+    await _report(lachesis, "main", 20)
+
+    assert _account(await _ok(lachesis, "read_fuel", {}), "factory")["used_percent"] == 60
+
+
+@SPEC_CHANGE
+@scenario("fuel", "Only emergencies use the reserve")
+async def test_only_emergencies_use_the_reserve(lachesis: Lachesis) -> None:
+    await _two_accounts(lachesis)
+    await _report(lachesis, "factory", 85, spent=40, cap=40)
+    await _report(lachesis, "main", 55)
+
+    ordinary = await _route(lachesis, "implementation")
+    emergency = await _route(lachesis, "implementation", emergency=True)
+
+    assert ordinary["model"] is None
+    assert emergency["via"] == "allowance"
+    assert emergency["account"] in {"factory", "main"}
+
+
+@SPEC_CHANGE
+@scenario("fuel", "The share is never exceeded")
+async def test_the_share_is_never_exceeded(lachesis: Lachesis) -> None:
+    await _two_accounts(lachesis)
+    await _report(lachesis, "factory", 10)
+    await _report(lachesis, "main", 65)
+
+    routed = await _route(lachesis, "implementation", emergency=True)
+
+    assert routed["account"] != "main"
+
+
+@SPEC_CHANGE
+@scenario("fuel", "Five-hour window too full")
+async def test_five_hour_window_too_full(lachesis: Lachesis) -> None:
+    await _two_accounts(lachesis)
+    await _report(lachesis, "factory", 70)
+    await _report(lachesis, "main", 5, five_hour=62)
+
+    routed = await _route(lachesis, "implementation")
+    fuel = await _ok(lachesis, "read_fuel", {})
+
+    assert routed["account"] != "main"
+    assert _account(fuel, "main")["paused"] is True
+
+
+@SPEC_CHANGE
+@scenario("fuel", "Reaching the cap")
+async def test_reaching_the_cap(lachesis: Lachesis) -> None:
+    await _two_accounts(lachesis)
+    await _report(lachesis, "factory", 80, spent=40, cap=40)
+    await _report(lachesis, "main", 52)
+
+    routed = await _route(lachesis, "implementation")
+
+    assert routed["model"] is None
+    assert "cap" in routed["reason"]
+
+
+@SPEC_CHANGE
+@scenario("fuel", "Early burst held back")
+async def test_early_burst_held_back(lachesis: Lachesis) -> None:
+    # Two days into main's week (it resets in five): its usable share outside the
+    # reserve is 52 percent of the allowance, and 70 percent of that is 36.4.
+    await _two_accounts(lachesis)
+    await _report(lachesis, "factory", 79)
+    await _report(lachesis, "main", 36.4, resets_in=timedelta(days=5))
+
+    fuel = await _ok(lachesis, "read_fuel", {})
+    routed = await _route(lachesis, "implementation")
+
+    assert _account(fuel, "main")["within_pace"] is False
+    assert routed["account"] != "main"
