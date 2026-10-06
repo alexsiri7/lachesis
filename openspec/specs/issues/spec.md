@@ -27,29 +27,37 @@ When an issue is created with issues it is blocked by, the system SHALL record t
 
 ### Requirement: Issues say what they implement
 
-In a repository that uses specs, every issue created SHALL name either the spec change it implements, by pull request number, or be marked as a spec gap: work that brings the code in line with the spec as it already stands, such as an audit finding or a bug. Both kinds SHALL name the capability and SHALL accept the requirement within it. The system SHALL write this reference into the issue body when the issue is created, as a block at the end of the body in this form:
+In a repository that uses specs, every issue created SHALL name either the spec change it implements, by pull request number, or be marked as a spec gap: work that brings the code in line with the spec as it already stands, such as an audit finding or a bug. Both kinds SHALL name the capability and SHALL accept the requirement within it.
+
+#### Scenario: No reference
+- GIVEN a repository that uses specs
+- WHEN an issue is created naming neither a spec change nor a spec gap
+- THEN creation is refused and the caller is told what is missing
+
+### Requirement: The reference is written into the issue at creation
+
+The system SHALL write the reference into the issue body when the issue is created, as a block at the end of the body in this form:
 
     ---
     Spec change: #152
     Capability: backlog
     Requirement: The system says what to work on next
 
-A spec gap SHALL carry `Spec gap: yes` in place of the spec change line and SHALL be labelled `spec-gap`. The reference SHALL be complete at creation, so no later write is needed to connect an issue to its work.
+The reference SHALL be complete at creation, so no later write is needed to connect an issue to its work.
 
 #### Scenario: Implementing a spec change
 - GIVEN open spec change #152
 - WHEN an issue is created naming #152, capability backlog and a requirement
 - THEN the issue body ends with the reference block naming all three
 
+### Requirement: Spec gaps are marked
+
+A spec gap SHALL carry `Spec gap: yes` in place of the spec change line of its reference block and SHALL be labelled `spec-gap`.
+
 #### Scenario: Audit finding
 - GIVEN an audit finds the code breaks an existing requirement
 - WHEN an issue is created as a spec gap for that capability and requirement
 - THEN it is labelled spec-gap and its reference block says so
-
-#### Scenario: No reference
-- GIVEN a repository that uses specs
-- WHEN an issue is created naming neither a spec change nor a spec gap
-- THEN creation is refused and the caller is told what is missing
 
 ### Requirement: Implementation waits for its tests
 
