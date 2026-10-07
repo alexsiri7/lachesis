@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The backlog tells the autonomous worker what to build next. Its order is computed by the system, not set by hand, so the author is never on the critical path. The author steers by naming a focus and by the single interrupt marker; dependencies constrain what is possible; readiness marks what the author has finished thinking about. Priority labels and urgency grades stay absent: the order itself carries the priority.
+The backlog tells the autonomous worker what to build next. Its order is computed by the system, not set by hand, so the author is never on the critical path. The author steers by naming a focus and by the single interrupt marker; dependencies constrain what is possible. Work is ready from the moment it exists: readiness is never something the author grants, and nothing waits on the author except work blocked by a recorded question. Priority labels and urgency grades stay absent: the order itself carries the priority.
 
 ## Requirements
 
@@ -41,13 +41,19 @@ The author SHALL be able to set a focus on any number of repositories or milesto
 
 ### Requirement: Work is eligible unless parked
 
-An issue SHALL be ready for autonomous pickup from the moment it is created. The author SHALL be able to park an issue and unpark it later. Parking SHALL mean the author has not finished deciding; sequencing SHALL be expressed with dependencies, not parking.
+An issue SHALL be ready for autonomous pickup from the moment it is created. An agent SHALL be able to park an issue it knows is unfinished and unpark it later. Parking SHALL NOT be how work waits for the author: what needs the author's decision SHALL be a recorded question blocking that issue. Sequencing SHALL be expressed with dependencies, not parking.
 
 #### Scenario: Park and unpark
 - GIVEN a ready issue
 - WHEN it is parked
 - THEN it is skipped for autonomous pickup
 - AND when it is unparked it is eligible again in its computed place
+
+#### Scenario: Waiting on a decision
+- GIVEN an issue that needs a decision only the author can make
+- WHEN an agent handles it
+- THEN a question blocking it is recorded
+- AND the issue is not parked
 
 ### Requirement: One interrupt marker
 
