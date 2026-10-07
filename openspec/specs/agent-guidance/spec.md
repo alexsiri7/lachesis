@@ -2,9 +2,32 @@
 
 ## Purpose
 
-Agents using Lachesis learn the intended workflow from Lachesis itself, so the guidance travels with the server and changes when it changes. This includes agents that run unattended on a schedule.
+Agents using Lachesis learn the intended workflow from Lachesis itself, so the guidance travels with the server and changes when it changes. This includes agents that run unattended on a schedule, and the worker that writes the code. The guidance always starts from the founding rule: the author is never on the critical path.
 
 ## Requirements
+
+### Requirement: Every instruction set opens with the founding rule
+
+Every set of instructions the system returns SHALL open, before anything else, with the founding rule: the author is never on the critical path. Work is ready from the moment it exists and the factory decides what to do and in what order; the author steers only with focus and the interrupt marker, and is reached only through recorded questions. No agent SHALL park, skip or label work so that it waits for the author.
+
+#### Scenario: Any instructions requested
+- WHEN the workflow, the morning briefing or any other instruction set is requested
+- THEN its first lines state the founding rule
+
+#### Scenario: Work that needs a decision
+- GIVEN an agent meets work it cannot do without a decision only the author can make
+- WHEN it follows the guidance
+- THEN it records a question blocking only that work and moves on
+- AND it does not park the work or label it for a human
+
+### Requirement: Instructions live in GitHub and are served by Lachesis
+
+Every set of instructions an agent runs from, scheduled or not and the worker's included, SHALL be stored in a registered repository and served by Lachesis on request. A scheduled task or worker SHALL hold only the call that fetches its instructions, so no instruction lives outside GitHub.
+
+#### Scenario: Scheduled task
+- GIVEN a scheduled task that runs the morning pass
+- WHEN its prompt is read
+- THEN it only asks Lachesis for the morning briefing and follows it
 
 ### Requirement: The workflow is available on request
 
@@ -53,13 +76,18 @@ The system SHALL return, on request, the complete instructions for an unattended
 
 ### Requirement: The briefing fixes before it reports
 
-Before writing the message, the briefing SHALL tell the agent to make these fixes and only these: mark done a requirement that has landed but is still recorded as not done; comment on and close a factory escalation whose cause is resolved, because its pull request merged or closed or the default branch's checks pass at a later commit; and rewrite for an agent, and unpark, an issue parked for the author that an agent can do itself because what it waits for is already available. The message SHALL say in one line what was fixed.
+Before writing the message, the briefing SHALL tell the agent to make these fixes and only these: mark done a requirement that has landed but is still recorded as not done; comment on and close a factory escalation whose cause is resolved, because its pull request merged or closed or the default branch's checks pass at a later commit; and rewrite for an agent, and unpark, an issue parked for the author that an agent can do itself. The message SHALL say in one line what was fixed, and nothing about fixes when none was made.
 
 #### Scenario: Stale escalation
 - GIVEN an open factory escalation about a pull request that has since merged
 - WHEN the morning briefing is followed
 - THEN the escalation is commented on and closed
 - AND the message says in one line that it was closed
+
+#### Scenario: Nothing to fix
+- GIVEN nothing qualifies as a fix
+- WHEN the morning briefing is followed
+- THEN the message has no line about fixes
 
 ### Requirement: The briefing opens with factory health
 
@@ -72,17 +100,27 @@ The message SHALL open with one line saying whether the factory is working, from
 
 ### Requirement: The briefing sends only what needs the author
 
-The message SHALL list at most three items, each a direct question for the author or a concrete action with its link, such as answering a question or deciding something. Work that waits on the worker, and Lachesis faults, SHALL be filed as issues or flagged on existing ones, not listed for the author.
+The message SHALL list at most three items, each a direct question for the author or a concrete action, such as answering a question or deciding something. Work that waits on the worker, and Lachesis faults, SHALL be filed as issues or flagged on existing ones, and SHALL be neither listed for the author nor reported in the message.
 
 #### Scenario: Worker problem
 - GIVEN a pull request stuck because the worker cannot rebase it
 - WHEN the morning briefing is followed
 - THEN it is filed or flagged as an issue
-- AND it is not one of the items for the author
+- AND the message does not mention it
+
+### Requirement: The briefing is self-contained
+
+The message SHALL be readable and actionable without opening anything else. It SHALL never identify work by a number alone (issue, pull request, spec change, requirement or question); each item SHALL name the project in words and say what the thing is, what is asked, and what follows from each answer. A link MAY follow the description but SHALL NOT replace it.
+
+#### Scenario: A decision waiting on the author
+- GIVEN an issue asking the author to approve deleting retired databases
+- WHEN the morning briefing is followed
+- THEN the item names the project and the databases, and says what deletion involves and what happens if the author declines
+- AND no bare issue number stands in for that description
 
 ### Requirement: The briefing is short
 
-After the health lines and the items, the message SHALL give one line counting what landed since the previous morning, naming the work only when five or fewer landed, and one line per focused repository on the top of its backlog. When nothing needs the author and the factory is healthy, the whole message SHALL be a one-line all-quiet.
+After the health lines and the items, the message SHALL give one line counting what landed since the previous morning, naming the work in words only when five or fewer landed, and one line per focused repository on the top of its backlog, described in words. When nothing needs the author and the factory is healthy, the whole message SHALL be a one-line all-quiet.
 
 #### Scenario: All quiet
 - GIVEN nothing needs the author and the factory is healthy
