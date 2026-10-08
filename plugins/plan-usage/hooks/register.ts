@@ -19,6 +19,9 @@ type GuardConfig = {
   enabled: boolean
   weeklyCapPercent: number
   fiveHourCapPercent: number
+  // When true the weekly cap grows with the week: weeklyCapPercent times the
+  // share of the 7-day window elapsed, so the cap is not spent on day one.
+  pace: boolean
 }
 
 const WINDOW_MS: Record<string, number> = {
@@ -41,13 +44,16 @@ function formatSpan(ms: number): string {
 
 // How far through the window we are: time left to the reset and the share of
 // the window's length already elapsed, so usage can be read against pace.
-function windowTiming(w: SessionRateLimit, now: number): { left: string; elapsed: number } | undefined {
+function windowTiming(
+  w: SessionRateLimit,
+  now: number,
+): { left: string; elapsed: number; elapsedExact: number } | undefined {
   const length = WINDOW_MS[w.kind]
   if (!w.resetsAt || !length) return undefined
   const msLeft = Date.parse(w.resetsAt) - now
   if (Number.isNaN(msLeft)) return undefined
-  const elapsed = Math.round(Math.min(100, Math.max(0, (1 - msLeft / length) * 100)))
-  return { left: formatSpan(msLeft), elapsed }
+  const elapsedExact = Math.min(100, Math.max(0, (1 - msLeft / length) * 100))
+  return { left: formatSpan(msLeft), elapsed: Math.round(elapsedExact), elapsedExact }
 }
 
 function describeWindow(w: SessionRateLimit, now: number): string {
@@ -65,33 +71,57 @@ function shortWindow(w: SessionRateLimit, now: number): string {
   return t ? `${name} ${w.percentUsed}%/${t.elapsed}% ↺${t.left}` : `${name} ${w.percentUsed}%`
 }
 
-// ~/.claude/budget-guard.json, e.g.
-// { "enabled": true, "weeklyCapPercent": 65, "fiveHourCapPercent": 60 }
+async function configDir($: EngineInterface): Promise<string> {
+  return (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
+}
+
+// <config dir>/budget-guard.json, e.g.
+// { "enabled": true, "weeklyCapPercent": 65, "fiveHourCapPercent": 60, "pace": true }
 // Missing or unreadable means the guard is off.
 async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
   try {
-    const home = await $.env.get('HOME')
-    const raw = JSON.parse(await $.fs.read(`${home}/.claude/budget-guard.json`))
+    const raw = JSON.parse(await $.fs.read(`${await configDir($)}/budget-guard.json`))
     if (raw.enabled !== true) return undefined
     return {
       enabled: true,
       weeklyCapPercent: Number(raw.weeklyCapPercent ?? 100),
       fiveHourCapPercent: Number(raw.fiveHourCapPercent ?? 100),
+      pace: raw.pace === true,
     }
   } catch {
     return undefined
   }
 }
 
+// The cap in force for a window now. With pace on, the weekly cap is
+// weeklyCapPercent times the share of the week elapsed, to one decimal; a
+// window with no reset time falls back to the full cap.
+function capFor(guard: GuardConfig, w: SessionRateLimit, now: number): number | undefined {
+  if (w.kind === 'five_hour') return guard.fiveHourCapPercent
+  if (w.kind !== 'seven_day') return undefined
+  const t = guard.pace ? windowTiming(w, now) : undefined
+  if (!t) return guard.weeklyCapPercent
+  return Math.round(guard.weeklyCapPercent * t.elapsedExact) / 100
+}
+
+function describeCaps(guard: GuardConfig, windows: SessionRateLimit[], now: number): string {
+  const week = windows.find(w => w.kind === 'seven_day')
+  const weekCap = week && guard.pace ? capFor(guard, week, now) : undefined
+  const weekly =
+    weekCap !== undefined && weekCap !== guard.weeklyCapPercent
+      ? `7-day cap ${weekCap}% now (${guard.weeklyCapPercent}% paced over the week)`
+      : `7-day cap ${guard.weeklyCapPercent}%`
+  return `${weekly}, 5-hour cap ${guard.fiveHourCapPercent}%`
+}
+
 // The windows at or past their cap, as text; empty when within budget.
-function breaches(guard: GuardConfig, windows: SessionRateLimit[]): string[] {
-  const caps: Record<string, number> = {
-    seven_day: guard.weeklyCapPercent,
-    five_hour: guard.fiveHourCapPercent,
-  }
-  return windows
-    .filter(w => caps[w.kind] !== undefined && w.percentUsed >= caps[w.kind]!)
-    .map(w => `${LABELS[w.kind]} at ${w.percentUsed}% (cap ${caps[w.kind]}%)`)
+function breaches(guard: GuardConfig, windows: SessionRateLimit[], now: number): string[] {
+  return windows.flatMap(w => {
+    const cap = capFor(guard, w, now)
+    return cap !== undefined && w.percentUsed >= cap
+      ? [`${LABELS[w.kind]} at ${w.percentUsed}% (cap ${cap}%)`]
+      : []
+  })
 }
 
 // The latest windows, written to <config dir>/plan-usage.json after every measurement, so
@@ -100,7 +130,7 @@ function breaches(guard: GuardConfig, windows: SessionRateLimit[]): string[] {
 async function recordWindows($: EngineInterface, windows: SessionRateLimit[]): Promise<void> {
   if (!windows.length) return
   try {
-    const dir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
+    const dir = await configDir($)
     const record = { recordedAt: new Date(await $.clock.now()).toISOString(), rateLimits: windows }
     await $.fs.write(`${dir}/plan-usage.json`, JSON.stringify(record, null, 2) + '\n')
   } catch {
@@ -136,9 +166,9 @@ export const register: Register = on => {
     if (!guard) {
       lines.push('Budget guard: off')
     } else {
-      const over = breaches(guard, usage.rateLimits)
+      const over = breaches(guard, usage.rateLimits, now)
       lines.push(
-        `Budget guard: on (7-day cap ${guard.weeklyCapPercent}%, 5-hour cap ${guard.fiveHourCapPercent}%)` +
+        `Budget guard: on (${describeCaps(guard, usage.rateLimits, now)})` +
           (over.length ? ` - TRIPPED: ${over.join('; ')}` : ' - within budget'),
       )
     }
@@ -151,7 +181,7 @@ export const register: Register = on => {
     if (ALWAYS_ALLOWED.some(re => re.test(e.tool))) return next(e)
     const guard = await readGuard($)
     if (!guard) return next(e)
-    const over = breaches(guard, (await $.session.usage()).rateLimits)
+    const over = breaches(guard, (await $.session.usage()).rateLimits, await $.clock.now())
     if (!over.length) return next(e)
     return {
       deny:
@@ -167,7 +197,7 @@ export const register: Register = on => {
     const fig = e.rateLimits.map(w => shortWindow(w, now)).join(' · ')
     const guard = await readGuard($)
     if (guard) {
-      const over = breaches(guard, e.rateLimits)
+      const over = breaches(guard, e.rateLimits, now)
       $.ui.status(over.length ? `⛔ budget guard tripped: ${fig}` : `budget guard on · ${fig}`)
     } else {
       $.ui.status(fig || undefined)

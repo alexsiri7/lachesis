@@ -74,3 +74,49 @@ test('a measurement records the windows to the config dir', async ($, on) => {
   expect(written.map(w => w.path)).toEqual(['/cfg/plan-usage.json'])
   expect(JSON.parse(written[0]!.text).rateLimits[0].percentUsed).toBe(41)
 })
+
+function paced(on: any, sevenDay: number, readPath: string[] = []) {
+  // Week resets 2026-10-10T15:00Z; at 2026-10-06T15:00Z three of its seven days have passed.
+  on('clock.now', () => ({ value: Date.parse('2026-10-06T15:00:00Z') }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/factory-main' : '/home/test' }))
+  on('fs.read', (_$: any, e: any) => {
+    readPath.push(e.path)
+    return { value: JSON.stringify({ enabled: true, weeklyCapPercent: 70, fiveHourCapPercent: 60, pace: true }) }
+  })
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { window: 200000 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 5, resetsAt: '2026-10-06T17:00:00Z' },
+        { kind: 'seven_day', percentUsed: sevenDay, resetsAt: '2026-10-10T15:00:00Z' },
+      ],
+    },
+  }))
+  on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }))
+}
+
+test('paced guard: the weekly cap is the cap times the share of the week elapsed', async ($, on) => {
+  paced(on, 30.5)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny ?? r.text).toContain('7-day window at 30.5% (cap 30%)')
+})
+
+test('paced guard: under the paced cap, tools run', async ($, on) => {
+  paced(on, 29)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny).toBeUndefined()
+})
+
+test('paced guard: the usage tool names the cap in force now', async ($, on) => {
+  paced(on, 10)
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('7-day cap 30% now (70% paced over the week)')
+})
+
+test('the guard file is read from the config dir', async ($, on) => {
+  const paths: string[] = []
+  paced(on, 10, paths)
+  await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(paths).toContain('/factory-main/budget-guard.json')
+})
