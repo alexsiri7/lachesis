@@ -1,1 +1,1 @@
-{ "name": "plan-usage", "version": "0.4.0", "description": "Gives Claude a tool to read the plan's rate-limit windows (5h / 7d) and session cost (time to reset and % of window elapsed), with an optional budget guard that blocks tool calls past set caps" }
+{ "name": "plan-usage", "version": "0.5.0", "description": "Gives Claude a tool to read the plan's rate-limit windows (5h / 7d) and session cost (time to reset and % of window elapsed), with an optional budget guard that blocks tool calls past set caps" }
