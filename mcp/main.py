@@ -414,6 +414,17 @@ mcp.tool(
 
 mcp.tool(
     description=(
+        "Return the questions settled by their default (outcome defaulted) in the last "
+        "since_hours (24 unless given) across the registered repositories, oldest first, "
+        "so the author can see every default the factory took. Each has its id, "
+        "repo_name, question, kind, the issues it blocked, answer (the default taken) "
+        "and answered_at. The author may still answer one with answer_question."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True),
+)(question_tools.list_defaulted_questions)
+
+mcp.tool(
+    description=(
         "Search the answered questions in a registered repository for text: every word "
         "must match, by stem, in the question, its context or its answer. Newest answer "
         "first; each match carries its answer, answerer, answered_at and outcome. Search "

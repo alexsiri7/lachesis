@@ -18,6 +18,7 @@ from tools.questions import (
     answer_question,
     ask_author,
     ask_question,
+    list_defaulted_questions,
     list_open_questions,
     search_answered_questions,
     settle_expired_defaults,
@@ -956,3 +957,20 @@ async def test_the_author_may_answer_a_defaulted_question(
 
     answer.assert_called_once()
     assert result["outcome"] == "none"
+
+
+async def test_listing_defaults_settles_first_and_reads_the_window(set_user_id: str) -> None:
+    with (
+        patch("tools.questions.settle_expired_defaults", new_callable=AsyncMock) as settle,
+        patch("tools.questions.db.list_defaulted_questions", return_value=[]) as listed,
+    ):
+        await list_defaulted_questions(since_hours=24)
+
+    settle.assert_awaited_once_with("test-uid")
+    since = listed.call_args.args[1]
+    assert timedelta(hours=23) < datetime.now(UTC) - since < timedelta(hours=25)
+
+
+async def test_listing_defaults_needs_a_window(set_user_id: str) -> None:
+    with pytest.raises(ValueError, match="since_hours"):
+        await list_defaulted_questions(since_hours=0)

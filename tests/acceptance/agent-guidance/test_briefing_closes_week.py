@@ -22,7 +22,6 @@ async def _briefing(lachesis: Lachesis) -> str:
     return " ".join(text.lower().split())
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #319")
 @scenario("agent-guidance", "Sprint just ended")
 async def test_sprint_just_ended(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)
@@ -32,7 +31,6 @@ async def test_sprint_just_ended(lachesis: Lachesis) -> None:
     assert "say in one line that the sprint review was sent" in briefing
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #319")
 @scenario("agent-guidance", "Defaults taken")
 async def test_defaults_taken(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)
