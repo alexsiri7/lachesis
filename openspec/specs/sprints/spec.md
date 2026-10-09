@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The primary Claude account's allowance resets weekly, so the factory works in weekly sprints aligned with it. It sizes work in Fibonacci points, learns from every finished issue how many tokens a point costs, plans as many points as the budget buys, measures everything and reviews the sprint once a week. The sprint is the factory's own governor: a regular point to stop, measure and re-plan without the author acting as the brake. Carryover is information, not failure.
+The primary Claude account's allowance resets weekly, so the factory works in weekly sprints aligned with it. It improves its own way of working every sprint through small measured experiments, sizes work in Fibonacci points, learns from every finished issue how many tokens a point costs, plans as many points as the budget buys, measures everything and reviews the sprint once a week. The sprint is the factory's own governor: a regular point to stop, measure and re-plan without the author acting as the brake. Carryover is information, not failure.
 
 ## Requirements
 
@@ -74,7 +74,7 @@ At the start of each sprint the factory SHALL plan it: take the computed backlog
 
 ### Requirement: The sprint is reviewed
 
-At the end of each sprint the author SHALL receive one push notification and a review saying what was delivered and is available; the points planned and the points delivered; for each size, how actual tokens compared with the estimate; the issues whose actual tokens were more than twice their estimate, as sizes misjudged; what was spent on each Claude account, each model and on overflow; which audits ran with what they found; and what carried over. The review SHALL keep the points delivered sprint by sprint, so the factory's velocity can be read over time, and the next sprint SHALL be priced from the updated history.
+At the end of each sprint the author SHALL receive one push notification and a review saying what was delivered and is available; the points planned and the points delivered; for each size, how actual tokens compared with the estimate; the issues whose actual tokens were more than twice their estimate, as sizes misjudged; what was spent on each Claude account, each model and on overflow; which audits ran with what they found; the improvement experiments with their measures and results; and what carried over. The review SHALL keep the points delivered sprint by sprint, so the factory's velocity can be read over time, and the next sprint SHALL be priced from the updated history.
 
 #### Scenario: Sprint ends
 - GIVEN a sprint that delivered two milestones and carried over three issues
@@ -100,9 +100,45 @@ At the end of each sprint the author SHALL receive one push notification and a r
 
 ### Requirement: The factory reviews itself
 
-At the end of each sprint the factory SHALL review its own misses, such as sizes misjudged, retries and rework, and record its findings as notes. A finding that needs a standing rule SHALL become a question to the author; any other finding SHALL become work in the backlog.
+At the end of each sprint the factory SHALL review its own misses, such as sizes misjudged, retries and rework, and record its findings as notes. A finding that needs a standing rule about what a project should be SHALL become a question to the author; any other finding SHALL become work in the backlog.
 
 #### Scenario: Repeated estimate miss
 - GIVEN implementation issues in one capability used more than twice their estimates all sprint
 - WHEN the sprint is reviewed
 - THEN a finding note records the miss
+
+### Requirement: The factory improves itself every sprint
+
+Each sprint review SHALL choose one or two improvements to how the factory works (its guidance, sizing, routing, scripts or checks, never what a project should be) from that sprint's misses, audit findings and north-star gaps. Each SHALL be recorded as an experiment: the change, the measure it should move (such as rework rate, tokens per point, time stuck or questions per issue), its value now and the target. The work an experiment needs SHALL be planned in the next sprint ahead of the ordinary backlog, within an improvement share of the sprint budget, 10 percent unless the author sets another. The next review SHALL judge each experiment against its measure: one that met its target SHALL be kept and made standard, by changing the guidance or proposing a spec change; one that did not SHALL be reverted or given one more sprint with a stated reason. The review SHALL list every open experiment with its measure and result. Changing how the factory works is the factory's to decide and SHALL NOT wait on the author.
+
+#### Scenario: Experiment chosen
+- GIVEN a sprint in which four issues needed rework after review
+- WHEN the sprint is reviewed
+- THEN the review records an experiment naming a change, the rework rate as its measure, its current value and a target
+- AND the work it needs is planned first in the next sprint
+
+#### Scenario: Experiment kept
+- GIVEN an experiment whose target was a rework rate under 10 percent
+- AND the sprint since it started had a rework rate of 6 percent
+- WHEN the sprint is reviewed
+- THEN the experiment is marked kept and its change made standard
+
+#### Scenario: Experiment reverted
+- GIVEN an experiment that has missed its target for two sprints
+- WHEN the sprint is reviewed
+- THEN the experiment is marked reverted and its change undone
+
+#### Scenario: Improvement share respected
+- GIVEN a sprint budget of 100 units with the default improvement share
+- WHEN the sprint is planned
+- THEN no more than 10 units go to improvement work
+- AND that work is planned before the ordinary backlog
+
+### Requirement: The line stops for a repeated failure
+
+When the same failure happens three times in one sprint, such as the same check failing, the same kind of rework or the same stuck state, the next sprint review SHALL make fixing its cause an experiment, whatever else it would have chosen.
+
+#### Scenario: Same failure three times
+- GIVEN three pull requests this sprint got stuck on the same merge conflict pattern
+- WHEN the sprint is reviewed
+- THEN one of the experiments chosen is to remove that cause
