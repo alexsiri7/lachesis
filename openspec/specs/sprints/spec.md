@@ -26,12 +26,18 @@ Every issue SHALL carry an estimate in tokens, made from the measured usage of p
 
 ### Requirement: The factory plans the sprint
 
-At the start of each sprint the factory SHALL plan it: take the computed backlog in order and include issues until their estimates fill the sprint budget, which is the factory share of every registered account's weekly allowance less its reserve, plus the overflow cap. The plan SHALL never wait on the author. When the author changes focus during a sprint, the plan SHALL be redone from the new order.
+At the start of each sprint the factory SHALL plan it: take the computed backlog in order, together with the due audits, and include work until its estimates fill the sprint budget, which is the factory share of every registered account's weekly allowance less its reserve, plus the overflow cap. The plan SHALL never wait on the author. When the author changes focus during a sprint, the plan SHALL be redone from the new order.
 
 #### Scenario: Plan fills the budget
 - GIVEN a sprint budget of 100 units and backlog estimates of 40, 40 and 30
 - WHEN the sprint is planned
 - THEN the first two issues are planned and the third is not
+
+#### Scenario: Audits share the budget
+- GIVEN a sprint budget of 100 units, backlog estimates of 40 and 40, and a due audit estimated at 30
+- WHEN the sprint is planned
+- THEN the plan's estimates together do not exceed 100 units
+- AND the audit's planned tokens count against the budget like an issue's
 
 #### Scenario: Shared account adds to the budget
 - GIVEN the factory account's usable allowance is 80 units
@@ -47,13 +53,18 @@ At the start of each sprint the factory SHALL plan it: take the computed backlog
 
 ### Requirement: The week is reported
 
-At the end of each sprint the author SHALL receive one push notification and a report saying what was delivered and is available, what was spent on each Claude account and on overflow, how estimates compared with actual usage, and what carried over.
+At the end of each sprint the author SHALL receive one push notification and a report saying what was delivered and is available, what was spent on each Claude account and on overflow, how estimates compared with actual usage, which audits ran with what they found, and what carried over.
 
 #### Scenario: Sprint ends
 - GIVEN a sprint that delivered two milestones and carried over three issues
 - WHEN it ends
 - THEN exactly one push notification arrives
 - AND the report lists the delivered work, the spending per account and on overflow, estimate accuracy and the three carried-over issues
+
+#### Scenario: Audits in the report
+- GIVEN a sprint in which a security audit of reli filed two findings
+- WHEN it ends
+- THEN the report lists reli's security audit with its two findings
 
 ### Requirement: The factory reviews itself
 
