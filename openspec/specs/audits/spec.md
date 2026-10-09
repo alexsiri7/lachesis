@@ -10,7 +10,7 @@ Audits are factory work like any other: they are planned into the sprint, paid f
 
 ### Requirement: Every audit run is recorded
 
-The system SHALL record every audit run with its repository, its audit kind (architecture, security, tests or requirements), its capability where the audit has one, when it ran, its outcome (clean, findings or failed), the issues it filed and the tokens it used. It SHALL return, for each registered repository and audit kind, the last run with its time and outcome, and say "never" for an audit that has never run there.
+The system SHALL record every audit run with its repository, its audit kind (architecture, security, tests or requirements), its capability where the audit has one, the model that ran it, when it ran, its outcome (clean, findings or failed), the issues it filed and the tokens it used. It SHALL return, for each registered repository and audit kind, the last run with its time and outcome, and say "never" for an audit that has never run there.
 
 #### Scenario: Run recorded
 - GIVEN a security audit of filmduel that finished and filed issues #40 and #41
@@ -28,12 +28,12 @@ The system SHALL record every audit run with its repository, its audit kind (arc
 - WHEN the audit history is read
 - THEN its security audit shows never
 
-### Requirement: Audits fall due when the code changes
+### Requirement: Audits fall due when the code or the auditor changes
 
-An audit kind SHALL be due for a repository when it has never run there, when its last run there failed, or when pull requests have merged into the repository's default branch since its last run there. An audit SHALL NOT be due for a repository with no merges since its last successful run. Due audits SHALL be ordered by the number of pull requests merged since their last run, most first, then by the oldest last run.
+An audit kind SHALL be due for a repository when it has never run there, when its last run there failed, when pull requests have merged into the repository's default branch since its last successful run there, or when the model the factory would now use for that audit kind differs from the model of that last successful run, since a different model may find what the previous one missed. A security audit SHALL also be due once 60 days have passed since its last successful run, changes or not, because dependencies age while the code stands still. Otherwise an audit SHALL NOT be due. Due audits SHALL be ordered by the number of pull requests merged since their last run, most first, then by the oldest last run.
 
 #### Scenario: Quiet project skipped
-- GIVEN kith's last tests audit finished after its most recent merge
+- GIVEN kith's last tests audit finished after its most recent merge, on the model still used for tests audits
 - WHEN due audits are computed
 - THEN no tests audit of kith is due
 
@@ -41,6 +41,16 @@ An audit kind SHALL be due for a repository when it has never run there, when it
 - GIVEN twelve pull requests merged into reli and two into filmduel since each one's last tests audit
 - WHEN due audits are computed
 - THEN reli's tests audit comes before filmduel's
+
+#### Scenario: New auditor model
+- GIVEN every repository's last architecture audit ran on one model and no repository has changed since
+- WHEN the model used for architecture audits changes
+- THEN an architecture audit is due for every repository
+
+#### Scenario: Security audit of a quiet project
+- GIVEN kith has had no merges since its last security audit, which finished 61 days ago
+- WHEN due audits are computed
+- THEN a security audit of kith is due
 
 ### Requirement: Audits are planned into the sprint
 
