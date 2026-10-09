@@ -1715,6 +1715,129 @@ async def waiting_on_author(repos: list[str]) -> WaitingOnAuthor:
     return WaitingOnAuthor(issues, unreadable)
 
 
+_DASHBOARD_CONCURRENCY = 6
+
+
+class _DashboardRepo:
+    """What get_dashboard read from one repository, merged with the others afterwards."""
+
+    def __init__(self, repo: str) -> None:
+        self.repo = repo
+        self.entry: dict[str, Any] | None = None
+        self.candidates: list[groups.Candidate] = []
+        self.status_counts: Counter[str] = Counter()
+        self.spec_change_counts: Counter[str] = Counter()
+        self.spec_gaps: dict[str, int] | None = None
+        self.incomplete = False
+        self.failure: dict[str, Any] | None = None
+
+
+async def _read_dashboard_repo(
+    repo_name: str, status: str | None, include_inactive: bool
+) -> _DashboardRepo:
+    """Read one repository's requirements and spec changes for get_dashboard."""
+    from .specs import read_spec_progress, spec_change_status, uses_specs
+
+    read = _DashboardRepo(repo_name)
+    listed = False
+    try:
+        files = await github.list_files(repo_name, "requirements")
+        copies = await _read_default_branch(repo_name, files)
+
+        try:
+            lachesis_prs = await github.list_lachesis_prs(repo_name)
+            for open_pr in lachesis_prs:
+                await _read_pull_request_branch(repo_name, open_pr, copies)
+        except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
+            # Falls through rather than reaching the outer handler: what this repo's
+            # default branch already yielded is real, and every count below it is a
+            # floor that incomplete_repos qualifies.
+            logger.warning("get_dashboard: PR-branch pass failed repo=%s error=%r", repo_name, exc)
+            read.incomplete = True
+
+        requirements: list[dict[str, Any]] = []
+        repo_candidates: list[groups.Candidate] = []
+        seen_ids: set[str] = set()
+        pending: _Pending = []
+        landing_candidates: list[landing.Candidate] = []
+        for path, (content, pr_info) in copies.items():
+            post = frontmatter.loads(content)
+            req_id = _requirement_id(path, post)
+            if pr_info is not None and req_id in seen_ids:
+                continue
+            seen_ids.add(req_id)
+            req_status = canonical_status(post.get("status", ""))
+            read.status_counts[req_status] += 1
+            if status is not None and req_status != status:
+                continue
+            numbers = linked_issue_numbers(post)
+            pr = _pr_field(pr_info)
+            entry = {
+                "id": req_id,
+                "title": post["title"],
+                "status": req_status,
+                "github_issue": post.get("github_issue"),
+                "pr": pr,
+                "warning": _entry_warning(pr, numbers),
+                **_inactive_fields(post),
+            }
+            repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
+            if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
+                continue
+            requirements.append(entry)
+            pending.append((entry, numbers, pr is not None))
+            if pr is None:
+                landing_candidates.append(landing.Candidate(path, content, entry))
+
+        await _attach_derived(repo_name, pending)
+        repo_entry: dict[str, Any] = {
+            "repo": repo_name,
+            "requirements": requirements,
+            "spec_changes": [],
+        }
+        read.entry = repo_entry
+        listed = True
+        read.candidates.extend(repo_candidates)
+        # After the append, so a raise here could not cost the repo its listing
+        # under this except's misleading log line. A status filter narrows the
+        # candidates, which loses nothing: an unconsidered requirement is never
+        # claimed, so a later unfiltered read still announces it.
+        await landing.notify_landed(repo_name, landing_candidates)
+    except Exception as exc:
+        logger.warning(
+            "get_dashboard: failed to fetch requirements from %s error=%r", repo_name, exc
+        )
+        if not listed:
+            read.failure = {"repo": repo_name, "cause": github.failure_from_exception(exc)}
+    if not listed:
+        return read
+
+    try:
+        if not await uses_specs(repo_name):
+            return read
+        progress = await read_spec_progress(repo_name)
+    except Exception as exc:
+        logger.warning(
+            "get_dashboard: failed to read spec changes from %s error=%r", repo_name, exc
+        )
+        read.incomplete = True
+        return read
+    read.spec_gaps = progress.spec_gaps
+    for entry in (candidate.entry for candidate in progress.landing_candidates):
+        spec_status = spec_change_status(entry)
+        read.spec_change_counts[spec_status] += 1
+        if status is not None and spec_status != status:
+            continue
+        read.candidates.append(
+            groups.Candidate(repo_name, entry, entry["derived"]["linked_issues"])
+        )
+        if status is None and not include_inactive and entry["dropped"]:
+            continue
+        repo_entry["spec_changes"].append(entry)
+    await landing.notify_landed(repo_name, progress.landing_candidates)
+    return read
+
+
 async def get_dashboard(
     status: str | None = None,
     include_inactive: bool = False,
@@ -1807,12 +1930,7 @@ async def get_dashboard(
     ``summary.lower_bound`` is true while either ``incomplete_repos`` or
     ``failed_repos`` is non-empty, saying in one field that the counts are floors.
     """
-    from .specs import (
-        SPEC_CHANGE_ONLY_STATUSES,
-        read_spec_progress,
-        spec_change_status,
-        uses_specs,
-    )
+    from .specs import SPEC_CHANGE_ONLY_STATUSES
 
     accepted_statuses = VALID_STATUSES | SPEC_CHANGE_ONLY_STATUSES
     if status is not None and status not in accepted_statuses:
@@ -1829,117 +1947,38 @@ async def get_dashboard(
         )
 
     repos = db.list_repos(user_id)
+    limit = asyncio.Semaphore(_DASHBOARD_CONCURRENCY)
+
+    async def read_one(repo_name: str) -> _DashboardRepo:
+        async with limit:
+            return await _read_dashboard_repo(repo_name, status, include_inactive)
+
+    # Repositories are read concurrently, since read one after another a dozen of
+    # them outlast a client's timeout, and merged in registration order below.
+    reads = await asyncio.gather(
+        *(read_one(normalize_repo(repo_row["repo_name"])) for repo_row in repos)
+    )
     aggregated: list[dict[str, Any]] = []
     all_candidates: list[groups.Candidate] = []
-    status_counts: dict[str, int] = {}
-    spec_change_counts: dict[str, int] = {}
+    status_counts: Counter[str] = Counter()
+    spec_change_counts: Counter[str] = Counter()
     spec_gaps: dict[str, dict[str, int]] = {}
     incomplete_repos: list[str] = []
     failed_repos: list[dict[str, Any]] = []
-
-    for repo_row in repos:
-        repo_name = normalize_repo(repo_row["repo_name"])
-        listed = False
-        try:
-            files = await github.list_files(repo_name, "requirements")
-            copies = await _read_default_branch(repo_name, files)
-
-            try:
-                lachesis_prs = await github.list_lachesis_prs(repo_name)
-                for open_pr in lachesis_prs:
-                    await _read_pull_request_branch(repo_name, open_pr, copies)
-            except (httpx.HTTPStatusError, httpx.TimeoutException) as exc:
-                # Falls through rather than reaching the outer handler: what this repo's
-                # default branch already yielded is real, and every count below it is a
-                # floor that incomplete_repos qualifies.
-                logger.warning(
-                    "get_dashboard: PR-branch pass failed repo=%s error=%r", repo_name, exc
-                )
-                incomplete_repos.append(repo_name)
-
-            requirements: list[dict[str, Any]] = []
-            repo_candidates: list[groups.Candidate] = []
-            seen_ids: set[str] = set()
-            pending: _Pending = []
-            landing_candidates: list[landing.Candidate] = []
-            for path, (content, pr_info) in copies.items():
-                post = frontmatter.loads(content)
-                req_id = _requirement_id(path, post)
-                if pr_info is not None and req_id in seen_ids:
-                    continue
-                seen_ids.add(req_id)
-                req_status = canonical_status(post.get("status", ""))
-                status_counts[req_status] = status_counts.get(req_status, 0) + 1
-                if status is not None and req_status != status:
-                    continue
-                numbers = linked_issue_numbers(post)
-                pr = _pr_field(pr_info)
-                entry = {
-                    "id": req_id,
-                    "title": post["title"],
-                    "status": req_status,
-                    "github_issue": post.get("github_issue"),
-                    "pr": pr,
-                    "warning": _entry_warning(pr, numbers),
-                    **_inactive_fields(post),
-                }
-                repo_candidates.append(groups.Candidate(repo_name, entry, numbers))
-                if status is None and not include_inactive and req_status in INACTIVE_STATUSES:
-                    continue
-                requirements.append(entry)
-                pending.append((entry, numbers, pr is not None))
-                if pr is None:
-                    landing_candidates.append(landing.Candidate(path, content, entry))
-
-            await _attach_derived(repo_name, pending)
-            repo_entry: dict[str, Any] = {
-                "repo": repo_name,
-                "requirements": requirements,
-                "spec_changes": [],
-            }
-            aggregated.append(repo_entry)
-            listed = True
-            all_candidates.extend(repo_candidates)
-            # After the append, so a raise here could not cost the repo its listing
-            # under this except's misleading log line. A status filter narrows the
-            # candidates, which loses nothing: an unconsidered requirement is never
-            # claimed, so a later unfiltered read still announces it.
-            await landing.notify_landed(repo_name, landing_candidates)
-        except Exception as exc:
-            logger.warning(
-                "get_dashboard: failed to fetch requirements from %s error=%r", repo_name, exc
-            )
-            if not listed:
-                failed_repos.append(
-                    {"repo": repo_name, "cause": github.failure_from_exception(exc)}
-                )
-        if not listed:
-            continue
-
-        try:
-            if not await uses_specs(repo_name):
-                continue
-            progress = await read_spec_progress(repo_name)
-        except Exception as exc:
-            logger.warning(
-                "get_dashboard: failed to read spec changes from %s error=%r", repo_name, exc
-            )
-            if repo_name not in incomplete_repos:
-                incomplete_repos.append(repo_name)
-            continue
-        spec_gaps[repo_name] = progress.spec_gaps
-        for entry in (candidate.entry for candidate in progress.landing_candidates):
-            spec_status = spec_change_status(entry)
-            spec_change_counts[spec_status] = spec_change_counts.get(spec_status, 0) + 1
-            if status is not None and spec_status != status:
-                continue
-            all_candidates.append(
-                groups.Candidate(repo_name, entry, entry["derived"]["linked_issues"])
-            )
-            if status is None and not include_inactive and entry["dropped"]:
-                continue
-            repo_entry["spec_changes"].append(entry)
-        await landing.notify_landed(repo_name, progress.landing_candidates)
+    for read in reads:
+        status_counts.update(read.status_counts)
+        spec_change_counts.update(read.spec_change_counts)
+        all_candidates.extend(read.candidates)
+        if read.entry is not None:
+            aggregated.append(read.entry)
+        if read.spec_gaps is not None:
+            spec_gaps[read.repo] = read.spec_gaps
+        if read.incomplete:
+            incomplete_repos.append(read.repo)
+        if read.failure is not None:
+            failed_repos.append(read.failure)
+    status_counts_out = dict(status_counts)
+    spec_change_counts_out = dict(spec_change_counts)
 
     total = sum(status_counts.values()) + sum(spec_change_counts.values())
     unlinked_count = sum(
@@ -1967,8 +2006,8 @@ async def get_dashboard(
         "summary": {
             "waiting_on_author_count": len(waiting.issues),
             "total": total,
-            "by_status": status_counts,
-            "spec_changes_by_status": spec_change_counts,
+            "by_status": status_counts_out,
+            "spec_changes_by_status": spec_change_counts_out,
             "spec_gaps": spec_gaps,
             "unlinked_count": unlinked_count,
             "unavailable_count": sum(len(causes) for causes in unavailable.values()),
