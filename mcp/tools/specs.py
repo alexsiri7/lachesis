@@ -20,7 +20,7 @@ from derive import (
     derive_spec_change,
     spec_change_dropped,
 )
-from spec_reference import SpecReference, parse_reference
+from spec_reference import SpecReference, append_reference, parse_reference
 
 from .requirements import (
     _MAX_WRITE_ATTEMPTS,
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 SPECS_DIR = "openspec/specs"
 SPEC_CHANGE_LABEL = "spec-change"
+ACCEPTANCE_TESTS_LABEL = "acceptance-tests"
+ACCEPTANCE_TESTS_COLOR = "0e8a16"
 
 _CAPABILITY_NAME = re.compile(r"\w[\w.-]*")
 _PURPOSE = re.compile(r"^## Purpose[ \t]*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
@@ -348,7 +350,11 @@ async def propose_spec_change(
     or to ``None`` to remove the capability.  *why* becomes the pull request
     description.  Every capability is format-checked before anything is written.
 
-    Returns ``{"repo", "number", "url"}`` of the pull request.
+    An issue labelled ``acceptance-tests`` is opened alongside it, for the spec change's
+    acceptance tests to be written on its branch.
+
+    Returns ``{"repo", "number", "url"}`` of the pull request, and
+    ``"acceptance_tests_issue"``, the number of that issue.
     """
     if not capabilities:
         raise ValueError("A spec change must add, edit or remove at least one capability")
@@ -377,7 +383,55 @@ async def propose_spec_change(
             f"{SPEC_CHANGE_LABEL!r}, the pull request is not listed against the capabilities "
             "it touches."
         ) from exc
-    return {"repo": repo, "number": pr["number"], "url": pr["url"]}
+    tests_issue = await _open_acceptance_tests_issue(repo, pr["number"], branch, capabilities)
+    return {
+        "repo": repo,
+        "number": pr["number"],
+        "url": pr["url"],
+        "acceptance_tests_issue": tests_issue,
+    }
+
+
+async def _open_acceptance_tests_issue(
+    repo: str, spec_change: int, branch: str, capabilities: Mapping[str, str | None]
+) -> int:
+    """Open the issue that writes spec change *spec_change*'s acceptance tests; return its number.
+
+    Its reference block names every capability, so the issue ranks with its spec change.
+    """
+    names = ", ".join(capabilities)
+    body = (
+        f"Write the acceptance tests for spec change #{spec_change}, which touches {names}: "
+        "one test per scenario, written from the spec against the public interface only, "
+        "each marked expected to fail until the implementation makes it pass.\n\n"
+        f"Commit them to the spec change's own branch, `{branch}`, so the spec and its "
+        "acceptance tests merge together. The issues implementing the spec change wait for "
+        "this one."
+    )
+    body = append_reference(body, SpecReference(spec_change, names))
+    try:
+        await github.ensure_label(repo, ACCEPTANCE_TESTS_LABEL, ACCEPTANCE_TESTS_COLOR)
+    except httpx.HTTPError as exc:
+        # GitHub creates a missing label when an issue is created with it.
+        logger.warning(
+            "could not ensure label %s in %s error=%r", ACCEPTANCE_TESTS_LABEL, repo, exc
+        )
+    try:
+        issue = await github.create_issue(
+            repo,
+            f"Acceptance tests for spec change #{spec_change}",
+            body,
+            [ACCEPTANCE_TESTS_LABEL],
+        )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(
+            f"Opened spec change #{spec_change} but could not open its acceptance-tests issue "
+            f"({exc!r}). Open it by hand, labelled {ACCEPTANCE_TESTS_LABEL!r}, ending with the "
+            f"reference block 'Spec change: #{spec_change}' / 'Capability: {names}': until it "
+            "exists, issues implementing the spec change do not wait for their tests."
+        ) from exc
+    number: int = issue["number"]
+    return number
 
 
 async def update_spec_change(

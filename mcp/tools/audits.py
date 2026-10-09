@@ -23,14 +23,12 @@ from .requirements import (
     _resolve_repo,
 )
 from .routing import route_run
-from .specs import SPECS_DIR
+from .specs import ACCEPTANCE_TESTS_COLOR, ACCEPTANCE_TESTS_LABEL, SPECS_DIR
 
 logger = logging.getLogger(__name__)
 
 AUDIT_LABEL = "audit"
 _AUDIT_COLOR = "5319e7"
-ACCEPTANCE_TESTS_LABEL = "acceptance-tests"
-_ACCEPTANCE_TESTS_COLOR = "0e8a16"
 
 # A security audit falls due this long after its last successful run, changes or not.
 SECURITY_INTERVAL = timedelta(days=60)
@@ -419,7 +417,7 @@ async def file_audit_finding(
     await _label(repo, SPEC_GAP_LABEL, _SPEC_GAP_COLOR)
     if finding == "weak_test":
         labels.append(ACCEPTANCE_TESTS_LABEL)
-        await _label(repo, ACCEPTANCE_TESTS_LABEL, _ACCEPTANCE_TESTS_COLOR)
+        await _label(repo, ACCEPTANCE_TESTS_LABEL, ACCEPTANCE_TESTS_COLOR)
     question = _QUESTIONS.get(finding, "").format(title=title.strip())
     text = f"{body.strip()}\n\nFound by audit #{audit_issue}."
     if question:

@@ -189,7 +189,9 @@ mcp.tool(
         "(work bringing the code in line with the spec as it stands, such as an audit "
         "finding or a bug), plus an optional `requirement` within the capability. The "
         "whole call is refused, creating nothing, if any issue lacks these. The reference "
-        "is appended to the issue body and spec gaps are labelled `spec-gap`. In repos "
+        "is appended to the issue body and spec gaps are labelled `spec-gap`. An issue "
+        "implementing a spec change, unless itself labelled acceptance-tests, is created "
+        "blocked by that spec change's acceptance-tests issue. In repos "
         "without specs these fields are ignored."
     ),
 )(req_tools.create_github_issues)
@@ -913,8 +915,10 @@ mcp.tool(
         "the author asked for this change in the conversation: the pull request is also "
         "labelled author-request and its issues rank above milestone work for two sprints "
         "after it merges. Leave it false for changes an agent or an audit proposes. "
-        "Returns the pull request number and url; the number identifies the spec change "
-        "from then on."
+        "Also opens an issue labelled acceptance-tests naming the spec change and its "
+        "capabilities, whose tests are committed to the spec change's branch. "
+        "Returns the pull request number and url, and `acceptance_tests_issue`, that "
+        "issue's number; the pull request number identifies the spec change from then on."
     ),
 )(spec_tools.propose_spec_change)
 

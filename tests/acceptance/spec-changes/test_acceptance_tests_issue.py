@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -82,7 +80,6 @@ def _github_for_a_spec_change(lachesis: Lachesis) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #173")
 @scenario("spec-changes", "Proposing opens the test issue")
 async def test_proposing_opens_the_test_issue(lachesis: Lachesis) -> None:
     await lachesis.call_tool("register_repo", {"repo": REPO})
