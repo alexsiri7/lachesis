@@ -3261,6 +3261,7 @@ def _mock_open_issues(
                 "title": f"Issue {n}",
                 "labels": [{"name": name} for name in (labels or {}).get(n, [])],
                 "body": (bodies or {}).get(n, ""),
+                "state": "open",
                 "created_at": (created or {})
                 .get(n, _BACKLOG_EPOCH + timedelta(hours=n))
                 .isoformat()
