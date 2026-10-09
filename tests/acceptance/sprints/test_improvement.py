@@ -13,7 +13,9 @@ The contract these tests set for the implementation issues:
   ``reverted`` or ``open`` while extended) and the result appended to ``results``.
 - ``report_sprint`` adds ``experiments``, every experiment open at the review with its
   measure, baseline, target and results, and ``stop_the_line``, each failure repeated three
-  times in the sprint: ``{"outcome", "capability", "issues"}``.
+  times in the sprint: ``{"outcome", "capability", "issues"}``. Fixing each repeat's cause
+  becomes an experiment whatever else is chosen: the review opens it with the repeat's
+  issues, and it is listed in ``experiments``.
 - ``read_sprint`` adds ``improvement_budget_tokens``, the improvement share (10 percent by
   default) of ``budget_tokens``; the open experiments' issues are planned ahead of the
   ordinary backlog, marked ``improvement: true``, their estimates within that share.
@@ -321,3 +323,5 @@ async def test_same_failure_three_times(lachesis: Lachesis) -> None:
     [repeat] = review["stop_the_line"]
     assert (repeat["outcome"], repeat["capability"]) == ("retry", "widgets")
     assert sorted(repeat["issues"]) == [1, 2, 3]
+    [fix] = [entry for entry in review["experiments"] if set(entry["issues"]) >= {1, 2, 3}]
+    assert fix["state"] == "open"
