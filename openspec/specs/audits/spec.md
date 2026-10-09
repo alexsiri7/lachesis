@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Acceptance tests check only what the scenarios say. Audits look for everything else: behaviour the spec does not describe, tests that do not really check their scenario, requirements the code does not meet, spec wording that could mean two things, weak architecture and security problems. Audits report and ask; they never fix. Their questions go to the author, because only the author decides what the project should be.
+Acceptance tests check only what the scenarios say. Audits look for everything else: behaviour the spec does not describe, tests that do not really check their scenario, requirements the code does not meet, spec wording that could mean two things, weak architecture, security problems and code that falls short of clean code standards. Audits report and ask; they never fix. Their questions go to the author, because only the author decides what the project should be.
 
 Audits are factory work like any other: they are planned into the sprint, paid for from its budget and recorded run by run, so the factory can tell when each audit last ran on each project and what it found, and spend audits where the code is actually changing.
 
@@ -10,7 +10,7 @@ Audits are factory work like any other: they are planned into the sprint, paid f
 
 ### Requirement: Every audit run is recorded
 
-The system SHALL record every audit run with its repository, its audit kind (architecture, security, tests or requirements), its capability where the audit has one, the model that ran it, when it ran, its outcome (clean, findings or failed), the issues it filed and the tokens it used. It SHALL return, for each registered repository and audit kind, the last run with its time and outcome, and say "never" for an audit that has never run there.
+The system SHALL record every audit run with its repository, its audit kind (architecture, security, clean code, tests or requirements), its capability where the audit has one, the model that ran it, when it ran, its outcome (clean, findings or failed), the issues it filed and the tokens it used. It SHALL return, for each registered repository and audit kind, the last run with its time and outcome, and say "never" for an audit that has never run there.
 
 #### Scenario: Run recorded
 - GIVEN a security audit of filmduel that finished and filed issues #40 and #41
@@ -84,6 +84,16 @@ A tests or requirements audit issue in a repository that uses specs SHALL direct
 - GIVEN an audit is opened for the backlog capability
 - WHEN the issue is read
 - THEN it lists the four checks for backlog
+
+### Requirement: A clean code audit applies Robert C. Martin's standards
+
+A clean code audit issue SHALL direct its auditor to check the code against Robert C. Martin's clean code standards: names that reveal intent; small functions that do one thing at one level of abstraction; few arguments and no flag arguments; no side effects hidden behind a name; no duplication; comments that explain why rather than restate what; classes and modules with a single responsibility; dependencies that point inward, so policy never depends on detail; and tests that are fast, independent, repeatable, self-validating and as clean as the code. Each finding SHALL name the standard it breaks and where.
+
+#### Scenario: Clean code audit content
+- GIVEN a clean code audit is started for a repository
+- WHEN its audit issue is read
+- THEN it lists those standards
+- AND it asks for each finding to name the standard broken and where
 
 ### Requirement: Findings are filed, not fixed
 
