@@ -111,9 +111,8 @@ async def test_audits_in_the_review(lachesis: Lachesis) -> None:
         outcome="findings",
         issues=[40, 41],
     )
-    # The week that just ended holds the audit: it reset a moment ago.
-    await _fuel(lachesis, datetime.now(UTC) + timedelta(days=7) - timedelta(seconds=1))
-    await _fuel(lachesis, datetime.now(UTC) - timedelta(seconds=1))
+    # The week that just ended holds the audit: the allowance reset a second ago.
+    await _fuel(lachesis, datetime.now(UTC) + timedelta(days=7, seconds=-1))
 
     review = await _ok(lachesis, "report_sprint", {})
 
