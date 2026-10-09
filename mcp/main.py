@@ -333,6 +333,10 @@ mcp.tool(
         "and the question stays. The question is also recorded as a clarification "
         "question blocking the issue, and the author is sent a push notification "
         "naming the repository, question and kind, if notifications are configured. "
+        "Pass `default`, a sensible answer, when the factory could settle the question "
+        "itself: if the author has not answered within `wait_days` (3 unless given), "
+        "the default is taken as the answer with outcome defaulted and the issue is "
+        "released with a note saying so. "
         "Returns the question comment's url."
     ),
 )(question_tools.ask_author)
@@ -355,6 +359,12 @@ mcp.tool(
         "the author to raise the spending cap for models outside the Claude allowance; "
         "its context must say what the extra spend would deliver. It blocks no issue — "
         "blocks is refused — so work continues within the existing cap. "
+        "A clarification or improvement question may carry a `default` answer: if the "
+        "author has not answered within `wait_days` (3 unless given), the next read of "
+        "the open questions (list_open_questions, next_issue, the dashboard) records the "
+        "default as the answer with outcome defaulted and releases the blocked issues "
+        "with a note that the default was taken. Every other kind decides what a "
+        "project should be, so a default for it is refused and it waits for the author. "
         "Returns the question id and the url of each comment."
     ),
 )(question_tools.ask_question)
@@ -382,8 +392,9 @@ mcp.tool(
         "other open question still blocks, so next_issue can pick it up again. An "
         "issue never loses the label without the answer on it; a failure part-way is "
         "reported and leaves what already happened. Refused if the question is already "
-        "answered. Returns the question id, outcome, the url of each comment and the "
-        "released issues."
+        "answered, unless it was settled by its default (outcome defaulted): the "
+        "author's answer then replaces the default. Returns the question id, outcome, "
+        "the url of each comment and the released issues."
     ),
 )(question_tools.answer_question)
 
@@ -393,7 +404,10 @@ mcp.tool(
         "oldest first — the one queue the author's assistant and agents both read. Each "
         "has its id, repo_name, question, context, options, kind, asker, what it is "
         "about (capability, spec_change, milestone, issue), the issues it blocks, "
-        "created_at and waiting_hours. Answer one with answer_question."
+        "created_at, waiting_hours, and any default_answer with default_after, when it "
+        "is taken. Questions whose wait has passed are first settled by their default "
+        "(outcome defaulted, found with search_answered_questions). Answer one with "
+        "answer_question."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(question_tools.list_open_questions)

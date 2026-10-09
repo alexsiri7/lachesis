@@ -75,7 +75,6 @@ def _comments_on(lachesis: Lachesis, number: int) -> list[str]:
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #319")
 @scenario("questions", "Away for a week")
 async def test_away_for_a_week(lachesis: Lachesis) -> None:
     await _repo(lachesis)
@@ -112,7 +111,6 @@ async def test_away_for_a_week(lachesis: Lachesis) -> None:
     assert any("default" in note.lower() and "CSV" in note for note in notes)
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #319")
 @scenario("questions", "Spec decision waits")
 async def test_spec_decision_waits(lachesis: Lachesis) -> None:
     await _repo(lachesis)
