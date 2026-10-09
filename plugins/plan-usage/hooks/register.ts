@@ -2,6 +2,9 @@ import type { Register, EngineInterface, SessionRateLimit } from 'claude-code'
 
 const TOOL = 'mcp__plan-usage__usage'
 
+// How often the status line's countdowns are redrawn between measurements.
+const STATUS_REFRESH_MS = 60_000
+
 // Tools the guard never blocks, so a capped run can still check usage and
 // leave Lachesis a handoff note and usage report before it stops.
 const ALWAYS_ALLOWED = [
@@ -156,6 +159,14 @@ async function recordWindows($: EngineInterface, windows: SessionRateLimit[]): P
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // Between measurements nothing else redraws the status line, and its
+    // countdowns would freeze at the last API response.
+    $.clock.every(STATUS_REFRESH_MS, () => {
+      $.session
+        .usage()
+        .then(usage => (usage.rateLimits.length ? showStatus($, usage.rateLimits) : undefined))
+        .catch(() => undefined)
+    })
     await $.tool.register({
       name: 'usage',
       description:
@@ -220,21 +231,28 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     await recordWindows($, e.rateLimits)
-    const now = await $.clock.now()
-    const fig = e.rateLimits.map(w => shortWindow(w, now)).join(' · ')
-    const guard = await readGuard($)
-    if (guard) {
-      const over = breaches(guard, e.rateLimits, now)
-      $.ui.status(
-        !over.length
-          ? `budget guard on · ${fig}`
-          : guard.mode === 'stop'
-            ? `⛔ budget guard tripped: ${fig}`
-            : `⚠ wrap up, start nothing new: ${fig}`,
-      )
-    } else {
-      $.ui.status(fig || undefined)
-    }
+    await showStatus($, e.rateLimits)
     return next(e)
   })
+}
+
+// The status line: each window's use against time elapsed and the time to its
+// reset, and the guard's state. Redrawn on every measurement and every minute
+// between them, so the countdown to each reset stays current.
+async function showStatus($: EngineInterface, windows: SessionRateLimit[]): Promise<void> {
+  const now = await $.clock.now()
+  const fig = windows.map(w => shortWindow(w, now)).join(' · ')
+  const guard = await readGuard($)
+  if (!guard) {
+    $.ui.status(fig || undefined)
+    return
+  }
+  const over = breaches(guard, windows, now)
+  $.ui.status(
+    !over.length
+      ? `budget guard on · ${fig}`
+      : guard.mode === 'stop'
+        ? `⛔ budget guard tripped: ${fig}`
+        : `⚠ wrap up, start nothing new: ${fig}`,
+  )
 }
