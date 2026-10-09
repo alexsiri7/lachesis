@@ -1144,7 +1144,7 @@ def sizes_by_issue(user_id: str, repo_name: str | None = None) -> dict[tuple[str
 # lachesis_audit_runs
 # ---------------------------------------------------------------------------
 
-AuditKind = Literal["architecture", "security", "tests", "requirements"]
+AuditKind = Literal["architecture", "security", "clean-code", "tests", "requirements"]
 AuditOutcome = Literal["clean", "findings", "failed"]
 
 _AUDIT_RUN_COLUMNS = (

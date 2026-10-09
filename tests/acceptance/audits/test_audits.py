@@ -377,7 +377,6 @@ async def test_audit_issue_content(lachesis: Lachesis) -> None:
     assert "more than one reading" in text
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #314")
 @scenario("audits", "Clean code audit content")
 async def test_clean_code_audit_content(lachesis: Lachesis) -> None:
     repo = "owner/kith"
