@@ -24,6 +24,7 @@ from spec_reference import SpecReference, parse_reference
 
 from .requirements import (
     _MAX_WRITE_ATTEMPTS,
+    AUTHOR_REQUEST_LABEL,
     SPEC_GAP_LABEL,
     _open_pull_request,
     _resolve_repo,
@@ -332,9 +333,16 @@ async def _write_capability(
 
 
 async def propose_spec_change(
-    repo: str, title: str, why: str, capabilities: dict[str, str | None]
+    repo: str,
+    title: str,
+    why: str,
+    capabilities: dict[str, str | None],
+    author_request: bool = False,
 ) -> dict[str, Any]:
     """Open a pull request labelled ``spec-change`` that edits one or more capabilities.
+
+    *author_request* marks a change the author asked for in conversation: its pull
+    request is also labelled ``author-request``, which ranks its work high in the backlog.
 
     *capabilities* maps each capability name to its complete new ``spec.md`` content,
     or to ``None`` to remove the capability.  *why* becomes the pull request
@@ -359,13 +367,15 @@ async def propose_spec_change(
             await _write_capability(repo, branch, name, spec, f"spec: {title}")
 
     _, pr = await _open_pull_request(repo, branch, title=title, body=why, commit=commit)
+    labels = [SPEC_CHANGE_LABEL, AUTHOR_REQUEST_LABEL] if author_request else [SPEC_CHANGE_LABEL]
     try:
-        await github.add_labels(repo, pr["number"], [SPEC_CHANGE_LABEL])
+        await github.add_labels(repo, pr["number"], labels)
     except httpx.HTTPError as exc:
         raise RuntimeError(
             f"Opened spec change #{pr['number']} ({pr['url']}) but could not label it "
-            f"{SPEC_CHANGE_LABEL!r} ({exc!r}). Add the label by hand: until it has it, the "
-            "pull request is not listed against the capabilities it touches."
+            f"{', '.join(labels)} ({exc!r}). Add the labels by hand: until it has "
+            f"{SPEC_CHANGE_LABEL!r}, the pull request is not listed against the capabilities "
+            "it touches."
         ) from exc
     return {"repo": repo, "number": pr["number"], "url": pr["url"]}
 

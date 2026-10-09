@@ -75,7 +75,6 @@ def _merged_author_request(number: int, *, merged: timedelta) -> tuple[dict, dic
     return as_issue, as_pull
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #319")
 @scenario("backlog", "The author's request ranks high")
 async def test_the_authors_request_ranks_high(lachesis: Lachesis) -> None:
     spec_change, pull = _merged_author_request(SPEC_CHANGE, merged=timedelta(days=1))

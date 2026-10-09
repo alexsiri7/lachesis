@@ -3220,9 +3220,18 @@ def _patch_backlog(
     focus: list[dict] | None = None,
     fuel: dict | None = None,
     estimates: list[dict] | None = None,
+    pulls: dict[int, dict] | None = None,
 ):
-    """Route the db accessors the backlog reads at fakes for the duration of the block."""
+    """Route the db accessors the backlog reads at fakes for the duration of the block.
+
+    *pulls* are the spec changes' pull requests by number; any other reads as missing.
+    """
+
+    async def get_pull_request(repo: str, number: int) -> dict | None:
+        return (pulls or {}).get(number)
+
     with (
+        patch("github.get_pull_request", get_pull_request),
         patch("db.list_backlog", fake.list_backlog),
         patch("db.upsert_backlog_flags", fake.upsert_backlog_flags),
         patch("db.list_milestones", return_value=milestones or []),
@@ -3527,6 +3536,69 @@ async def test_the_nearest_done_milestone_comes_first(
     assert [i["number"] for i in result] == [4, 1, 2, 3]
 
 
+def _spec_change_pull(*, labels: list[str], merged_days_ago: float | None) -> dict:
+    merged_at = None
+    if merged_days_ago is not None:
+        merged_at = (datetime.now(UTC) - timedelta(days=merged_days_ago)).isoformat()
+    return {"labels": labels, "merged_at": merged_at}
+
+
+@pytest.mark.parametrize(
+    ("pull", "tier"),
+    [
+        pytest.param(
+            _spec_change_pull(labels=["spec-change", "author-request"], merged_days_ago=1),
+            "author_request",
+            id="asked-for-merged-yesterday",
+        ),
+        pytest.param(
+            _spec_change_pull(labels=["spec-change", "author-request"], merged_days_ago=15),
+            "milestone",
+            id="asked-for-merged-over-two-sprints-ago",
+        ),
+        pytest.param(
+            _spec_change_pull(labels=["spec-change", "author-request"], merged_days_ago=None),
+            "milestone",
+            id="asked-for-not-merged",
+        ),
+        pytest.param(
+            _spec_change_pull(labels=["spec-change"], merged_days_ago=1),
+            "milestone",
+            id="proposed-by-an-agent",
+        ),
+        pytest.param(None, "milestone", id="pull-request-missing"),
+    ],
+)
+async def test_work_the_author_asked_for_ranks_above_milestone_work(
+    httpx_mock: HTTPXMock, set_user_id: str, pull: dict | None, tier: str
+) -> None:
+    """Scenario: The author's request ranks high — for two sprints after it merges."""
+    _mock_open_issues(httpx_mock, [1, 2], bodies={1: _implementing(100), 2: _implementing(200)})
+    milestones = [_milestone(1, [100, 200], started_days_ago=3)]
+    pulls = {200: pull} if pull is not None else {}
+
+    with _patch_backlog(_FakeBacklog(), milestones=milestones, pulls=pulls):
+        result = await get_backlog("owner/repo")
+
+    assert {i["number"]: i["tier"] for i in result}[2] == tier
+    if tier == "author_request":
+        assert [i["number"] for i in result] == [2, 1]
+
+
+async def test_a_spec_change_that_cannot_be_read_is_not_an_author_request(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_open_issues(httpx_mock, [1], bodies={1: _implementing(100)})
+
+    async def failing(repo: str, number: int) -> dict:
+        raise httpx.ConnectError("down")
+
+    with _patch_backlog(_FakeBacklog()), patch("github.get_pull_request", failing):
+        result = await get_backlog("owner/repo")
+
+    assert result[0]["tier"] == "other"
+
+
 async def test_planned_and_dropped_milestones_are_not_milestone_work(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
@@ -3616,7 +3688,7 @@ async def test_starving_work_rises_a_tier(httpx_mock: HTTPXMock, set_user_id: st
     assert (entry["tier"], entry["aged"]) == ("milestone", True)
 
 
-async def test_starving_milestone_work_rises_into_the_focus_tier(
+async def test_starving_milestone_work_rises_into_the_author_request_tier(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
     entry = await _read_one_waiting_issue(
@@ -3626,7 +3698,7 @@ async def test_starving_milestone_work_rises_into_the_focus_tier(
         blockers=[],
     )
 
-    assert (entry["tier"], entry["aged"]) == ("focus", True)
+    assert (entry["tier"], entry["aged"]) == ("author_request", True)
 
 
 async def test_starving_focused_work_rises_into_the_security_tier(

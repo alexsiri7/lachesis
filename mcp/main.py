@@ -775,13 +775,14 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Return a repo's open issues in backlog order — the single ordered backlog, "
-        "computed, never set by hand. Tiers, highest first: interrupt; security (issues "
-        "labelled `security`); the author's focus (set_focus); work on an active "
-        "milestone, nearest done first; everything else. Older issues come first within "
-        "a tier. A ready issue that has waited unblocked for two whole sprints (counted "
-        "from the fuel report's weekly reset) moves up one tier. Each entry reports its "
-        "`position`, `tier`, `aged`, `ready`, `interrupt`, `in_progress` (labelled "
+        "Return a repo's open issues in backlog order — the single ordered backlog, computed,"
+        " never set by hand. Tiers, highest first: interrupt; security (issues labelled "
+        "`security`); the author's focus (set_focus); author_request, work on a spec change "
+        "the author asked for (labelled author-request) for two sprints after it merges; work"
+        " on an active milestone, nearest done first; everything else. Older issues come "
+        "first within a tier. A ready issue that has waited unblocked for two whole sprints "
+        "(counted from the fuel report's weekly reset) moves up one tier. Each entry reports "
+        "its `position`, `tier`, `aged`, `ready`, `interrupt`, `in_progress` (labelled "
         "archon:in-progress) and `waiting_on_author` (labelled needs-author). An issue is "
         "ready unless it has been parked; parked issues are skipped for autonomous pickup."
     ),
@@ -875,8 +876,12 @@ mcp.tool(
         "that capability. Every capability is format-checked first — a title, a Purpose "
         "section, a Requirements section, and every requirement stating SHALL or MUST with "
         "at least one #### Scenario — and the change is refused listing every problem. "
-        "Refused in a repository that does not use specs. Returns the pull request number "
-        "and url; the number identifies the spec change from then on."
+        "Refused in a repository that does not use specs. Pass `author_request=true` when "
+        "the author asked for this change in the conversation: the pull request is also "
+        "labelled author-request and its issues rank above milestone work for two sprints "
+        "after it merges. Leave it false for changes an agent or an audit proposes. "
+        "Returns the pull request number and url; the number identifies the spec change "
+        "from then on."
     ),
 )(spec_tools.propose_spec_change)
 

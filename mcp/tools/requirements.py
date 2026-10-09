@@ -42,7 +42,9 @@ Spec-change workflow, for a repository that uses specs — follow these steps in
 1. list_capabilities / get_capability — read the capabilities the work touches, and the
    open spec changes already editing them.
 2. propose_spec_change — open a spec change editing those capabilities, with the why as
-   its description. update_spec_change edits it until it merges.
+   its description. update_spec_change edits it until it merges. When the author asked
+   for the change in this conversation, pass author_request=true: its work then ranks
+   above the routine backlog. A change an agent or an audit proposes leaves it false.
 3. create_github_issues — each issue names its capability, the spec change it implements
    (spec_change: PR number) and optionally the requirement within the capability. There
    is no linking step: an issue states what it implements when it is created. Give every
@@ -70,7 +72,8 @@ New issues are ready, eligible for autonomous pickup as soon as they are created
 set_backlog_flags with ready=False to park an issue that is knowingly unfinished, and
 ready=True to unpark it. The backlog order is computed, never set by hand: interrupt,
 then security work (issues labelled security, for security incidents and security audit
-findings), then the author's focus, then work on active milestones nearest done first,
+findings), then the author's focus, then work on a spec change the author asked for (for
+two sprints after it merges), then work on active milestones nearest done first,
 then everything else, older first within each. Work ready and unblocked for two whole
 sprints moves up a tier. The author steers with set_focus and clear_focus on a repository
 or milestone, and the interrupt flag for the one thing that must jump the queue. Call
@@ -1251,10 +1254,13 @@ _IN_PROGRESS_LABEL = "archon:in-progress"
 _NEEDS_AUTHOR_LABEL = "needs-author"
 _NEEDS_AUTHOR_COLOR = "fbca04"
 
-_TIERS = ("interrupt", "security", "focus", "milestone", "other")
-_INTERRUPT, _SECURITY, _FOCUS, _MILESTONE, _OTHER = range(len(_TIERS))
+_TIERS = ("interrupt", "security", "focus", "author_request", "milestone", "other")
+_INTERRUPT, _SECURITY, _FOCUS, _AUTHOR_REQUEST, _MILESTONE, _OTHER = range(len(_TIERS))
 _SPRINT = timedelta(days=7)
 _SPRINTS_TO_AGE = 2
+AUTHOR_REQUEST_LABEL = "author-request"
+# Work on a spec change the author asked for keeps its tier this long after the merge.
+_AUTHOR_REQUEST_SPRINTS = 2
 # Sorts after every active milestone, so issues outside the milestone tier, or aged
 # into it, fall back to age alone.
 _NO_MILESTONE = (math.inf, math.inf, math.inf)
@@ -1301,16 +1307,41 @@ async def _unblocked_since(repo: str, number: int, since: datetime) -> datetime 
     return max([since, *closed])
 
 
+async def _recent_author_requests(repo: str, spec_changes: set[int], now: datetime) -> set[int]:
+    """Return those of *spec_changes* the author asked for that merged in the last two sprints.
+
+    A spec change the author asked for is a pull request labelled ``author-request``.
+    One whose pull request cannot be read counts as not asked for, so a GitHub failure
+    only lowers the order, never fails it.
+    """
+
+    async def asked_and_recent(number: int) -> bool:
+        try:
+            pull = await github.get_pull_request(repo, number)
+        except httpx.HTTPError:
+            logger.warning("backlog: could not read spec change %s#%s", repo, number)
+            return False
+        if pull is None or not pull["merged_at"] or AUTHOR_REQUEST_LABEL not in pull["labels"]:
+            return False
+        merged_at = datetime.fromisoformat(pull["merged_at"])
+        return now - merged_at < _AUTHOR_REQUEST_SPRINTS * _SPRINT
+
+    numbers = sorted(spec_changes)
+    recent = await asyncio.gather(*(asked_and_recent(number) for number in numbers))
+    return {number for number, yes in zip(numbers, recent, strict=True) if yes}
+
+
 async def _backlog_order(repo: str, user_id: str, now: datetime) -> list[dict[str, Any]]:
     """Return the repo's open issues in computed backlog order.
 
-    Tiers, highest first: interrupt; security (labelled ``security``); the author's
-    focus, on the repo or on the milestone holding the issue's spec change; work on an
-    active milestone, the one with fewest open issues first; everything else. Older
-    issues come first within a tier. A ready issue that has waited, unblocked and not
-    in progress, for two whole sprints moves up one tier — interrupt and security work
-    never age. Sprints start at each weekly allowance reset, so with no fuel reported
-    nothing ages.
+    Tiers, highest first: interrupt; security (labelled ``security``); the author's focus,
+    on the repo or on the milestone holding the issue's spec change; work on a spec change
+    the author asked for (labelled ``author-request``), for two sprints after it merges;
+    work on an active milestone, the one with fewest open issues first; everything else.
+    Older issues come first within a tier. A ready issue that has waited, unblocked and not
+    in progress, for two whole sprints moves up one tier — interrupt and security work never
+    age. Sprints start at each weekly allowance reset, so with no fuel reported nothing
+    ages.
 
     An issue with no backlog row is ready: a row exists only to park or interrupt one.
     Closed issues drop out here; their rows stay, so the flags survive a close and
@@ -1329,11 +1360,23 @@ async def _backlog_order(repo: str, user_id: str, now: datetime) -> list[dict[st
     focused_ids = {focus["milestone_id"] for focus in focuses}
     milestone_of = {change: m for m in milestones for change in m["spec_changes"]}
 
+    references = {issue["number"]: parse_reference(issue["body"]) for issue in open_issues}
+    # Only work that could land in a tier below focus needs its spec change read.
+    candidates = {
+        reference.spec_change
+        for issue in open_issues
+        if (reference := references[issue["number"]]) is not None
+        and reference.spec_change is not None
+        and not repo_focused
+        and SECURITY_LABEL not in issue["labels"]
+    }
+    asked = await _recent_author_requests(repo, candidates, now) if candidates else set()
+
     items: list[dict[str, Any]] = []
     for issue in open_issues:
         number = issue["number"]
         row = rows.get(number)
-        reference = parse_reference(issue["body"])
+        reference = references[number]
         milestone = milestone_of.get(reference.spec_change) if reference else None
         created_at = datetime.fromisoformat(issue["created_at"])
         ready_since = row["ready_since"] if row is not None else None
@@ -1343,6 +1386,8 @@ async def _backlog_order(repo: str, user_id: str, now: datetime) -> list[dict[st
             tier = _SECURITY
         elif repo_focused or (milestone is not None and milestone["id"] in focused_ids):
             tier = _FOCUS
+        elif reference is not None and reference.spec_change in asked:
+            tier = _AUTHOR_REQUEST
         elif milestone is not None and _is_started(milestone):
             tier = _MILESTONE
         else:
@@ -1405,7 +1450,7 @@ async def get_backlog(repo: str) -> list[dict[str, Any]]:
     """Return the repo's open issues in computed backlog order.
 
     Each entry has ``number``, ``title``, ``position``, ``tier`` (one of interrupt,
-    security, focus, milestone, other), ``aged`` (moved up a tier for waiting two
+    security, focus, author_request, milestone, other), ``aged`` (moved up a tier for waiting two
     whole sprints), ``ready``, ``interrupt``, ``in_progress`` and ``waiting_on_author``.
     """
     repo = await _resolve_repo(repo)

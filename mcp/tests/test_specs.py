@@ -654,6 +654,27 @@ async def test_propose_spec_change_explains_a_failed_label(httpx_mock: HTTPXMock
         await propose_spec_change(_REPO, "T", "Why", {"backlog": _BACKLOG_SPEC})
 
 
+@pytest.mark.parametrize(
+    ("author_request", "labels"),
+    [(True, ["spec-change", "author-request"]), (False, ["spec-change"])],
+)
+async def test_propose_spec_change_labels_the_authors_request(
+    httpx_mock: HTTPXMock, author_request: bool, labels: list[str]
+) -> None:
+    _mock_spec_repo(httpx_mock)
+    _mock_open_pull_request(httpx_mock)
+    _mock_branch_file(httpx_mock, _BACKLOG_PATH, None)
+    _mock_put(httpx_mock, _BACKLOG_PATH, status_code=201)
+    httpx_mock.add_response(method="POST", url=f"{_API}/issues/12/labels", json=[])
+
+    await propose_spec_change(
+        _REPO, "T", "Why", {"backlog": _BACKLOG_SPEC}, author_request=author_request
+    )
+
+    [labelled] = [r for r in _requests(httpx_mock, "POST") if r.url.path.endswith("/labels")]
+    assert json.loads(labelled.content)["labels"] == labels
+
+
 async def test_work_lands(httpx_mock: HTTPXMock) -> None:
     _mock_spec_repo(httpx_mock)
     _mock_open_pull_request(httpx_mock)
@@ -945,6 +966,7 @@ async def test_morning_briefing_pointer(httpx_mock: HTTPXMock, specs: bool | Non
 # Issue fields and argument values the guidance names alongside the tools.
 _GUIDANCE_FIELDS = {
     "audit_finding",
+    "author_request",
     "first_report",
     "spec_change",
     "spec_gap",
