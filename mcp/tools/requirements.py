@@ -45,7 +45,9 @@ Spec-change workflow, for a repository that uses specs — follow these steps in
    its description. update_spec_change edits it until it merges.
 3. create_github_issues — each issue names its capability, the spec change it implements
    (spec_change: PR number) and optionally the requirement within the capability. There
-   is no linking step: an issue states what it implements when it is created.
+   is no linking step: an issue states what it implements when it is created. Give every
+   issue a size in Fibonacci points (1, 2, 3, 5, 8 or 13); anything larger is 21 and gets
+   split into smaller issues before it is planned. size_issue resizes one later.
 
 Work that brings the code in line with the spec as it already stands is a spec gap: create
 its issue with its capability and spec_gap: true instead of a spec change.
@@ -56,7 +58,8 @@ _REQUIREMENT_WORKFLOW = """\
 Requirement-file workflow, for a repository without specs — follow these steps in order:
 
 1. create_requirement — capture intent (title, why, what). Requirement starts as 'draft'.
-2. create_github_issues — break it into implementation tasks. Pass issues with title and body.
+2. create_github_issues — break it into implementation tasks. Pass issues with title, body
+   and a size in Fibonacci points (1, 2, 3, 5, 8 or 13; 21 means split it first).
 3. link_issues — attach the issue numbers to the requirement. Status advances to 'idea'.
 
 A requirement without linked issues is a draft. Archon will not act on drafts.
@@ -1169,6 +1172,9 @@ async def create_github_issues(
             "before/after are no longer accepted: the backlog order is computed. "
             "Steer it with set_focus or the interrupt flag. No issues were created."
         )
+    for issue in issues:
+        if issue.get("size") is not None:
+            db.check_size(issue["size"])
     repo = await _resolve_repo(repo)
     references: list[SpecReference | None] = [None] * len(issues)
     if issues and await uses_specs(repo):
@@ -1188,12 +1194,16 @@ async def create_github_issues(
                 labels = [*(labels or []), SPEC_GAP_LABEL]
         result = await github.create_issue(repo, issue["title"], body, labels)
         node_id = result.pop("node_id")
+        size = issue.get("size")
+        if size is not None:
+            db.set_size(_require_user_id(), repo, result["number"], size)
         results.append(
             {
                 **result,
                 "blocked_by": [],
                 "added_to_project": False,
                 "ready": True,
+                "size": size,
             }
         )
         number_to_id[result["number"]] = result["id"]

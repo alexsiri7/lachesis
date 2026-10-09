@@ -155,10 +155,11 @@ async def test_estimate_issue_stores_the_estimate_with_the_issue(
         patch("tools.estimates.github.list_all_issues", AsyncMock(return_value=issues)),
         patch("tools.estimates.db.usage_by_issue", return_value=usage) as usage_by_issue,
         patch("tools.estimates.db.set_estimate", return_value=stored) as set_estimate,
+        patch("tools.estimates.db.sizes_by_issue", return_value={}),
     ):
         result = await estimate_issue("lachesis", 230, "implementation")
 
-    assert result == stored
+    assert result == {**stored, "size": None}
     usage_by_issue.assert_called_once_with("test-uid", "alexsiri7/lachesis")
     set_estimate.assert_called_once_with(
         "test-uid",
@@ -190,6 +191,7 @@ async def test_estimate_issue_refuses_bad_input(
         patch("tools.estimates.github.list_all_issues", AsyncMock(return_value=issues)),
         patch("tools.estimates.db.usage_by_issue", return_value={}),
         patch("tools.estimates.db.set_estimate") as set_estimate,
+        patch("tools.estimates.db.sizes_by_issue", return_value={}),
         pytest.raises(ValueError, match=match),
     ):
         await estimate_issue("lachesis", issue, kind)  # type: ignore[arg-type]

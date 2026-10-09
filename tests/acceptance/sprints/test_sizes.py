@@ -140,7 +140,6 @@ async def _history(repo: Repo, *, issues: range, size: int, tokens: int) -> None
     repo.close(*issues)
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("sprints", "Issue sized on arrival")
 async def test_issue_sized_on_arrival(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()
@@ -161,7 +160,6 @@ async def test_issue_sized_on_arrival(lachesis: Lachesis) -> None:
     assert estimate["size"] == 5
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("sprints", "Too big to plan")
 async def test_too_big_to_plan(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()

@@ -82,7 +82,7 @@ async def estimate_issue(repo: str, issue: int, kind: db.UsageKind) -> dict[str,
     result = estimate_from_history(
         issue, kind, capability, issues, db.usage_by_issue(user_id, repo)
     )
-    return db.set_estimate(
+    stored = db.set_estimate(
         user_id,
         repo,
         issue,
@@ -93,3 +93,15 @@ async def estimate_issue(repo: str, issue: int, kind: db.UsageKind) -> dict[str,
         result["basis"],
         result["samples"],
     )
+    return {**stored, "size": db.sizes_by_issue(user_id, repo).get((repo, issue))}
+
+
+async def size_issue(repo: str, issue: int, size: int) -> dict[str, Any]:
+    """Set *issue*'s size in Fibonacci points: 1, 2, 3, 5, 8 or 13, or 21 for an issue
+    larger than 13, which is not planned until it is split."""
+    if issue < 1:
+        raise ValueError(f"a size must name an issue, got {issue}")
+    db.check_size(size)
+    user_id = _require_user_id()
+    repo = await _resolve_repo(repo, require_registered=True)
+    return db.set_size(user_id, repo, issue, size)

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import db
 import main
 from auth import current_db_user_id
 from settings import settings
@@ -155,6 +156,7 @@ def test_plan_includes_unestimated_work_and_never_waits_on_the_author() -> None:
             "number": 3,
             "title": "Issue 3",
             "tier": "other",
+            "size": None,
             "estimate_tokens": None,
         }
     ]
@@ -201,6 +203,7 @@ def _two_repos(*, focus: list[dict] | None = None, unreadable: str | None = None
             return_value=_fuel(used=0.0, spent=0.0, resets_at=now + timedelta(days=3)),
         ),
         patch("db.list_estimates", return_value=estimates),
+        patch("db.sizes_by_issue", return_value={}),
         patch("db.list_backlog", return_value=[]),
         patch("db.list_milestones", return_value=[]),
         patch("db.list_focus", return_value=focus or []),
@@ -464,6 +467,7 @@ def _ended_sprint(
         patch("github.list_all_issues", AsyncMock(side_effect=list_all_issues)),
         patch("db.usage_by_issue", return_value={1: {"implementation": 500}, 2: {"tests": 10}}),
         patch("db.list_estimates", return_value=[_estimate(1, 100), _estimate(2, 10)]),
+        patch("db.sizes_by_issue", return_value={}),
         patch(
             "db.milestones_done_between",
             return_value=[
@@ -610,3 +614,12 @@ def test_the_budget_counts_every_accounts_share_less_its_reserve() -> None:
     assert budget["allowance"]["spent_tokens"] == 100 + 520
     # factory is behind pace and main has nothing usable left: nothing is within pace.
     assert budget["within_pace"] is False
+
+
+def test_plan_offers_splitting_an_issue_too_big_to_plan() -> None:
+    """An issue sized larger than 13 is not planned itself; splitting it is."""
+    entries = [_entry(1), _entry(2)]
+
+    plan, _ = plan_sprint(entries, {}, 100, {("owner/repo", 1): db.TOO_BIG})
+
+    assert [(item["number"], item.get("split")) for item in plan] == [(1, True), (2, None)]

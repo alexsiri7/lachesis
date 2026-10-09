@@ -124,17 +124,34 @@ def plan_sprint(
     entries: list[dict[str, Any]],
     estimates: dict[tuple[str, int], int | None],
     left_tokens: int,
+    sizes: dict[tuple[str, int], int] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Walk *entries* in backlog order, planning each whose estimate fits what is left.
 
     Parked work and work waiting on the author are not eligible. An entry that does
     not fit is skipped and the walk goes on, so smaller later work uses what is left.
-    Returns the planned entries and how many eligible entries were not planned.
+    An issue sized larger than 13 is never planned itself: splitting it is, marked
+    ``split``. Returns the planned entries and how many eligible entries were not planned.
     """
+    sizes = sizes or {}
     planned: list[dict[str, Any]] = []
     not_planned = 0
     for entry in entries:
         if not entry["ready"] or _NEEDS_AUTHOR_LABEL in entry["labels"]:
+            continue
+        size = sizes.get((entry["repo"], entry["number"]))
+        if size == db.TOO_BIG:
+            planned.append(
+                {
+                    "repo": entry["repo"],
+                    "number": entry["number"],
+                    "title": entry["title"],
+                    "tier": entry["tier"],
+                    "size": size,
+                    "estimate_tokens": None,
+                    "split": True,
+                }
+            )
             continue
         estimate = estimates.get((entry["repo"], entry["number"]))
         if not fits(estimate, left_tokens):
@@ -147,6 +164,7 @@ def plan_sprint(
                 "number": entry["number"],
                 "title": entry["title"],
                 "tier": entry["tier"],
+                "size": size,
                 "estimate_tokens": estimate,
             }
         )
@@ -185,8 +203,15 @@ async def read_sprint() -> dict[str, Any]:
     # Tiers and creation times compare across repos; registration order only breaks a tie.
     entries.sort(key=lambda entry: entry[:2])
 
+    sizes = {
+        (normalize_repo(repo), issue): size
+        for (repo, issue), size in db.sizes_by_issue(user_id).items()
+    }
     plan, not_planned = plan_sprint(
-        [entry for _, _, entry in entries], estimates_by_issue(user_id), budget["left_tokens"]
+        [entry for _, _, entry in entries],
+        estimates_by_issue(user_id),
+        budget["left_tokens"],
+        sizes,
     )
     return {
         "reported": True,
