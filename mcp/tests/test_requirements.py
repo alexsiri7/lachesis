@@ -5219,6 +5219,42 @@ async def test_get_dashboard_names_a_repo_it_could_not_read(
     assert summary["incomplete_repos"] == []
 
 
+async def test_get_dashboard_reads_repos_concurrently_and_lists_them_in_order(
+    set_db_user_id: None,
+) -> None:
+    """Repos are read at the same time, so a dozen do not outlast the client's timeout."""
+    import asyncio
+
+    from tools import requirements as req_tools
+
+    second_started = asyncio.Event()
+
+    async def read(repo_name: str, status: str | None, include_inactive: bool) -> object:
+        if repo_name == "owner/first":
+            # Read one after another, the second repo would never start.
+            await asyncio.wait_for(second_started.wait(), timeout=2)
+        else:
+            second_started.set()
+        result = req_tools._DashboardRepo(repo_name)
+        result.entry = {"repo": repo_name, "requirements": [], "spec_changes": []}
+        return result
+
+    with (
+        patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/first"}, {"repo_name": "owner/second"}],
+        ),
+        patch("tools.requirements._read_dashboard_repo", side_effect=read),
+        patch(
+            "tools.requirements.waiting_on_author",
+            AsyncMock(return_value=MagicMock(issues=[], unreadable=[])),
+        ),
+    ):
+        result = await get_dashboard()
+
+    assert [repo["repo"] for repo in result["repos"]] == ["owner/first", "owner/second"]
+
+
 async def test_get_dashboard_reports_no_failed_repos_when_every_repo_was_read(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
