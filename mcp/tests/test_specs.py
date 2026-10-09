@@ -971,6 +971,7 @@ _GUIDANCE_FIELDS = {
     "spec_change",
     "spec_gap",
     "uses_specs",
+    "wait_days",
     "waiting_on_author",
 }
 

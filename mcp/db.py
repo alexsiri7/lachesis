@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Literal, get_args
 
@@ -624,22 +624,30 @@ def record_question(
     milestone: str | None = None,
     issue: int | None = None,
     blocks: list[int] | None = None,
+    default_answer: str | None = None,
+    wait: timedelta | None = None,
 ) -> dict[str, Any]:
-    """Store a question and its ``question_asked`` event in one transaction."""
+    """Store a question and its ``question_asked`` event in one transaction.
+
+    A *default_answer* is taken once *wait* has passed from now with no answer.
+    """
     if kind not in get_args(QuestionKind):
         raise ValueError(f"kind must be one of {', '.join(get_args(QuestionKind))}, got {kind!r}")
     sql = text(
         """
         INSERT INTO lachesis_questions (
             user_id, repo_name, question, context, options, kind, asker,
-            capability, spec_change, milestone, issue, blocks
+            capability, spec_change, milestone, issue, blocks,
+            default_answer, default_after
         )
         VALUES (
             :user_id, :repo_name, :question, :context, :options, :kind, :asker,
-            :capability, :spec_change, :milestone, :issue, :blocks
+            :capability, :spec_change, :milestone, :issue, :blocks,
+            :default_answer, now() + :wait
         )
         RETURNING id, repo_name, question, context, options, kind, asker,
-                  capability, spec_change, milestone, issue, blocks, created_at
+                  capability, spec_change, milestone, issue, blocks, created_at,
+                  default_answer, default_after
         """
     )
     params = {
@@ -655,6 +663,8 @@ def record_question(
         "milestone": milestone,
         "issue": issue,
         "blocks": blocks or [],
+        "default_answer": default_answer,
+        "wait": wait if default_answer is not None else None,
     }
     with _engine().begin() as conn:
         row = conn.execute(sql, params).mappings().first()
@@ -664,11 +674,12 @@ def record_question(
     return dict(row)
 
 
-OutcomeKind = Literal["none", "standing_rule", "spec_change", "new_project"]
+OutcomeKind = Literal["none", "standing_rule", "spec_change", "new_project", "defaulted"]
+DEFAULTED: OutcomeKind = "defaulted"
 
 _QUESTION_COLUMNS = """id, repo_name, question, context, options, kind, asker,
                   capability, spec_change, milestone, issue, blocks, created_at,
-                  answer, answerer, answered_at, outcome"""
+                  answer, answerer, answered_at, outcome, default_answer, default_after"""
 
 
 def get_question(user_id: str, repo_name: str, question_id: int) -> dict[str, Any] | None:
@@ -717,6 +728,25 @@ def list_open_questions(user_id: str) -> list[dict[str, Any]]:
         return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
 
 
+def list_expired_defaults(user_id: str) -> list[dict[str, Any]]:
+    """Return the open questions whose wait for a default has passed, oldest first.
+
+    Only questions in repositories *user_id* has registered are returned.
+    """
+    sql = text(
+        f"""
+        SELECT {_QUESTION_COLUMNS}
+        FROM lachesis_questions
+        WHERE user_id = :user_id AND answered_at IS NULL
+          AND default_after IS NOT NULL AND default_after <= now()
+          AND repo_name IN (SELECT repo_name FROM lachesis_repos WHERE user_id = :user_id)
+        ORDER BY created_at, id
+        """
+    )
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
+
+
 def search_answered_questions(user_id: str, repo_name: str, query: str) -> list[dict[str, Any]]:
     """Return the answered questions in *repo_name* matching *query*, newest answer first.
 
@@ -749,9 +779,12 @@ def answer_question(
 ) -> dict[str, Any]:
     """Record the answer to an open question and its ``question_answered`` event.
 
+    A question settled by its default (outcome ``defaulted``) may be answered again;
+    the new answer replaces the default.
+
     Returns the answered question with ``released``: the issues it blocked that no
     other open question still blocks. Raises ``ValueError`` unless the question is
-    in *repo_name* and still open.
+    in *repo_name* and still open or defaulted.
     """
     if outcome not in get_args(OutcomeKind):
         raise ValueError(
@@ -762,7 +795,7 @@ def answer_question(
         UPDATE lachesis_questions
         SET answer = :answer, answerer = :answerer, answered_at = now(), outcome = :outcome
         WHERE user_id = :user_id AND repo_name = :repo_name AND id = :id
-          AND answered_at IS NULL
+          AND (answered_at IS NULL OR outcome = 'defaulted')
         RETURNING {_QUESTION_COLUMNS}
         """
     )

@@ -383,6 +383,8 @@ def test_record_question_stores_the_question_and_its_event_in_one_transaction() 
         "milestone": None,
         "issue": None,
         "blocks": [160],
+        "default_answer": None,
+        "wait": None,
     }
     assert "INSERT INTO lachesis_events" in str(event_call[0][0])
     assert event_call[0][1] == {
@@ -510,7 +512,7 @@ def test_answers_migration_allows_exactly_the_outcomes() -> None:
     from pathlib import Path
     from typing import get_args
 
-    migration = (Path(db.__file__).parent / "alembic/versions/010_question_answers.py").read_text()
+    migration = (Path(db.__file__).parent / "alembic/versions/026_question_defaults.py").read_text()
     check = re.search(r"\"outcome IN \((.*?)\)\"", migration)
     assert check is not None
     assert re.findall(r"'(\w+)'", check.group(1)) == list(get_args(db.OutcomeKind))

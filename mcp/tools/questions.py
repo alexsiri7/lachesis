@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any, get_args
 
 import db
@@ -11,6 +12,13 @@ import notify
 
 from .repos import _require_user_id
 from .requirements import _NEEDS_AUTHOR_COLOR, _NEEDS_AUTHOR_LABEL, _resolve_repo
+
+logger = logging.getLogger(__name__)
+
+# Only these kinds may settle by default: the others decide what a project should be.
+DEFAULTABLE_KINDS: tuple[db.QuestionKind, ...] = ("clarification", "improvement")
+DEFAULT_WAIT_DAYS = 3.0
+DEFAULT_ANSWERER = "default"
 
 # ntfy turns a message over 4096 bytes into an attachment; the full question
 # stays in its record and on any issue it names.
@@ -65,8 +73,15 @@ async def ask_question(
     spec_change: int | None = None,
     milestone: str | None = None,
     issue: int | None = None,
+    default: str | None = None,
+    wait_days: float = DEFAULT_WAIT_DAYS,
 ) -> dict[str, Any]:
     """Record a question for the author and mark every issue it *blocks* as waiting.
+
+    A clarification or improvement question may carry a *default* answer, taken
+    when *wait_days* pass with no answer (see ``settle_expired_defaults``). Every
+    other kind decides what a project should be and must wait for the author, so
+    a default for it is refused.
 
     Each blocked issue gets the question as a comment, then the question is
     recorded, then the author is sent a push (best effort, never raises), then
@@ -97,10 +112,24 @@ async def ask_question(
         raise ValueError("a budget question blocks no issue; name the work it delivers in context")
     if kind == "budget" and not context:
         raise ValueError("a budget question's context must say what the extra spend would deliver")
+    if default is not None:
+        default = default.strip()
+        if not default:
+            raise ValueError("default must not be empty; omit it to wait for the author")
+        if kind not in DEFAULTABLE_KINDS:
+            raise ValueError(
+                f"a {kind} question cannot carry a default: it decides what the project "
+                "should be and waits for the author. Only clarification and improvement "
+                "questions settle by default."
+            )
+        if not wait_days > 0:
+            raise ValueError(f"wait_days must be positive, got {wait_days!r}")
     user_id = _require_user_id()
     repo = await _resolve_repo(repo, require_registered=True)
 
     body = _comment_body(question, context, options)
+    if default is not None:
+        body += f"\n\nUnless answered within {wait_days:g} days, the default is taken: {default}"
     comments: list[dict[str, Any]] = []
     for number in blocked:
         url = await github.create_issue_comment(repo, number, body)
@@ -121,6 +150,8 @@ async def ask_question(
         milestone=milestone,
         issue=issue,
         blocks=blocked,
+        default_answer=default,
+        wait=timedelta(days=wait_days) if default is not None else None,
     )
 
     await _tell_author(user_id, repo, question, kind, blocked, issue)
@@ -132,13 +163,27 @@ async def ask_question(
     return {"id": row["id"], "comments": comments}
 
 
-async def ask_author(repo: str, number: int, question: str, asker: str = "agent") -> dict[str, Any]:
+async def ask_author(
+    repo: str,
+    number: int,
+    question: str,
+    asker: str = "agent",
+    default: str | None = None,
+    wait_days: float = DEFAULT_WAIT_DAYS,
+) -> dict[str, Any]:
     """Ask a clarification question blocking issue *number*; see ``ask_question``.
 
     Returns ``{"url"}`` of the question comment.
     """
     result = await ask_question(
-        repo, question, "clarification", asker, blocks=[number], issue=number
+        repo,
+        question,
+        "clarification",
+        asker,
+        blocks=[number],
+        issue=number,
+        default=default,
+        wait_days=wait_days,
     )
     return {"url": result["comments"][0]["url"]}
 
@@ -151,6 +196,9 @@ async def answer_question(
     outcome: db.OutcomeKind = "none",
 ) -> dict[str, Any]:
     """Answer open question *id*, posting *answer* on every issue it blocks.
+
+    A question settled by its default may be answered again: the new answer
+    replaces the default.
 
     The answer is posted on each blocked issue, then recorded with its answerer,
     time and outcome, then ``needs-author`` is removed from each blocked issue no
@@ -175,7 +223,7 @@ async def answer_question(
     question = db.get_question(user_id, repo, id)
     if question is None:
         raise FileNotFoundError(f"Question {id} not found in {repo!r}")
-    if question["answered_at"] is not None:
+    if question["answered_at"] is not None and question["outcome"] != db.DEFAULTED:
         raise ValueError(f"Question {id} in {repo!r} is already answered")
 
     comments: list[dict[str, Any]] = []
@@ -197,13 +245,61 @@ async def answer_question(
     }
 
 
+def _default_note(default: str) -> str:
+    return f"No answer came within the wait, so the default was taken: {default}"
+
+
+async def settle_expired_defaults(user_id: str) -> list[dict[str, Any]]:
+    """Answer each open question whose wait has passed with its default.
+
+    For each, the default is posted on every issue it blocks as a note that the
+    default was taken, then recorded as the answer with answerer ``default`` and
+    outcome ``defaulted``, then ``needs-author`` is removed from each issue no other
+    open question still blocks — the same order as ``answer_question``. Called on
+    every read of the open questions, so it never raises: a question that fails to
+    settle is logged and left for the next read.
+
+    Returns the questions settled, each with ``released``.
+    """
+    try:
+        expired = db.list_expired_defaults(user_id)
+    except Exception:
+        logger.warning("settle_expired_defaults: could not read the questions", exc_info=True)
+        return []
+    settled: list[dict[str, Any]] = []
+    for question in expired:
+        repo = question["repo_name"]
+        default = question["default_answer"]
+        try:
+            for number in question["blocks"]:
+                await github.create_issue_comment(repo, number, _default_note(default))
+            answered = db.answer_question(
+                user_id, repo, question["id"], default, DEFAULT_ANSWERER, db.DEFAULTED
+            )
+            for number in answered["released"]:
+                await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
+        except Exception:
+            logger.warning(
+                "settle_expired_defaults: question %s in %s did not settle",
+                question["id"],
+                repo,
+                exc_info=True,
+            )
+            continue
+        settled.append(answered)
+    return settled
+
+
 async def list_open_questions() -> list[dict[str, Any]]:
     """Return the open questions across every registered repository, oldest first.
 
-    Each is its record — kind, what it is about, the issues it ``blocks`` — with
+    Questions whose wait for a default has passed are settled first, so they are
+    not listed. Each is its record — kind, what it is about, the issues it
+    ``blocks``, any ``default_answer`` and ``default_after`` — with
     ``waiting_hours``: whole hours since it was asked.
     """
     user_id = _require_user_id()
+    await settle_expired_defaults(user_id)
     now = datetime.now(UTC)
     return [
         {**row, "waiting_hours": int((now - row["created_at"]).total_seconds() // 3600)}

@@ -27,6 +27,7 @@ from settings import settings
 from status import canonical_status
 from tools import fuel as fuel_tools
 from tools import milestones as milestone_tools
+from tools import questions as question_tools
 from tools import requirements as requirement_tools
 from tools.fuel import accounts_status
 from tools.repos import normalize_repo
@@ -297,6 +298,7 @@ async def web_index(request: Request) -> Response:
         )
 
     now = datetime.now(UTC)
+    await question_tools.settle_expired_defaults(lachesis_uid)
     waiting = await waiting_on_author([row["repo_name"] for row in repos_raw])
     open_questions = db.list_open_questions(lachesis_uid)
     asked = {(q["repo_name"], number) for q in open_questions for number in q["blocks"]}

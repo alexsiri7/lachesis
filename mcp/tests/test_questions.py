@@ -20,6 +20,7 @@ from tools.questions import (
     ask_question,
     list_open_questions,
     search_answered_questions,
+    settle_expired_defaults,
 )
 
 _REAL_SEND = notify.send
@@ -113,6 +114,8 @@ async def test_asking_with_options(
         milestone=None,
         issue=None,
         blocks=[160],
+        default_answer=None,
+        wait=None,
     )
     assert json.loads(httpx_mock.get_requests()[0].content) == {
         "body": "Does this change contradict the backlog capability?\n\n"
@@ -575,7 +578,11 @@ async def test_an_answered_question_is_refused_before_anything_happens(
     httpx_mock: HTTPXMock, set_user_id: str, registered: None, answering
 ) -> None:
     get_question, answer = answering
-    get_question.return_value = {**_open_question([160]), "answered_at": "2026-10-03"}
+    get_question.return_value = {
+        **_open_question([160]),
+        "answered_at": "2026-10-03",
+        "outcome": "none",
+    }
 
     with pytest.raises(ValueError, match="already answered"):
         await answer_question("alexsiri7/lachesis", 7, "Always A.", "alex")
@@ -803,3 +810,149 @@ async def test_searching_is_refused_for_an_unregistered_repository(
         with pytest.raises(ValueError, match="'someone/else' is not registered"):
             await search_answered_questions("someone/else", "priority labels")
     search.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Defaults: small questions settle while the author is away
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["clarification", "improvement"])
+async def test_a_small_question_carries_its_default_and_wait(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question, kind: str
+) -> None:
+    _mock_comment(httpx_mock, 160)
+    _mock_labelling(httpx_mock, 160)
+
+    await ask_question(
+        "lachesis", "CSV or JSON?", kind, "agent", blocks=[160], default=" CSV ", wait_days=2
+    )
+
+    kwargs = record_question.call_args.kwargs
+    assert (kwargs["default_answer"], kwargs["wait"]) == ("CSV", timedelta(days=2))
+    comment = json.loads(httpx_mock.get_requests()[0].content)["body"]
+    assert "Unless answered within 2 days, the default is taken: CSV" in comment
+
+
+async def test_the_default_wait_is_three_days(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question
+) -> None:
+    _mock_comment(httpx_mock, 160)
+    _mock_labelling(httpx_mock, 160)
+
+    await ask_author("lachesis", 160, "CSV or JSON?", default="CSV")
+
+    assert record_question.call_args.kwargs["wait"] == timedelta(days=3)
+
+
+@pytest.mark.parametrize("kind", ["spec_contradiction", "large_work", "maturity", "budget"])
+async def test_a_question_that_decides_the_project_refuses_a_default(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question, kind: str
+) -> None:
+    """Scenario: Spec decision waits — the default is refused and nothing is asked."""
+    with pytest.raises(ValueError, match="cannot carry a default"):
+        await ask_question("lachesis", "Which?", kind, "agent", context="c", default="A")
+
+    assert httpx_mock.get_requests() == []
+    record_question.assert_not_called()
+
+
+@pytest.mark.parametrize(("default", "wait_days"), [("  ", 3), ("A", 0), ("A", -1)])
+async def test_an_empty_default_or_a_wait_that_is_not_positive_is_refused(
+    set_user_id: str, registered: None, record_question, default: str, wait_days: float
+) -> None:
+    with pytest.raises(ValueError):
+        await ask_question(
+            "lachesis", "Which?", "clarification", "agent", default=default, wait_days=wait_days
+        )
+
+    record_question.assert_not_called()
+
+
+def _expired(question_id: int, blocks: list[int]) -> dict:
+    return {
+        "id": question_id,
+        "repo_name": "alexsiri7/lachesis",
+        "blocks": blocks,
+        "default_answer": "CSV",
+    }
+
+
+async def test_an_expired_default_is_taken_and_its_issue_released(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Scenario: Away for a week — note posted, default recorded, issue released."""
+    _mock_comment(httpx_mock, 160)
+    _mock_unlabel(httpx_mock, 160)
+    with (
+        patch("tools.questions.db.list_expired_defaults", return_value=[_expired(7, [160])]),
+        patch(
+            "tools.questions.db.answer_question",
+            return_value={**_expired(7, [160]), "released": [160]},
+        ) as answer,
+    ):
+        settled = await settle_expired_defaults("test-uid")
+
+    answer.assert_called_once_with(
+        "test-uid", "alexsiri7/lachesis", 7, "CSV", "default", "defaulted"
+    )
+    assert [q["id"] for q in settled] == [7]
+    comment, unlabel = httpx_mock.get_requests()
+    assert "the default was taken: CSV" in json.loads(comment.content)["body"]
+    assert unlabel.method == "DELETE"
+
+
+async def test_a_default_that_fails_to_settle_is_left_for_the_next_read(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_comment(httpx_mock, 160, status_code=500)
+    _mock_comment(httpx_mock, 161)
+    _mock_unlabel(httpx_mock, 161)
+    expired = [_expired(7, [160]), _expired(8, [161])]
+    with (
+        patch("tools.questions.db.list_expired_defaults", return_value=expired),
+        patch(
+            "tools.questions.db.answer_question",
+            return_value={**_expired(8, [161]), "released": [161]},
+        ) as answer,
+    ):
+        settled = await settle_expired_defaults("test-uid")
+
+    answer.assert_called_once()
+    assert [q["id"] for q in settled] == [8]
+
+
+async def test_settling_never_raises_when_the_questions_cannot_be_read() -> None:
+    with patch("tools.questions.db.list_expired_defaults", side_effect=RuntimeError("down")):
+        assert await settle_expired_defaults("test-uid") == []
+
+
+async def test_reading_the_open_questions_settles_expired_defaults_first(
+    set_user_id: str,
+) -> None:
+    with (
+        patch("tools.questions.settle_expired_defaults", new_callable=AsyncMock) as settle,
+        patch("tools.questions.db.list_open_questions", return_value=[]),
+    ):
+        await list_open_questions()
+
+    settle.assert_awaited_once_with("test-uid")
+
+
+async def test_the_author_may_answer_a_defaulted_question(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, answering
+) -> None:
+    get_question, answer = answering
+    get_question.return_value = {
+        **_open_question([160, 161]),
+        "answered_at": "2026-10-03",
+        "outcome": "defaulted",
+    }
+    for number in (160, 161):
+        _mock_comment(httpx_mock, number)
+        _mock_unlabel(httpx_mock, number)
+
+    result = await answer_question("alexsiri7/lachesis", 7, "JSON after all.", "author")
+
+    answer.assert_called_once()
+    assert result["outcome"] == "none"

@@ -84,9 +84,11 @@ Before asking anything, call search_answered_questions with the repository and t
 of your question. If an answer already settles it, act on that answer instead of asking
 again.
 When you cannot tell what the spec intends for an issue, do not guess: call ask_author
-with your question and move on to other work. The issue is labelled needs-author and
-next_issue passes over it, keeping its computed place, until answer_author posts the
-answer and removes the label, once no other open question blocks the issue.
+with your question and move on to other work. If a sensible default would do while the
+author is away, pass it as default: unanswered after wait_days (3), it is taken. The
+issue is labelled needs-author and next_issue passes over it, keeping its computed place,
+until answer_author posts the answer and removes the label, once no other open question
+blocks the issue.
 For any other decision only the author can make — a spec contradiction, large work,
 maturity or an improvement — or one that blocks several issues, call ask_question.
 answer_question records the author's answer to a question by id, with its outcome, and
@@ -1637,9 +1639,13 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     else:
         repos = [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]
 
-    # sprints imports this module, so it cannot be imported at the top.
+    # sprints and questions import this module, so they cannot be imported at the top.
     from .fuel import accounts_status
+    from .questions import settle_expired_defaults
     from .sprints import estimates_by_issue, sprint_budget
+
+    # A question whose default was taken releases its issues before they are read.
+    await settle_expired_defaults(user_id)
 
     now = datetime.now(UTC)
     budget = sprint_budget(
@@ -2000,6 +2006,10 @@ async def get_dashboard(
             "This may indicate a database connectivity issue (check server logs) "
             "or a token that predates the lachesis_uid claim."
         )
+    # questions imports this module, so it cannot be imported at the top.
+    from .questions import settle_expired_defaults
+
+    await settle_expired_defaults(user_id)
 
     repos = db.list_repos(user_id)
     limit = asyncio.Semaphore(_DASHBOARD_CONCURRENCY)
