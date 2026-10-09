@@ -1,6 +1,8 @@
 import { test, expect } from 'claude-code/testing'
+import { wrapUpNote } from '../hooks/register'
 
 const GUARD_ON = JSON.stringify({ enabled: true, weeklyCapPercent: 65, fiveHourCapPercent: 60 })
+const GUARD_STOP = JSON.stringify({ enabled: true, weeklyCapPercent: 65, fiveHourCapPercent: 60, mode: 'stop' })
 
 function setup(on: any, guardFile: string | undefined, fiveHour: number, sevenDay: number) {
   on('env.get', () => ({ value: '/home/test' }))
@@ -31,22 +33,36 @@ test('guard on and within budget: tools run', async ($, on) => {
   expect(r.deny).toBeUndefined()
 })
 
-test('guard on, 5-hour window at its cap: tools are refused', async ($, on) => {
-  setup(on, GUARD_ON, 60, 20)
+test('stop mode, 5-hour window at its cap: tools are refused', async ($, on) => {
+  setup(on, GUARD_STOP, 60, 20)
   const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
   expect(r.deny ?? r.text).toContain('5-hour window at 60% (cap 60%)')
 })
 
-test('guard on, 7-day window past its cap: tools are refused', async ($, on) => {
-  setup(on, GUARD_ON, 10, 70)
+test('stop mode, 7-day window past its cap: tools are refused', async ($, on) => {
+  setup(on, GUARD_STOP, 10, 70)
   const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
   expect(r.deny ?? r.text).toContain('7-day window at 70% (cap 65%)')
 })
 
-test('guard tripped: the usage tool still answers and says so', async ($, on) => {
-  setup(on, GUARD_ON, 10, 70)
+test('stop mode tripped: the usage tool still answers and says so', async ($, on) => {
+  setup(on, GUARD_STOP, 10, 70)
   const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
   expect(r.result).toContain('TRIPPED')
+})
+
+test('wrap-up mode is the default: past the cap tools still run', async ($, on) => {
+  setup(on, GUARD_ON, 60, 20)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny).toBeUndefined()
+  expect(r.result).toBe('ran')
+})
+
+test('wrap-up mode: the usage tool says to wrap up', async ($, on) => {
+  setup(on, GUARD_ON, 10, 70)
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('WRAP UP')
+  expect(r.result).toContain('start nothing new')
 })
 
 test('guard disabled in its file: tools run', async ($, on) => {
@@ -81,7 +97,7 @@ function paced(on: any, sevenDay: number, readPath: string[] = []) {
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/factory-main' : '/home/test' }))
   on('fs.read', (_$: any, e: any) => {
     readPath.push(e.path)
-    return { value: JSON.stringify({ enabled: true, weeklyCapPercent: 70, fiveHourCapPercent: 60, pace: true }) }
+    return { value: JSON.stringify({ enabled: true, weeklyCapPercent: 70, fiveHourCapPercent: 60, pace: true, mode: 'stop' }) }
   })
   on('session.usage', () => ({
     value: {
@@ -119,4 +135,11 @@ test('the guard file is read from the config dir', async ($, on) => {
   paced(on, 10, paths)
   await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
   expect(paths).toContain('/factory-main/budget-guard.json')
+})
+
+test('the wrap-up note says to finish, not to start', async () => {
+  const note = wrapUpNote(['5-hour window at 61% (cap 60%)'])
+  expect(note).toContain('5-hour window at 61%')
+  expect(note).toContain('Finish the change in hand')
+  expect(note).toContain('Do not start new work')
 })
