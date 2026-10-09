@@ -377,6 +377,32 @@ async def test_audit_issue_content(lachesis: Lachesis) -> None:
     assert "more than one reading" in text
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #314")
+@scenario("audits", "Clean code audit content")
+async def test_clean_code_audit_content(lachesis: Lachesis) -> None:
+    repo = "owner/kith"
+    await _repo(lachesis, repo)
+    lachesis.github.on("POST", f"/repos/{repo}/issues", json=_issue(repo, 70), status=201)
+
+    await _ok(lachesis, "start_audit", {"repo": repo, "kind": "clean-code"})
+
+    [opened] = _opened_issues(lachesis, repo)
+    text = " ".join(f"{opened['title']}\n{opened.get('body', '')}".lower().split())
+    for standard in (
+        "names that reveal intent",
+        "do one thing",
+        "flag arguments",
+        "side effects",
+        "duplication",
+        "comments",
+        "single responsibility",
+        "dependencies",
+        "tests",
+    ):
+        assert standard in text, standard
+    assert "name the standard" in text
+
+
 # --- Findings are filed, not fixed; decisions go to the author ------------------------
 
 
