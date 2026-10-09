@@ -89,7 +89,6 @@ def _labels_on_the_pull(lachesis: Lachesis) -> set[str]:
     return {label for request in labelled for label in (request.body or {}).get("labels", [])}
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #319")
 @scenario("spec-changes", "The author asks in conversation")
 async def test_the_author_asks_in_conversation(lachesis: Lachesis) -> None:
     registered = await lachesis.call_tool("register_repo", {"repo": REPO})
