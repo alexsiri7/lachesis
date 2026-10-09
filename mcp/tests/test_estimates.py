@@ -225,16 +225,21 @@ async def test_an_issue_naming_several_capabilities_is_estimated_in_none_of_them
     }
     issues = [tests_issue, _issue(1, capability="sprints"), _issue(2, capability="fuel")]
     usage = {1: {"tests": 1000}, 2: {"tests": 3000}}
+    sizes = {
+        ("alexsiri7/lachesis", 1): 1,
+        ("alexsiri7/lachesis", 2): 1,
+        ("alexsiri7/lachesis", 230): 1,
+    }
     with (
         patch("tools.estimates.github.list_all_issues", AsyncMock(return_value=issues)),
         patch("tools.estimates.db.usage_by_issue", return_value=usage),
-        patch("tools.estimates.db.set_estimate", return_value={}) as set_estimate,
-        patch("tools.estimates.db.sizes_by_issue", return_value={}),
+        patch("tools.estimates.db.set_estimate", return_value={"tokens": 2000}) as set_estimate,
+        patch("tools.estimates.db.sizes_by_issue", return_value=sizes),
     ):
         await estimate_issue("lachesis", 230, "tests")
 
     set_estimate.assert_called_once_with(
-        "test-uid", "alexsiri7/lachesis", 230, "tests", None, 2000, "low", "kind", 2
+        "test-uid", "alexsiri7/lachesis", 230, "tests", None, 2000, "low", "all kinds", 2
     )
 
 
