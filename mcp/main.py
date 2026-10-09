@@ -551,17 +551,18 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Estimate an issue in a registered repository in tokens, from the measured usage of "
-        "past issues of the same kind and capability, and store the estimate with the issue, "
-        "replacing any earlier one. Give the `issue` (number) and its `kind` of work, one of "
-        "triage, summarising, audit, tests, implementation, spec work. A past issue is a "
-        "closed issue with usage reports; its kind is the kind of work that used the most "
-        "tokens on it, and its capability comes from its reference block. The estimate is "
-        "their mean total tokens, with confidence normal from 5 such issues and low below "
-        "that (basis `capability`). With none in the capability it falls back to past issues "
-        "of that kind in the repository, at low confidence (basis `kind`). With no history at "
-        "all, `tokens` is null (basis `none`). Returns the stored estimate with its samples "
-        "and time, and the issue's `size` in points (null until it is sized)."
+        "Estimate an issue in a registered repository in tokens, as its size times the price "
+        "of a point, and store the estimate with the issue, replacing any earlier one. Give "
+        "the `issue` (number), its `kind` of work, one of triage, summarising, audit, tests, "
+        "implementation, spec work, and the `model` it will run on if known. The price is "
+        "measured from past issues: closed, sized issues with usage reports across the "
+        "registered repositories, each of the kind of work and the model that used the most "
+        "tokens on it; it is their tokens divided by their points. From 5 past issues of the "
+        "kind (and model, when given) the price is theirs at confidence normal (basis "
+        "`kind`); below that it is the price across all kinds and models, at low confidence "
+        "(basis `all kinds`). With no history at all, or an issue not yet sized or sized "
+        "21, `estimate_tokens` is null. Returns the stored estimate with its samples and "
+        "time, `estimate_tokens`, `tokens_per_point` and the issue's `size` in points."
     ),
 )(estimate_tools.estimate_issue)
 
@@ -676,8 +677,12 @@ mcp.tool(
         "whether spending is within today's pace; and the `plan` — the registered "
         "repositories' backlogs in computed order, ready and not waiting on the author, each "
         "included when its estimate fits what is left. An issue with no estimate is "
-        "included, with `estimate_tokens` null. Derived on every read, so it follows focus "
-        "changes. `reported` is false when no fuel has been reported."
+        "included, with `estimate_tokens` null. Also `tokens_per_point`, the price of a point "
+        "across all kinds and models of past issues (as estimate_issue measures it) with its "
+        "`price_confidence`; `capacity_points`, the budget divided by that price (null with "
+        "no history); and `planned_points`, the sizes of the planned issues. Derived on every "
+        "read, so it follows focus changes. `reported` is false when no fuel has been "
+        "reported."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(sprint_tools.read_sprint)

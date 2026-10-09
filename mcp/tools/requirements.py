@@ -110,8 +110,9 @@ read_scorecard shows, for each model and kind of work, its runs and failures, wh
 trusted, and whether it may trial that kind.
 
 Every issue carries an estimate in tokens. When you create or triage an issue, call
-estimate_issue with the issue and the kind of work it mostly is; the estimate comes from
-past issues of that kind and capability, and is low confidence until there are five.
+estimate_issue with the issue, the kind of work it mostly is and the model if you know it;
+the estimate is its size times the price of a point, measured from past issues of that
+kind and model, and is low confidence until there are five.
 
 At the start of every run, call report_fuel for the Claude account you run on (account,
 as list_accounts names it): its allowance used this week, when it resets, its five-hour
@@ -129,9 +130,10 @@ account in report_usage for every run on a Claude allowance.
 
 Sprints run from one weekly allowance reset to the next. read_sprint returns the sprint's
 dates, its budget in tokens — every account's share less its reserve, and the overflow cap — what is
-spent and left, and the plan: the backlog in order, as far as estimates fit what is left.
-It is derived on every read, so a new focus re-plans it. next_issue offers work other than
-security work only while it fits the budget left and spending is within pace, and says
+spent and left, its capacity in points at the price of a point, and the plan: the backlog
+in order, as far as estimates fit what is left. It is derived on every read, so a new
+focus re-plans it. next_issue offers work other than security work only while it fits
+the budget left and spending is within pace, and says
 when the sprint budget is spent. At each allowance reset, the scheduled sprint review calls
 report_sprint (see Sprint review).
 

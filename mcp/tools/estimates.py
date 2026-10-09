@@ -1,22 +1,34 @@
-"""Lachesis MCP tool implementations — estimates: what an issue should cost, from history."""
+"""Lachesis MCP tool implementations — estimates: what a point costs, from history, and so
+what an issue should cost."""
 
 from __future__ import annotations
 
-from statistics import mean
-from typing import Any, TypedDict, get_args
+import logging
+from typing import Any, NamedTuple, TypedDict, get_args
 
 import db
 import github
 from spec_reference import parse_reference
 
-from .repos import _require_user_id
+from .repos import _require_user_id, normalize_repo
 from .requirements import _resolve_repo
+
+logger = logging.getLogger(__name__)
 
 NORMAL_CONFIDENCE_SAMPLES = 5
 
 
-class Estimate(TypedDict):
-    tokens: int | None
+class PastIssue(NamedTuple):
+    repo: str
+    number: int
+    kind: str
+    model: str
+    tokens: int
+    size: int
+
+
+class Price(TypedDict):
+    tokens_per_point: float | None
     confidence: db.EstimateConfidence
     basis: db.EstimateBasis
     samples: int
@@ -33,41 +45,100 @@ def _capability(body: str) -> str | None:
     return ref.capability if ref else None
 
 
-def estimate_from_history(
-    target: int,
-    kind: str,
-    capability: str | None,
+def past_issues(
+    repo: str,
     issues: list[github.IssueSummary],
     usage: dict[int, dict[str, int]],
-) -> Estimate:
-    """Estimate issue *target* from the closed issues in *issues* with *usage*.
+    models: dict[int, dict[str, int]],
+    sizes: dict[int, int],
+) -> list[PastIssue]:
+    """Return the closed issues in *issues* with *usage* and a size of at most 13.
 
-    The past issues of *kind* in *capability* are the basis; with none, every past
-    issue of *kind*, at low confidence.
+    A past issue's kind of work and model are the ones that used the most tokens on it;
+    its tokens are every token reported on it.
     """
-    past = [
-        item
+    return [
+        PastIssue(
+            repo,
+            item["number"],
+            issue_kind(usage[item["number"]]),
+            max(models[item["number"]], key=models[item["number"]].__getitem__),
+            sum(usage[item["number"]].values()),
+            sizes[item["number"]],
+        )
         for item in issues
         if not item["is_pull_request"]
         and item["state"] == "closed"
-        and item["number"] != target
         and item["number"] in usage
-        and issue_kind(usage[item["number"]]) == kind
+        and sizes.get(item["number"], db.TOO_BIG) != db.TOO_BIG
     ]
-    if not past:
-        return {"tokens": None, "confidence": "low", "basis": "none", "samples": 0}
-    matching = [item for item in past if _capability(item["body"]) == capability]
-    chosen = matching or past
+
+
+async def factory_history(user_id: str) -> tuple[list[PastIssue], list[str]]:
+    """Return the past issues of every registered repository, and the repositories whose
+    issues could not be listed."""
+    sizes = db.sizes_by_issue(user_id)
+    past: list[PastIssue] = []
+    unreadable: list[str] = []
+    for repo_name in [row["repo_name"] for row in db.list_repos(user_id)]:
+        repo = normalize_repo(repo_name)
+        try:
+            issues = await github.list_all_issues(repo)
+        except Exception:
+            logger.warning("could not list the issues of %s to price a point", repo)
+            unreadable.append(repo)
+            continue
+        past += past_issues(
+            repo,
+            issues,
+            db.usage_by_issue(user_id, repo_name),
+            db.usage_by_issue(user_id, repo_name, by="model"),
+            {issue: size for (name, issue), size in sizes.items() if name == repo_name},
+        )
+    return past, unreadable
+
+
+def _price(
+    past: list[PastIssue], confidence: db.EstimateConfidence, basis: db.EstimateBasis
+) -> Price:
     return {
-        "tokens": round(mean(sum(usage[item["number"]].values()) for item in chosen)),
-        "confidence": "normal" if len(matching) >= NORMAL_CONFIDENCE_SAMPLES else "low",
-        "basis": "capability" if matching else "kind",
-        "samples": len(chosen),
+        "tokens_per_point": sum(p.tokens for p in past) / sum(p.size for p in past),
+        "confidence": confidence,
+        "basis": basis,
+        "samples": len(past),
     }
 
 
-async def estimate_issue(repo: str, issue: int, kind: db.UsageKind) -> dict[str, Any]:
-    """Estimate *issue* in *repo* in tokens from history and store the estimate with it."""
+def price_per_point(
+    past: list[PastIssue], kind: str | None = None, model: str | None = None
+) -> Price:
+    """Return the tokens a point of *kind* work on *model* costs in *past*.
+
+    Leaving out *kind* or *model* prices every kind or model. From fewer than
+    ``NORMAL_CONFIDENCE_SAMPLES`` matching issues, the price is the one across all kinds
+    and models, at low confidence. With no past issues there is no price.
+    """
+    matching = [p for p in past if kind in (None, p.kind) and model in (None, p.model)]
+    if len(matching) >= NORMAL_CONFIDENCE_SAMPLES:
+        return _price(matching, "normal", "kind")
+    if past:
+        return _price(past, "low", "all kinds")
+    return {"tokens_per_point": None, "confidence": "low", "basis": "none", "samples": 0}
+
+
+def estimate_tokens(size: int | None, price: Price) -> int | None:
+    """Return an issue of *size* priced at *price*; none for an unsized issue, one too big
+    to plan, or with no price."""
+    if size is None or size == db.TOO_BIG or price["tokens_per_point"] is None:
+        return None
+    return round(size * price["tokens_per_point"])
+
+
+async def estimate_issue(
+    repo: str, issue: int, kind: db.UsageKind, model: str | None = None
+) -> dict[str, Any]:
+    """Estimate *issue* in *repo* in tokens, its size times the price of a point of *kind*
+    work on *model*, and store the estimate with it."""
     if issue < 1:
         raise ValueError(f"an estimate must name an issue, got {issue}")
     if kind not in get_args(db.UsageKind):
@@ -78,22 +149,30 @@ async def estimate_issue(repo: str, issue: int, kind: db.UsageKind) -> dict[str,
     target = next((item for item in issues if item["number"] == issue), None)
     if target is None or target["is_pull_request"]:
         raise ValueError(f"Issue {issue} not found in {repo}")
-    capability = _capability(target["body"])
-    result = estimate_from_history(
-        issue, kind, capability, issues, db.usage_by_issue(user_id, repo)
-    )
+    history, _ = await factory_history(user_id)
+    others = [p for p in history if (p.repo, p.number) != (normalize_repo(repo), issue)]
+    price = price_per_point(others, kind, model)
+    size = db.sizes_by_issue(user_id, repo).get((repo, issue))
+    tokens = estimate_tokens(size, price)
     stored = db.set_estimate(
         user_id,
         repo,
         issue,
         kind,
-        capability,
-        result["tokens"],
-        result["confidence"],
-        result["basis"],
-        result["samples"],
+        _capability(target["body"]),
+        tokens,
+        price["confidence"],
+        price["basis"],
+        price["samples"],
     )
-    return {**stored, "size": db.sizes_by_issue(user_id, repo).get((repo, issue))}
+    del stored["tokens"]
+    return {
+        **stored,
+        "model": model,
+        "size": size,
+        "estimate_tokens": tokens,
+        "tokens_per_point": price["tokens_per_point"],
+    }
 
 
 async def size_issue(repo: str, issue: int, size: int) -> dict[str, Any]:

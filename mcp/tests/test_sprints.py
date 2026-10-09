@@ -13,7 +13,9 @@ import db
 import main
 from auth import current_db_user_id
 from settings import settings
+from tools.estimates import price_per_point
 from tools.sprints import (
+    capacity_points,
     ended_sprint,
     estimate_accuracy,
     plan_sprint,
@@ -179,7 +181,12 @@ def _open_issue(number: int, created_at: datetime) -> dict[str, Any]:
 
 
 @contextlib.contextmanager
-def _two_repos(*, focus: list[dict] | None = None, unreadable: str | None = None):
+def _two_repos(
+    *,
+    focus: list[dict] | None = None,
+    unreadable: str | None = None,
+    sizes: dict[tuple[str, int], int] | None = None,
+):
     """Repos A and B, each with one recent issue estimated at 60 of 100 tokens left."""
     now = datetime.now(UTC)
     open_issues = {
@@ -192,6 +199,16 @@ def _two_repos(*, focus: list[dict] | None = None, unreadable: str | None = None
             raise RuntimeError("gone")
         return open_issues[repo]
 
+    async def list_all_issues(repo: str) -> list[dict[str, Any]]:
+        if repo == unreadable:
+            raise RuntimeError("gone")
+        return [{**item, "state": "closed", "is_pull_request": False} for item in closed[repo]]
+
+    # Closed issue 9 in owner/a: 3 points that cost 120 tokens.
+    closed = {"owner/a": [_open_issue(9, now - timedelta(days=9))], "owner/b": []}
+    usage = {"owner/a": {9: {"implementation": 120}}, "owner/b": {}}
+    models = {"owner/a": {9: {"claude": 120}}, "owner/b": {}}
+
     estimates = [
         {"repo_name": "owner/a", "issue": 1, "tokens": 60},
         {"repo_name": "owner/b", "issue": 2, "tokens": 60},
@@ -203,11 +220,16 @@ def _two_repos(*, focus: list[dict] | None = None, unreadable: str | None = None
             return_value=_fuel(used=0.0, spent=0.0, resets_at=now + timedelta(days=3)),
         ),
         patch("db.list_estimates", return_value=estimates),
-        patch("db.sizes_by_issue", return_value={}),
+        patch("db.sizes_by_issue", return_value={("owner/a", 9): 3, **(sizes or {})}),
+        patch(
+            "db.usage_by_issue",
+            side_effect=lambda _u, repo, by="kind": (models if by == "model" else usage)[repo],
+        ),
         patch("db.list_backlog", return_value=[]),
         patch("db.list_milestones", return_value=[]),
         patch("db.list_focus", return_value=focus or []),
         patch("github.list_open_issues", AsyncMock(side_effect=list_open_issues)),
+        patch("github.list_all_issues", AsyncMock(side_effect=list_all_issues)),
         patch.object(settings, "claude_weekly_allowance_tokens", 125),
         patch.object(settings, "claude_usd_per_million_tokens", 0.0),
     ):
@@ -224,6 +246,36 @@ async def test_read_sprint_plans_the_backlog_in_order(set_user_id: str) -> None:
     assert result["planned_tokens"] == 60
     assert result["not_planned"] == 1
     assert result["unreadable"] == []
+
+
+async def test_read_sprint_states_its_capacity_in_points_at_the_price_of_a_point(
+    set_user_id: str,
+) -> None:
+    """Scenario: How far the budget goes — a budget of 100 at 40 per point is 2 points."""
+    with _two_repos():
+        result = await read_sprint()
+
+    assert result["budget_tokens"] == 100
+    assert result["tokens_per_point"] == 40
+    assert result["price_confidence"] == "low"
+    assert result["capacity_points"] == 2
+
+
+async def test_read_sprint_counts_the_points_planned_but_not_an_issue_to_split(
+    set_user_id: str,
+) -> None:
+    with _two_repos(sizes={("owner/a", 1): 5, ("owner/b", 2): 21}):
+        result = await read_sprint()
+
+    assert [(item["number"], item.get("split", False)) for item in result["plan"]] == [
+        (1, False),
+        (2, True),
+    ]
+    assert result["planned_points"] == 5
+
+
+def test_with_no_price_there_is_no_capacity() -> None:
+    assert capacity_points(100, price_per_point([])) is None
 
 
 async def test_read_sprint_replans_when_focus_changes(set_user_id: str) -> None:
