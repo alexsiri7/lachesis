@@ -11,8 +11,6 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -197,7 +195,6 @@ async def test_spec_change_fully_built(lachesis: Lachesis) -> None:
     assert entry["derived"]["status"] == "done"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #173")
 @scenario("progress-reporting", "Built but not yet passing")
 async def test_built_but_not_yet_passing(lachesis: Lachesis) -> None:
     scenarios = ["Widget kept", "Widget found", "Widget counted"]
@@ -245,7 +242,6 @@ def _capability_views(value: Any, capability: str) -> Iterator[dict[str, Any]]:
             yield from _capability_views(child, capability)
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #173")
 @scenario("progress-reporting", "Capability view")
 async def test_capability_view(lachesis: Lachesis) -> None:
     passing = ["Ordered", "Focused", "Interrupted", "Drawn", "Held"]

@@ -14,16 +14,25 @@ from pathlib import Path
 from acceptance import spec_scenarios
 
 UNTESTED = "untested"
+# Every result a scenario can have: Lachesis reads exactly these from the check run.
+RESULTS = ("passed", "xfail", "failed", UNTESTED)
 
 
 def scenario_results(
     scenarios: dict[str, list[str]], outcomes: dict[str, dict[str, str]]
 ) -> dict[str, dict[str, str]]:
-    """Map capability -> scenario title -> passed, failed, xfail or untested."""
-    return {
+    """Map capability -> scenario title -> passed, failed, xfail or untested.
+
+    An outcome outside :data:`RESULTS` is refused rather than published.
+    """
+    results = {
         capability: {title: outcomes.get(capability, {}).get(title, UNTESTED) for title in titles}
         for capability, titles in scenarios.items()
     }
+    unknown = sorted({o for titles in results.values() for o in titles.values()} - set(RESULTS))
+    if unknown:
+        raise ValueError(f"Unknown scenario outcomes {unknown}: expected one of {RESULTS}")
+    return results
 
 
 def check_run(sha: str, results: dict[str, dict[str, str]], exit_code: int) -> dict[str, object]:

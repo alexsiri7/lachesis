@@ -1844,7 +1844,7 @@ async def _read_dashboard_repo(
     repo_name: str, status: str | None, include_inactive: bool
 ) -> _DashboardRepo:
     """Read one repository's requirements and spec changes for get_dashboard."""
-    from .specs import read_spec_progress, spec_change_status, uses_specs
+    from .specs import read_spec_progress, scenario_view, spec_change_status, uses_specs
 
     read = _DashboardRepo(repo_name)
     listed = False
@@ -1931,6 +1931,7 @@ async def _read_dashboard_repo(
         read.incomplete = True
         return read
     read.spec_gaps = progress.spec_gaps
+    repo_entry["scenario_results"] = scenario_view(progress.scenario_results)
     for entry in (candidate.entry for candidate in progress.landing_candidates):
         spec_status = spec_change_status(entry)
         read.spec_change_counts[spec_status] += 1
@@ -1969,6 +1970,9 @@ async def get_dashboard(
     that status rather than in ``by_status`` — ``none`` when no issue names it,
     ``unreadable`` when its issues could not be read.
     Dropped spec changes are left out of the listings like cancelled requirements.
+    Such a repository also carries ``scenario_results``, every scenario's result
+    on the default branch by capability, as :func:`tools.specs.scenario_view`
+    returns it, saying so when none are published.
     ``summary.spec_gaps`` maps each such repository to its open spec-gap issues
     counted by capability.  Spec changes are grouped alongside requirement files,
     each group entry carrying ``spec_change`` and ``url`` where a requirement's

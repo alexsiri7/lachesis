@@ -335,18 +335,33 @@ def derive_spec_change(
     request is part of the work: while open it is what the change awaits, and its
     own movement counts towards ``last_activity``.  It is done only once that pull
     request has merged, and only when every issue naming it was read: a *failure*
-    that left any of them unread makes the whole change unreadable.
+    that left any of them unread makes the whole change unreadable.  Whether its
+    scenarios pass is read separately, and holds it in progress until they do.
     """
     if failure is not None and any(number not in facts for number in numbers):
         facts = {}
     derived = derive(None, numbers, facts, on_pr_branch=state == "open", failure=failure)
     if derived["status"] == "done" and state != "merged":
-        derived["status"] = "in-progress"
-        derived["landed_at"] = None
-        derived["landed_commit"] = None
+        hold_in_progress(derived)
     stamps = [stamp for stamp in (derived["last_activity"], updated_at) if stamp]
     derived["last_activity"] = max(stamps) if stamps else None
     return derived
+
+
+def hold_in_progress(derived: Derived) -> None:
+    """Report built work that is not finished yet, such as a spec change whose scenarios fail."""
+    derived["status"] = "in-progress"
+    derived["landed_at"] = None
+    derived["landed_commit"] = None
+
+
+def mark_unreadable(derived: Derived, cause: UnavailableCause) -> None:
+    """Report work whose status could not be read, such as a spec change GitHub would not diff."""
+    derived["status"] = None
+    derived["source"] = "unavailable"
+    derived["unavailable_cause"] = cause
+    derived["landed_at"] = None
+    derived["landed_commit"] = None
 
 
 def spec_change_dropped(
