@@ -19,6 +19,7 @@ from tools.sprints import (
     ended_sprint,
     estimate_accuracy,
     plan_sprint,
+    plan_with_improvement,
     read_sprint,
     report_sprint,
     sprint_budget,
@@ -28,11 +29,13 @@ from tools.sprints import (
 
 
 @pytest.fixture(autouse=True)
-def _no_accounts_or_overflow():
-    """No registered accounts and no overflow report unless a test says otherwise."""
+def _no_accounts_overflow_or_experiments():
+    """No registered accounts, overflow report or open experiments unless a test says
+    otherwise."""
     with (
         patch("db.list_fuel", return_value=[]),
         patch("db.get_overflow", return_value=None),
+        patch("db.list_open_experiments", return_value=[]),
     ):
         yield
 
@@ -272,6 +275,68 @@ async def test_read_sprint_counts_the_points_planned_but_not_an_issue_to_split(
         (2, True),
     ]
     assert result["planned_points"] == 5
+
+
+def test_improvement_work_is_planned_first_within_its_share() -> None:
+    """Scenario: Improvement share respected — a budget of 100 gives improvement work 10."""
+    plan, not_planned = plan_with_improvement(
+        [_entry(1), _entry(2), _entry(3), _entry(4)],
+        {("owner/repo", 2), ("owner/repo", 3)},
+        _estimates({1: 50, 2: 6, 3: 6, 4: 40}),
+        left_tokens=100,
+        improvement_tokens=10,
+    )
+
+    assert [(item["number"], item.get("improvement", False)) for item in plan] == [
+        (2, True),
+        (1, False),
+        (4, False),
+    ]
+    assert not_planned == 1
+
+
+def test_improvement_work_never_takes_more_than_is_left() -> None:
+    plan, _ = plan_with_improvement(
+        [_entry(1), _entry(2)],
+        {("owner/repo", 1)},
+        _estimates({1: 8, 2: 1}),
+        left_tokens=5,
+        improvement_tokens=10,
+    )
+
+    assert [item["number"] for item in plan] == [2]
+
+
+def _experiment_row(issues: list[int]) -> dict[str, Any]:
+    return {
+        "id": 4,
+        "repo_name": "owner/b",
+        "title": "Self-review",
+        "change": "Review the diff first.",
+        "measure": "rework_rate",
+        "baseline": 40.0,
+        "target": 10.0,
+        "issues": issues,
+        "state": "open",
+        "results": [],
+        "created_at": _NOW,
+    }
+
+
+async def test_read_sprint_plans_open_experiments_first_in_their_share(
+    set_user_id: str,
+) -> None:
+    with (
+        _two_repos(),
+        patch("db.list_open_experiments", return_value=[_experiment_row([2])]),
+        patch.object(settings, "improvement_share_percent", 60),
+    ):
+        result = await read_sprint()
+
+    assert result["improvement_budget_tokens"] == 60
+    assert [(item["repo"], item["number"], item.get("improvement")) for item in result["plan"]] == [
+        ("owner/b", 2, True)
+    ]
 
 
 def test_with_no_price_there_is_no_capacity() -> None:
@@ -556,6 +621,7 @@ async def test_report_sprint_reports_the_sprint_that_ended(set_user_id: str) -> 
         (2, 1.0),
     ]
     assert [f["issue"] for f in result["findings"]] == [1, 10]
+    assert result["experiments"] == []
     assert result["unreadable"] == []
 
     mocks["claim"].assert_called_once()
@@ -571,6 +637,23 @@ async def test_report_sprint_reports_the_sprint_that_ended(set_user_id: str) -> 
         "Carried over: 3 issues.",
         "Findings: 2.",
     ]
+
+
+async def test_report_sprint_lists_every_open_experiment(set_user_id: str) -> None:
+    with (
+        _ended_sprint(),
+        patch("db.list_open_experiments", return_value=[_experiment_row([50])]),
+    ):
+        result = await report_sprint()
+
+    [experiment] = result["experiments"]
+    assert (experiment["id"], experiment["repo"], experiment["issues"]) == (4, "owner/b", [50])
+    assert (experiment["measure"], experiment["baseline"], experiment["target"]) == (
+        "rework_rate",
+        40.0,
+        10.0,
+    )
+    assert (experiment["state"], experiment["results"]) == ("open", [])
 
 
 async def test_report_sprint_returns_a_stored_report_without_sending(set_user_id: str) -> None:

@@ -188,6 +188,16 @@ search_answered_questions, and if an answer already settles the finding, follow 
   with kind improvement, the finding in its context, blocking no issue;
 - any other finding, which the factory can fix itself: create_github_issues for that work in
   the finding's repository, following the workflow that applies there.
+Then improve how the factory works, which never waits on the author:
+- judge each experiment the report lists against its measure now, with judge_experiment and
+  a reason: kept when it met its target, then make its change standard by changing the
+  guidance or proposing a spec change; otherwise reverted, undoing its change, or extended
+  for one more sprint, at most once;
+- choose one or two improvements from the sprint's misses, audit findings and north-star
+  gaps — to the factory's guidance, sizing, routing, scripts or checks, never to what a
+  project should be — create_github_issues for each one's work, and record_experiment with
+  the change, the measure it should move, its value now, the target and those issues.
+  read_sprint plans their issues first, within the improvement share of the budget.
 The sprint review changes nothing else.
 """
 

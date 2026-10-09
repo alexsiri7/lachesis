@@ -14,6 +14,7 @@ import notify
 from settings import settings
 
 from .estimates import Price, factory_history, price_per_point
+from .experiments import experiment_view
 from .fuel import RESERVE_PERCENT, accounts_status, fuel_status
 from .repos import _require_user_id, normalize_repo
 from .requirements import _NEEDS_AUTHOR_LABEL, _SPRINT, _backlog_order, _sprint_start
@@ -180,9 +181,43 @@ def plan_sprint(
     return planned, not_planned
 
 
+def plan_with_improvement(
+    entries: list[dict[str, Any]],
+    improvement_issues: set[tuple[str, int]],
+    estimates: dict[tuple[str, int], int | None],
+    left_tokens: int,
+    improvement_tokens: int,
+    sizes: dict[tuple[str, int], int] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Plan the *improvement_issues* among *entries* first, within *improvement_tokens*
+    of what is left, marked ``improvement``, then the ordinary backlog in what remains.
+
+    An improvement issue that does not fit its share waits for the next sprint rather
+    than joining the ordinary backlog. Returns the plan and how many eligible entries
+    were not planned, as :func:`plan_sprint` does.
+    """
+    improvement, improvement_not_planned = plan_sprint(
+        [e for e in entries if (e["repo"], e["number"]) in improvement_issues],
+        estimates,
+        min(improvement_tokens, left_tokens),
+        sizes,
+    )
+    ordinary, ordinary_not_planned = plan_sprint(
+        [e for e in entries if (e["repo"], e["number"]) not in improvement_issues],
+        estimates,
+        left_tokens - sum(item["estimate_tokens"] or 0 for item in improvement),
+        sizes,
+    )
+    return (
+        [{**item, "improvement": True} for item in improvement] + ordinary,
+        improvement_not_planned + ordinary_not_planned,
+    )
+
+
 async def read_sprint() -> dict[str, Any]:
-    """Return the current sprint: its dates, budget, spending, the price of a point and the
-    capacity in points it gives, and the plan."""
+    """Return the current sprint: its dates, budget and the share of it kept for
+    improvement work, spending, the price of a point and the capacity in points it gives,
+    and the plan."""
     user_id = _require_user_id()
     now = datetime.now(UTC)
     budget = sprint_budget(
@@ -217,10 +252,17 @@ async def read_sprint() -> dict[str, Any]:
         (normalize_repo(repo), issue): size
         for (repo, issue), size in db.sizes_by_issue(user_id).items()
     }
-    plan, not_planned = plan_sprint(
+    improvement_tokens = budget["budget_tokens"] * settings.improvement_share_percent // 100
+    plan, not_planned = plan_with_improvement(
         [entry for _, _, entry in entries],
+        {
+            (normalize_repo(experiment["repo_name"]), issue)
+            for experiment in db.list_open_experiments(user_id)
+            for issue in experiment["issues"]
+        },
         estimates_by_issue(user_id),
         budget["left_tokens"],
+        improvement_tokens,
         sizes,
     )
     history, unlisted = await factory_history(user_id)
@@ -228,6 +270,7 @@ async def read_sprint() -> dict[str, Any]:
     return {
         "reported": True,
         **budget,
+        "improvement_budget_tokens": improvement_tokens,
         "tokens_per_point": price["tokens_per_point"],
         "price_confidence": price["confidence"],
         "capacity_points": capacity_points(budget["budget_tokens"], price),
@@ -506,6 +549,7 @@ async def report_sprint() -> dict[str, Any]:
         "estimates": accuracy,
         "carryover": carryover,
         "findings": sprint_findings(start, end, accuracy["issues"], runs),
+        "experiments": [experiment_view(row) for row in db.list_open_experiments(user_id)],
         "unreadable": unreadable,
     }
 

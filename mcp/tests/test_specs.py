@@ -953,6 +953,10 @@ async def test_sprint_review_guidance(httpx_mock: HTTPXMock, specs: bool | None)
     assert "ask_question\n  with kind improvement" in review
     assert "create_github_issues for that work" in review
     assert review.index("search_answered_questions") < review.index("ask_question")
+    assert "judge_experiment" in review
+    assert "make its change standard" in review
+    assert "choose one or two improvements" in review
+    assert "record_experiment" in review
 
 
 async def test_briefing_reads_fuel_and_the_dashboard_first() -> None:
