@@ -929,8 +929,9 @@ async def test_the_items_are_at_most_three() -> None:
 _BRIEFING_FIELDS = {"landed_at", "last_activity", "manual_review"}
 
 # The only tools the morning pass may write with: its listed fixes, filing worker problems
-# and Lachesis faults, and the weekly focus question.
+# and Lachesis faults, the weekly focus question, and the sprint review once a week.
 _BRIEFING_WRITES = {
+    "report_sprint",
     "update_requirement",
     "post_comment",
     "update_github_issue",
@@ -987,3 +988,11 @@ async def test_behaviour_changes(httpx_mock: HTTPXMock, specs: bool | None) -> N
     registered = {tool.name for tool in await main.mcp.list_tools()}
     assert named
     assert named <= registered
+
+
+async def test_the_briefing_closes_the_week() -> None:
+    briefing = " ".join((await get_morning_briefing()).split())
+
+    assert "call report_sprint once" in briefing
+    assert "list_defaulted_questions" in briefing
+    assert "one line each" in briefing

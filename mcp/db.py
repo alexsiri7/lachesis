@@ -747,6 +747,25 @@ def list_expired_defaults(user_id: str) -> list[dict[str, Any]]:
         return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
 
 
+def list_defaulted_questions(user_id: str, since: datetime) -> list[dict[str, Any]]:
+    """Return the questions settled by their default since *since*, oldest first.
+
+    Only questions in repositories *user_id* has registered are returned.
+    """
+    sql = text(
+        f"""
+        SELECT {_QUESTION_COLUMNS}
+        FROM lachesis_questions
+        WHERE user_id = :user_id AND outcome = 'defaulted' AND answered_at >= :since
+          AND repo_name IN (SELECT repo_name FROM lachesis_repos WHERE user_id = :user_id)
+        ORDER BY answered_at, id
+        """
+    )
+    params = {"user_id": user_id, "since": since}
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, params).mappings().all()]
+
+
 def search_answered_questions(user_id: str, repo_name: str, query: str) -> list[dict[str, Any]]:
     """Return the answered questions in *repo_name* matching *query*, newest answer first.
 

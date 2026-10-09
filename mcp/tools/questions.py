@@ -307,6 +307,20 @@ async def list_open_questions() -> list[dict[str, Any]]:
     ]
 
 
+async def list_defaulted_questions(since_hours: int = 24) -> list[dict[str, Any]]:
+    """Return the questions settled by their default in the last *since_hours*, oldest first.
+
+    Expired defaults are settled first, so the list is current. Each is its record,
+    the default being its ``answer``.
+    """
+    if since_hours < 1:
+        raise ValueError(f"since_hours must be at least 1, got {since_hours}")
+    user_id = _require_user_id()
+    await settle_expired_defaults(user_id)
+    since = datetime.now(UTC) - timedelta(hours=since_hours)
+    return db.list_defaulted_questions(user_id, since)
+
+
 async def search_answered_questions(repo: str, text: str) -> list[dict[str, Any]]:
     """Return the answered questions in *repo* matching *text*, newest answer first.
 
