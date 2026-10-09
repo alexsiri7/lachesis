@@ -2,7 +2,7 @@
 
 ## Purpose
 
-No human reviews code. A change reaches the default branch only when machines have checked it against the spec. Acceptance tests turn every scenario into an executable check; they are written first, from the spec, and fail until the implementation makes them pass. The implementation can never change what counts as passing.
+No human reviews code. A change reaches the default branch only when machines have checked it against the spec. Acceptance tests turn every scenario into an executable check; they are written first, from the spec, and fail until the implementation makes them pass. The implementation can never change what counts as passing. Pull requests merge without human approval once the spec validates, every scenario has a test, every acceptance and unit test passes apart from expected failures, and the goalpost rule holds; GitHub's required checks and automerge enforce that, so it is repository configuration rather than behaviour these scenarios test.
 
 ## Requirements
 
@@ -56,20 +56,6 @@ A pull request SHALL change acceptance tests only if it is a spec change or impl
 - GIVEN an implementation pull request whose only acceptance-test change removes an expected-failure marker
 - WHEN CI runs and the test passes
 - THEN the acceptance-test check passes
-
-### Requirement: Machines gate the merge
-
-A pull request SHALL merge only when the spec validates, every scenario has a test, every acceptance and unit test passes apart from expected failures, and the goalpost rule holds. No human approval SHALL be required.
-
-#### Scenario: All green
-- GIVEN an implementation pull request that passes every check
-- WHEN checks complete
-- THEN it merges with no human approval
-
-#### Scenario: One check red
-- GIVEN a pull request failing any one of the checks
-- WHEN checks complete
-- THEN it does not merge
 
 ### Requirement: Scenario results are published
 
