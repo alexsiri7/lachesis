@@ -41,7 +41,7 @@ def _issue(
     capability: str | None = None,
     pr: bool = False,
 ) -> IssueSummary:
-    body = "x" if capability is None else append_reference("x", SpecReference(226, capability))
+    body = "x" if capability is None else append_reference("x", SpecReference(226, (capability,)))
     return {
         "number": number,
         "title": f"Issue {number}",
@@ -214,6 +214,28 @@ async def test_estimate_issue_leaves_out_a_repo_whose_issues_cannot_be_listed(
 
     assert result["tokens_per_point"] == 4
     assert result["estimate_tokens"] is None
+
+
+async def test_an_issue_naming_several_capabilities_is_estimated_in_none_of_them(
+    set_user_id: str, registered: None
+) -> None:
+    tests_issue = {
+        **_issue(230, state="open"),
+        "body": append_reference("x", SpecReference(226, ("sprints", "fuel"))),
+    }
+    issues = [tests_issue, _issue(1, capability="sprints"), _issue(2, capability="fuel")]
+    usage = {1: {"tests": 1000}, 2: {"tests": 3000}}
+    with (
+        patch("tools.estimates.github.list_all_issues", AsyncMock(return_value=issues)),
+        patch("tools.estimates.db.usage_by_issue", return_value=usage),
+        patch("tools.estimates.db.set_estimate", return_value={}) as set_estimate,
+        patch("tools.estimates.db.sizes_by_issue", return_value={}),
+    ):
+        await estimate_issue("lachesis", 230, "tests")
+
+    set_estimate.assert_called_once_with(
+        "test-uid", "alexsiri7/lachesis", 230, "tests", None, 2000, "low", "kind", 2
+    )
 
 
 @pytest.mark.parametrize(

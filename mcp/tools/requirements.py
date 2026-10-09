@@ -1165,7 +1165,7 @@ def _spec_references(issues: list[dict[str, Any]]) -> list[SpecReference]:
     return [
         SpecReference(
             spec_change=issue.get("spec_change"),
-            capability=issue["capability"].strip(),
+            capabilities=(issue["capability"].strip(),),
             requirement=(issue.get("requirement") or "").strip() or None,
         )
         for issue in issues

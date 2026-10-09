@@ -528,7 +528,7 @@ async def test_progress_keeps_the_reference_of_each_issue_naming_a_spec_change(
 
     progress = await read_spec_progress("owner/repo")
 
-    assert progress.references == {1: SpecReference(20, "milestones", "Review")}
+    assert progress.references == {1: SpecReference(20, ("milestones",), "Review")}
 
 
 async def test_every_page_of_issues_is_read(httpx_mock: HTTPXMock) -> None:

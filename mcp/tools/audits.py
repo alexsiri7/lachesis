@@ -428,7 +428,7 @@ async def file_audit_finding(
     issue = await github.create_issue(
         repo,
         title.strip(),
-        append_reference(text, SpecReference(None, capability)),
+        append_reference(text, SpecReference(None, (capability,))),
         labels,
     )
     if question:

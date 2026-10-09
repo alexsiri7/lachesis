@@ -309,8 +309,8 @@ async def test_failed_label_creation_creates_no_issues(httpx_mock: HTTPXMock) ->
 # Reading the block back
 # ---------------------------------------------------------------------------
 
-_CHANGE = SpecReference(152, "backlog", "The system says what to work on next")
-_GAP = SpecReference(None, "issues")
+_CHANGE = SpecReference(152, ("backlog",), "The system says what to work on next")
+_GAP = SpecReference(None, ("issues",))
 
 
 @pytest.mark.parametrize("ref", [_CHANGE, _GAP])
@@ -318,9 +318,19 @@ def test_parse_reads_back_what_was_written(ref: SpecReference) -> None:
     assert parse_reference(append_reference("Some work.", ref)) == ref
 
 
+def test_a_reference_naming_several_capabilities_names_no_single_one() -> None:
+    ref = SpecReference(152, ("backlog", "issues"))
+    body = append_reference("Tests.", ref)
+
+    assert body.endswith("Capability: backlog\nCapability: issues")
+    assert parse_reference(body) == ref
+    assert ref.capability is None
+    assert _CHANGE.capability == "backlog"
+
+
 def test_parse_tolerates_crlf_and_trailing_whitespace() -> None:
     body = "Work.\r\n\r\n---  \r\nSpec change: #152 \r\nCapability: backlog\t\r\n\r\n"
-    assert parse_reference(body) == SpecReference(152, "backlog")
+    assert parse_reference(body) == SpecReference(152, ("backlog",))
 
 
 def test_parse_reads_only_after_the_last_rule() -> None:
@@ -339,6 +349,7 @@ def test_parse_reads_only_after_the_last_rule() -> None:
         "---\nSpec gap: no\nCapability: backlog",
         "---\nSpec change: 152\nCapability: backlog",
         "---\nSpec change: #152\nCapability: backlog\nOther: x",
+        "---\nSpec change: #152\nCapability: backlog\nCapability:",
     ],
 )
 def test_parse_returns_none_without_a_complete_block(body: str) -> None:

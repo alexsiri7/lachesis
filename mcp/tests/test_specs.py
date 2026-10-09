@@ -602,7 +602,10 @@ async def test_proposing_a_change_to_two_capabilities(httpx_mock: HTTPXMock) -> 
     tests_issue_body = json.loads(tests_issue.content)
     assert tests_issue_body["labels"] == ["acceptance-tests"]
     assert f"`{branch}`" in tests_issue_body["body"]
-    assert parse_reference(tests_issue_body["body"]) == SpecReference(12, "backlog, issues")
+    assert tests_issue_body["body"].endswith(
+        "---\nSpec change: #12\nCapability: backlog\nCapability: issues"
+    )
+    assert parse_reference(tests_issue_body["body"]) == SpecReference(12, ("backlog", "issues"))
 
 
 async def test_requirement_without_a_scenario(httpx_mock: HTTPXMock) -> None:

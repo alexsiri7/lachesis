@@ -408,7 +408,7 @@ async def _open_acceptance_tests_issue(
         "acceptance tests merge together. The issues implementing the spec change wait for "
         "this one."
     )
-    body = append_reference(body, SpecReference(spec_change, names))
+    body = append_reference(body, SpecReference(spec_change, tuple(capabilities)))
     try:
         await github.ensure_label(repo, ACCEPTANCE_TESTS_LABEL, ACCEPTANCE_TESTS_COLOR)
     except httpx.HTTPError as exc:
@@ -427,8 +427,9 @@ async def _open_acceptance_tests_issue(
         raise RuntimeError(
             f"Opened spec change #{spec_change} but could not open its acceptance-tests issue "
             f"({exc!r}). Open it by hand, labelled {ACCEPTANCE_TESTS_LABEL!r}, ending with the "
-            f"reference block 'Spec change: #{spec_change}' / 'Capability: {names}': until it "
-            "exists, issues implementing the spec change do not wait for their tests."
+            f"reference block 'Spec change: #{spec_change}' and a 'Capability:' line for each "
+            f"of {names}: until it exists, issues implementing the spec change do not wait for "
+            "their tests."
         ) from exc
     number: int = issue["number"]
     return number
@@ -567,7 +568,8 @@ async def read_spec_progress(repo: str) -> SpecProgress:
             references[item["number"]] = ref
             naming.setdefault(ref.spec_change, []).append(item["number"])
         elif item["state"] == "open" and SPEC_GAP_LABEL in item["labels"]:
-            spec_gaps[ref.capability] = spec_gaps.get(ref.capability, 0) + 1
+            for name in ref.capabilities:
+                spec_gaps[name] = spec_gaps.get(name, 0) + 1
 
     pulls = sorted(
         (item for item in items if item["is_pull_request"] and SPEC_CHANGE_LABEL in item["labels"]),

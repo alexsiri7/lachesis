@@ -3440,7 +3440,7 @@ async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
 
 
 def _implementing(spec_change: int) -> str:
-    return append_reference("Body.", SpecReference(spec_change, "backlog"))
+    return append_reference("Body.", SpecReference(spec_change, ("backlog",)))
 
 
 def _milestone(milestone_id: int, spec_changes: list[int], *, started_days_ago: int) -> dict:
