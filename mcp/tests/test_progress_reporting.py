@@ -824,6 +824,68 @@ async def test_a_refused_check_status_does_not_stop_the_later_batches(
     assert later in activity["facts"]
 
 
+async def test_a_refused_status_context_reads_as_a_null_node(httpx_mock: HTTPXMock) -> None:
+    """GitHub nulls a status context the token may not read inside the contexts list;
+    the issue is still read rather than the whole repo going unreadable."""
+    from github import get_issue_activity
+
+    node = _issue_node(1, state="CLOSED", merged_pr=2)
+    pull = node["closedByPullRequestsReferences"]["nodes"][0]
+    pull["commits"] = {
+        "nodes": [
+            {
+                "commit": {
+                    "statusCheckRollup": {
+                        "contexts": {
+                            "nodes": [
+                                None,
+                                {
+                                    "__typename": "CheckRun",
+                                    "conclusion": "SUCCESS",
+                                    "completedAt": _stamp(2),
+                                },
+                            ]
+                        }
+                    }
+                }
+            },
+        ]
+    }
+    node["timelineItems"] = {"nodes": [None]}
+    refused = {
+        "type": "FORBIDDEN",
+        "path": [
+            "repository",
+            "i1",
+            "closedByPullRequestsReferences",
+            "nodes",
+            0,
+            "commits",
+            "nodes",
+            0,
+            "commit",
+            "statusCheckRollup",
+            "contexts",
+            "nodes",
+            0,
+            "state",
+        ],
+        "message": "Resource not accessible by personal access token",
+    }
+    httpx_mock.add_response(
+        method="POST",
+        url=_GRAPHQL_URL,
+        json={"data": {"repository": {"i1": node}}, "errors": [refused]},
+    )
+
+    activity = await get_issue_activity("owner/repo", [1])
+
+    assert activity["failure"] is None
+    assert [check["conclusion"] for check in activity["facts"][1]["pulls"][0]["checks"]] == [
+        "SUCCESS"
+    ]
+
+
 async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
     repos = [{"repo_name": "owner/specs"}, {"repo_name": "owner/quiet"}, {"repo_name": "owner/app"}]
     with (

@@ -1140,15 +1140,24 @@ def _pull_lookup_query(numbers: list[int]) -> str:
     return _aliased_query(aliases) + _PULL_FRAGMENT
 
 
+def _nodes(parent: dict[str, Any] | None, field: str) -> list[dict[str, Any]]:
+    """Return the nodes of *parent*'s connection *field*, skipping null ones.
+
+    GitHub nulls a list item whose non-null field the token may not read (a
+    StatusContext without commit-status access, say), so a node may be None.
+    """
+    return [node for node in ((parent or {}).get(field) or {}).get("nodes") or [] if node]
+
+
 def _normalize_checks(pull: dict[str, Any]) -> list[CheckFacts]:
-    commits = (pull.get("commits") or {}).get("nodes") or []
+    commits = _nodes(pull, "commits")
     if not commits:
         return []
     rollup = (commits[0].get("commit") or {}).get("statusCheckRollup")
     if not rollup:
         return []
     checks: list[CheckFacts] = []
-    for node in (rollup.get("contexts") or {}).get("nodes") or []:
+    for node in _nodes(rollup, "contexts"):
         if node.get("__typename") == "CheckRun":
             checks.append({"conclusion": node.get("conclusion"), "at": node.get("completedAt")})
         elif node.get("__typename") == "StatusContext":
@@ -1182,20 +1191,20 @@ def _normalize_blockers(issue: dict[str, Any]) -> list[BlockerFacts]:
             "number": node["number"],
             "last_activity": node.get("updatedAt"),
         }
-        for node in (issue.get("blockedBy") or {}).get("nodes") or []
+        for node in _nodes(issue, "blockedBy")
         if node.get("state") == "OPEN"
     ]
 
 
 def _normalize_issue(issue: dict[str, Any]) -> IssueFacts:
-    closed_events = (issue.get("timelineItems") or {}).get("nodes") or []
+    closed_events = _nodes(issue, "timelineItems")
     closer = (closed_events[-1].get("closer") or {}) if closed_events else {}
-    pulls = (issue.get("closedByPullRequestsReferences") or {}).get("nodes") or []
+    pulls = _nodes(issue, "closedByPullRequestsReferences")
     return {
         "number": issue["number"],
         "state": issue["state"],
         "updated_at": issue.get("updatedAt"),
-        "labels": [label["name"] for label in (issue.get("labels") or {}).get("nodes") or []],
+        "labels": [label["name"] for label in _nodes(issue, "labels")],
         "closed_by_commit": closer.get("__typename") == "Commit",
         "closed_at": issue.get("closedAt"),
         "blocked_by": _normalize_blockers(issue),
@@ -1216,7 +1225,7 @@ def _named_pulls(node: dict[str, Any]) -> list[int]:
     """
     named = {
         int(match)
-        for comment in (node.get("comments") or {}).get("nodes") or []
+        for comment in _nodes(node, "comments")
         if comment.get("authorAssociation") in _TRUSTED_ASSOCIATIONS
         for match in _PULL_MENTION.findall(comment.get("body") or "")
     }
@@ -1511,11 +1520,11 @@ def _waiting_issue(issue: dict[str, Any], label: str) -> WaitingIssue:
     """
     labelled = [
         event["createdAt"]
-        for event in (issue.get("timelineItems") or {}).get("nodes") or []
+        for event in _nodes(issue, "timelineItems")
         if (event.get("label") or {}).get("name") == label
     ]
     waiting_since = max(labelled) if labelled else issue["createdAt"]
-    comments = (issue.get("comments") or {}).get("nodes") or []
+    comments = _nodes(issue, "comments")
     before = [comment for comment in comments if comment["createdAt"] <= waiting_since]
     question = (before or comments)[-1]["body"] if comments else None
     return {
@@ -1552,7 +1561,7 @@ async def list_waiting_issues(repo: str, label: str) -> list[WaitingIssue]:
     if data.get("errors") or repository is None:
         logger.warning("github.list_waiting_issues graphql errors repo=%s: %s", repo, data)
         raise RuntimeError(f"Could not list issues labelled {label!r} in {repo!r}")
-    return [_waiting_issue(issue, label) for issue in repository["issues"]["nodes"]]
+    return [_waiting_issue(issue, label) for issue in _nodes(repository, "issues")]
 
 
 _DEPLOYMENT_PAGE_SIZE = 100
