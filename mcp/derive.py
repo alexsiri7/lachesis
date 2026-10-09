@@ -355,6 +355,15 @@ def hold_in_progress(derived: Derived) -> None:
     derived["landed_commit"] = None
 
 
+def mark_unreadable(derived: Derived, cause: UnavailableCause) -> None:
+    """Report work whose status could not be read, such as a spec change GitHub would not diff."""
+    derived["status"] = None
+    derived["source"] = "unavailable"
+    derived["unavailable_cause"] = cause
+    derived["landed_at"] = None
+    derived["landed_commit"] = None
+
+
 def spec_change_dropped(
     state: SpecChangeState, numbers: list[int], facts: dict[int, IssueFacts]
 ) -> str | None:

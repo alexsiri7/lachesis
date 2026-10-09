@@ -29,6 +29,7 @@ from tools.specs import (
     pending_scenarios,
     read_spec_progress,
     scenario_view,
+    spec_change_status,
 )
 
 _GRAPHQL_URL = "https://api.github.com/graphql"
@@ -418,6 +419,70 @@ async def test_a_change_the_diff_cannot_place_is_found_in_the_spec_at_the_head(
     assert change["pending_scenarios"] == [
         {"capability": "backlog", "scenario": "Parked", "result": "xfail"}
     ]
+
+
+@pytest.mark.parametrize(
+    "scenario_results", [{"backlog": {"Ordered": "passed", "Parked": "xfail", "Held": "failed"}}]
+)
+async def test_every_scenario_of_a_spec_whose_diff_github_withholds_is_touched(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_change_files(httpx_mock, 170, None)
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/pulls/170",
+        json={"head": {"sha": "head1"}, "base": {"sha": "base0"}},
+    )
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/compare/base0...head1",
+        json={"merge_base_commit": {"sha": "base1"}},
+    )
+    spec = "\n".join(
+        [
+            "# Backlog",
+            "## Requirements",
+            "### Requirement: Park",
+            "x SHALL",
+            "#### Scenario: Ordered",
+            "- GIVEN",
+            "#### Scenario: Parked",
+            "- GIVEN",
+            "#### Scenario: Held",
+            "- GIVEN",
+        ]
+    )
+    httpx_mock.add_response(
+        url=(
+            "https://api.github.com/repos/owner/repo/contents/openspec/specs/backlog/spec.md"
+            "?ref=head1"
+        ),
+        content=spec.encode(),
+    )
+
+    change = await _list_built_spec_change(httpx_mock)
+
+    assert change["derived"]["status"] == "in-progress"
+    assert change["pending_scenarios"] == [
+        {"capability": "backlog", "scenario": "Parked", "result": "xfail"},
+        {"capability": "backlog", "scenario": "Held", "result": "failed"},
+    ]
+
+
+@pytest.mark.parametrize("scenario_results", [{"backlog": {"Parked": "xfail"}}])
+async def test_a_built_spec_change_github_will_not_diff_is_unreadable(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/pulls/170/files?per_page=100",
+        status_code=502,
+    )
+
+    change = await _list_built_spec_change(httpx_mock)
+
+    assert change["derived"]["status"] is None
+    assert change["derived"]["source"] == "unavailable"
+    assert change["derived"]["unavailable_cause"] == "transient"
+    assert change["derived"]["landed_at"] is None
+    assert spec_change_status(change) == "unreadable"
 
 
 def test_a_patch_names_the_scenarios_it_adds_or_modifies() -> None:

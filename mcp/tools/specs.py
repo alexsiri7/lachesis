@@ -19,6 +19,7 @@ from derive import (
     SpecChangeState,
     derive_spec_change,
     hold_in_progress,
+    mark_unreadable,
     spec_change_dropped,
 )
 from spec_reference import SpecReference, append_reference, parse_reference
@@ -342,14 +343,14 @@ async def spec_change_scenarios(repo: str, number: int) -> list[tuple[str, str]]
     """
     head: str | None = None
 
-    async def lines_at_head(path: str) -> list[str]:
+    async def spec_at_head(path: str) -> str:
         nonlocal head
         if head is None:
             commits = await github.get_merge_base(repo, number)
             if commits is None:
                 raise FileNotFoundError(f"Pull request #{number} not found in {repo!r}")
             head = commits[1]
-        return (await _spec_at(repo, path, head) or "").split("\n")
+        return await _spec_at(repo, path, head) or ""
 
     scenarios: list[tuple[str, str]] = []
     for file in await github.get_pull_request_files(repo, number):
@@ -359,10 +360,10 @@ async def spec_change_scenarios(repo: str, number: int) -> list[tuple[str, str]]
         path = file["filename"]
         found: list[str | None]
         if file["patch"] is None:
-            found = [_scenario_title(line) for line in await lines_at_head(path)]
+            found = [_scenario_title(line) for line in (await spec_at_head(path)).split("\n")]
         else:
             titles, unplaced = patch_scenarios(file["patch"])
-            lines = await lines_at_head(path) if unplaced else []
+            lines = (await spec_at_head(path)).split("\n") if unplaced else []
             found = [*titles, *(_scenario_containing(lines, at) for at in unplaced)]
         scenarios.extend((match.group(1), title) for title in dict.fromkeys(found) if title)
     return scenarios
@@ -627,8 +628,21 @@ def _all_pass(results: github.ScenarioResults | None) -> bool:
 async def _hold_until_scenarios_pass(
     repo: str, entry: dict[str, Any], results: github.ScenarioResults | None
 ) -> None:
-    """Hold built spec change *entry* in progress while a scenario it touches does not pass."""
-    scenarios = await spec_change_scenarios(repo, entry["spec_change"])
+    """Hold built spec change *entry* in progress while a scenario it touches does not pass.
+
+    When GitHub will not say which scenarios it touches, *entry* is unreadable instead.
+    """
+    try:
+        scenarios = await spec_change_scenarios(repo, entry["spec_change"])
+    except Exception as exc:
+        logger.warning(
+            "failed to read the scenarios of spec change repo=%s number=%s error=%r",
+            repo,
+            entry["spec_change"],
+            exc,
+        )
+        mark_unreadable(entry["derived"], github.failure_from_exception(exc))
+        return
     entry["pending_scenarios"] = pending_scenarios(scenarios, results)
     if entry["pending_scenarios"]:
         hold_in_progress(entry["derived"])
@@ -724,7 +738,8 @@ async def read_spec_progress(repo: str) -> SpecProgress:
     A spec change whose issues are all done is held in progress while a scenario
     it adds or modifies does not pass in the scenario results published for the
     default branch, or no results are published; its ``pending_scenarios`` name
-    each.  A spec change is only diffed when some scenario does not pass.
+    each.  A spec change is only diffed when some scenario does not pass, and one
+    GitHub will not diff is unreadable.
     """
     items = await github.list_all_issues(repo)
     naming: dict[int, list[int]] = {}
