@@ -681,6 +681,27 @@ async def test_propose_spec_change_explains_a_failed_acceptance_tests_issue(
         await propose_spec_change(_REPO, "T", "Why", {"backlog": _BACKLOG_SPEC})
 
 
+async def test_propose_spec_change_opens_the_tests_issue_when_its_label_cannot_be_ensured(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_repo(httpx_mock)
+    _mock_open_pull_request(httpx_mock)
+    _mock_branch_file(httpx_mock, _BACKLOG_PATH, None)
+    _mock_put(httpx_mock, _BACKLOG_PATH, status_code=201)
+    httpx_mock.add_response(method="POST", url=f"{_API}/issues/12/labels", json=[])
+    httpx_mock.add_response(method="POST", url=f"{_API}/labels", status_code=403)
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{_API}/issues",
+        status_code=201,
+        json={"number": 13, "id": 1013, "title": "T", "html_url": "u", "node_id": "I_13"},
+    )
+
+    result = await propose_spec_change(_REPO, "T", "Why", {"backlog": _BACKLOG_SPEC})
+
+    assert result["acceptance_tests_issue"] == 13
+
+
 async def test_propose_spec_change_explains_a_failed_label(httpx_mock: HTTPXMock) -> None:
     _mock_spec_repo(httpx_mock)
     _mock_open_pull_request(httpx_mock)
