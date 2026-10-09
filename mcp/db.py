@@ -1808,13 +1808,13 @@ def milestones_done_between(user_id: str, start: datetime, end: datetime) -> lis
         FROM lachesis_events e
         JOIN lachesis_milestones m
           ON m.user_id = e.user_id AND m.repo_name = e.repo_name
-         AND e.subject = m.id::text || ':done'
+         AND e.subject = m.id::text || :done_suffix
         WHERE e.user_id = :user_id AND e.kind = 'milestone_state_changed'
           AND e.created_at >= :start AND e.created_at < :end
         ORDER BY m.id, e.created_at
         """
     )
-    params = {"user_id": user_id, "start": start, "end": end}
+    params = {"user_id": user_id, "start": start, "end": end, "done_suffix": ":done"}
     with _engine().connect() as conn:
         return [dict(row) for row in conn.execute(sql, params).mappings().all()]
 

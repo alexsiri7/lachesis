@@ -1097,8 +1097,8 @@ def test_milestones_done_between_reads_done_state_changes_in_the_window() -> Non
 
     sql, params = mock.connect.return_value.execute.call_args[0]
     assert "kind = 'milestone_state_changed'" in str(sql)
-    assert "':done'" in str(sql)
-    assert params == {"user_id": "uid", "start": start, "end": end}
+    assert "m.id::text || :done_suffix" in str(sql)
+    assert params == {"user_id": "uid", "start": start, "end": end, "done_suffix": ":done"}
 
 
 def test_claim_sprint_report_stores_the_report_once() -> None:
