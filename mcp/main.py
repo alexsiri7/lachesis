@@ -578,7 +578,7 @@ mcp.tool(
 mcp.tool(
     description=(
         "Record one audit run in a registered repository: `kind` (architecture, "
-        "security, clean-code, tests or requirements), `outcome` (clean, findings or "
+        "security, clean-code, tests, requirements or north-star), `outcome` (clean, findings or "
         "failed), `finished_at` (ISO 8601), the `model` that ran it, the `issues` it filed, "
         "its `capability` for an audit of one capability, and the tokens it used. Report "
         "every run, failed ones too: a failed audit stays due. Returns the stored run."
@@ -605,7 +605,10 @@ mcp.tool(
         "Start the next due audit of `kind` in a registered repository: opens its audit "
         "issue, labelled `audit`, naming the capability for a tests or requirements audit "
         "in a repository that uses specs and listing the checks to make; a clean-code audit "
-        "lists Robert C. Martin's clean code standards. Refused while an "
+        "lists Robert C. Martin's clean code standards; a north-star audit, due only in a "
+        "repository with docs/north-star.md, lists its stories and says how to file each "
+        "gap: a spec-gap issue when the specs already promise it, else a question to the "
+        "author proposing the spec change. Refused while an "
         "earlier audit issue there is open, and when no audit of that kind is due. Returns "
         "the issue number with the kind, capability and the model to run it on."
     ),

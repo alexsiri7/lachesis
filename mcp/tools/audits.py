@@ -78,6 +78,19 @@ _CHECKS: dict[str, list[str]] = {
     ],
 }
 
+NORTH_STAR_PATH = "docs/north-star.md"
+
+_NORTH_STAR_GAPS = (
+    "Take each story in turn and find what in the specs, the backlog or the factory's "
+    "behaviour stands between the system and that story. File each gap:\n"
+    "\n"
+    "- A gap the specs already promise (the behaviour is specified but not delivered): a "
+    "spec-gap issue, with file_audit_finding and finding unmet_requirement.\n"
+    "- A gap the specs do not cover: a question to the author, with ask_question kind "
+    "improvement, proposing the spec change that would close it and naming the story it "
+    "serves."
+)
+
 _NAME_THE_STANDARD = (
     "These are Robert C. Martin's clean code standards. Each finding must name the standard "
     "it breaks and where (file and function)."
@@ -232,6 +245,7 @@ async def audit_history(user_id: str) -> dict[str, Any]:
             logger.warning("audit_history: could not read %s error=%r", repo, exc)
             unreadable.append(repo)
             continue
+        has_north_star = await _north_star(repo) is not None
         audits = []
         for kind in get_args(db.AuditKind):
             mine = [r for r in runs if normalize_repo(r["repo_name"]) == repo and r["kind"] == kind]
@@ -239,6 +253,8 @@ async def audit_history(user_id: str) -> dict[str, Any]:
             capability = _next_capability(capabilities, mine) if kind in _PER_CAPABILITY else None
             if capability is not None and not _audited(capability, mine):
                 is_due = True
+            if kind == "north-star" and not has_north_star:
+                is_due = False
             last = _last(mine)
             audits.append(
                 {
@@ -283,6 +299,37 @@ def _open_audit(listing: list[github.IssueSummary]) -> int | None:
     return None
 
 
+async def _north_star(repo: str) -> str | None:
+    """The repository's north star, or ``None`` when it has none or it cannot be read."""
+    try:
+        content, _ = await github.get_file(repo, NORTH_STAR_PATH)
+    except FileNotFoundError:
+        return None
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("audits: could not read the north star of %s error=%r", repo, exc)
+        return None
+    return content
+
+
+def north_star_stories(north_star: str) -> list[str]:
+    """The story titles: each ``### `` heading under the ``## Stories`` section."""
+    stories: list[str] = []
+    in_stories = False
+    for line in north_star.splitlines():
+        if line.startswith("## "):
+            in_stories = line[3:].strip().lower() == "stories"
+        elif in_stories and line.startswith("### "):
+            stories.append(line[4:].strip())
+    return stories
+
+
+def _north_star_body(repo: str, north_star: str) -> str:
+    stories = north_star_stories(north_star)
+    lines = [f"A north-star audit of {repo} against {NORTH_STAR_PATH}. Its stories:", ""]
+    lines += [f"- {story}" for story in stories] or ["- (no stories found under ## Stories)"]
+    return "\n".join([*lines, "", _NORTH_STAR_GAPS, "", _FILING])
+
+
 def _audit_body(kind: str, capability: str | None, repo: str) -> str:
     subject = f"the {capability} capability" if capability else repo
     checks = _CHECKS["spec"] if capability else _CHECKS[kind]
@@ -297,7 +344,8 @@ async def start_audit(repo: str, kind: db.AuditKind) -> dict[str, Any]:
     """Open the audit issue for the next due audit of *kind* in *repo*.
 
     Refused while an earlier audit issue in *repo* is open, and when no audit of *kind*
-    is due there.
+    is due there. A north-star audit is due only in a repository with
+    ``docs/north-star.md``; its issue lists the north star's stories.
     """
     if kind not in get_args(db.AuditKind):
         raise ValueError(f"kind must be one of {', '.join(get_args(db.AuditKind))}, got {kind!r}")
@@ -318,13 +366,15 @@ async def start_audit(repo: str, kind: db.AuditKind) -> dict[str, Any]:
         raise ValueError(f"No {kind} audit is due in {repo}: nothing has changed since the last.")
     capability = audit["capability"]
     subject = capability or repo
+    if kind == "north-star":
+        north_star = await _north_star(repo)
+        if north_star is None:
+            raise ValueError(f"{repo} has no north star ({NORTH_STAR_PATH}) to audit against.")
+        body = _north_star_body(repo, north_star)
+    else:
+        body = _audit_body(kind, capability, repo)
     await _label(repo, AUDIT_LABEL, _AUDIT_COLOR)
-    issue = await github.create_issue(
-        repo,
-        f"Audit ({kind}): {subject}",
-        _audit_body(kind, capability, repo),
-        [AUDIT_LABEL],
-    )
+    issue = await github.create_issue(repo, f"Audit ({kind}): {subject}", body, [AUDIT_LABEL])
     return {
         "repo": repo,
         "kind": kind,

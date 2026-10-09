@@ -86,7 +86,6 @@ async def _repo_with_a_north_star(lachesis: Lachesis) -> None:
     github.on("POST", f"/repos/{REPO}/issues", json=_issue(80), status=201)
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #319")
 @scenario("audits", "North-star audit content")
 async def test_north_star_audit_content(lachesis: Lachesis) -> None:
     await _repo_with_a_north_star(lachesis)
