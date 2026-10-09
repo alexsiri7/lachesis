@@ -1,1 +1,1 @@
-{ "name": "plan-usage", "version": "0.6.0", "description": "Gives Claude a tool to read the plan's rate-limit windows (5h / 7d) and session cost, with an optional budget guard: past a cap it tells the model to wrap up and start nothing new (or, in stop mode, refuses tool calls)" }
+{ "name": "plan-usage", "version": "0.6.1", "description": "Gives Claude a tool to read the plan's rate-limit windows (5h / 7d) and session cost, with an optional budget guard: past a cap it tells the model to wrap up and start nothing new (or, in stop mode, refuses tool calls)" }
