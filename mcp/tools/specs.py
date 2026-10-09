@@ -56,6 +56,8 @@ _FENCE_OPENING = re.compile(r" {0,3}(?:(`{3,})[^`]*|(~{3,}).*)")
 _FENCE_CLOSING = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
 _SPEC_PATH = re.compile(rf"{SPECS_DIR}/({_CAPABILITY_NAME.pattern})/spec\.md")
 _HEADING_LINE = re.compile(r"#{1,6}[ \t]")
+# Scenario titles and results are those CI publishes (ci/acceptance.py, ci/scenario_results.py);
+# tests/test_scenario_results_agree.py holds the two sides to each other.
 _SCENARIO_HEADING = re.compile(r"#### Scenario:[ \t]*(.*?)[ \t]*")
 _HUNK_HEADER = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -284,8 +286,16 @@ async def spec_change_requirements(
 
 
 def _scenario_title(line: str) -> str | None:
-    match = _SCENARIO_HEADING.fullmatch(line.rstrip())
+    match = _SCENARIO_HEADING.fullmatch(line)
     return match.group(1) if match else None
+
+
+def scenario_titles(spec: str) -> list[str]:
+    """Every scenario title in *spec*, in order, as CI names them in the scenario results.
+
+    A heading without a title names no scenario.
+    """
+    return [title for line in spec.split("\n") if (title := _scenario_title(line))]
 
 
 def _scenario_containing(lines: list[str], number: int) -> str | None:
@@ -360,7 +370,7 @@ async def spec_change_scenarios(repo: str, number: int) -> list[tuple[str, str]]
         path = file["filename"]
         found: list[str | None]
         if file["patch"] is None:
-            found = [_scenario_title(line) for line in (await spec_at_head(path)).split("\n")]
+            found = list(scenario_titles(await spec_at_head(path)))
         else:
             titles, unplaced = patch_scenarios(file["patch"])
             lines = (await spec_at_head(path)).split("\n") if unplaced else []
