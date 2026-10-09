@@ -975,21 +975,24 @@ def record_usage_report(
     return dict(row)
 
 
-def usage_by_issue(user_id: str, repo_name: str) -> dict[int, dict[str, int]]:
-    """Return the tokens in and out reported on each issue in *repo_name*, by kind of work."""
+def usage_by_issue(
+    user_id: str, repo_name: str, by: Literal["kind", "model"] = "kind"
+) -> dict[int, dict[str, int]]:
+    """Return the tokens in and out reported on each issue in *repo_name*, by kind of work
+    or, with *by* ``model``, by model."""
     sql = text(
-        """
-        SELECT issue, kind, SUM(tokens_in + tokens_out) AS tokens
+        f"""
+        SELECT issue, {by} AS key, SUM(tokens_in + tokens_out) AS tokens
         FROM lachesis_usage_reports
         WHERE user_id = :user_id AND repo_name = :repo_name
-        GROUP BY issue, kind
+        GROUP BY issue, {by}
         """
     )
     with _engine().connect() as conn:
         rows = conn.execute(sql, {"user_id": user_id, "repo_name": repo_name}).mappings().all()
     usage: dict[int, dict[str, int]] = {}
     for row in rows:
-        usage.setdefault(row["issue"], {})[row["kind"]] = int(row["tokens"])
+        usage.setdefault(row["issue"], {})[row["key"]] = int(row["tokens"])
     return usage
 
 
@@ -1078,7 +1081,7 @@ def list_runs(
 # ---------------------------------------------------------------------------
 
 EstimateConfidence = Literal["low", "normal"]
-EstimateBasis = Literal["capability", "kind", "none"]
+EstimateBasis = Literal["kind", "all kinds", "none"]
 
 _ESTIMATE_COLUMNS = (
     "repo_name, issue, kind, capability, tokens, confidence, basis, samples, estimated_at"

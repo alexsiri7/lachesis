@@ -4,6 +4,7 @@ report on each week that ended."""
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,6 +13,7 @@ import github
 import notify
 from settings import settings
 
+from .estimates import Price, factory_history, price_per_point
 from .fuel import RESERVE_PERCENT, accounts_status, fuel_status
 from .repos import _require_user_id, normalize_repo
 from .requirements import _NEEDS_AUTHOR_LABEL, _SPRINT, _backlog_order, _sprint_start
@@ -120,6 +122,13 @@ def fits(estimate: int | None, left_tokens: int) -> bool:
     return left_tokens > 0 and (estimate or 0) <= left_tokens
 
 
+def capacity_points(budget_tokens: int, price: Price) -> int | None:
+    """Return how many whole points *budget_tokens* buys at *price*; none with no price."""
+    if not price["tokens_per_point"]:
+        return None
+    return math.floor(budget_tokens / price["tokens_per_point"])
+
+
 def plan_sprint(
     entries: list[dict[str, Any]],
     estimates: dict[tuple[str, int], int | None],
@@ -172,7 +181,8 @@ def plan_sprint(
 
 
 async def read_sprint() -> dict[str, Any]:
-    """Return the current sprint: its dates, budget, spending and plan."""
+    """Return the current sprint: its dates, budget, spending, the price of a point and the
+    capacity in points it gives, and the plan."""
     user_id = _require_user_id()
     now = datetime.now(UTC)
     budget = sprint_budget(
@@ -213,13 +223,19 @@ async def read_sprint() -> dict[str, Any]:
         budget["left_tokens"],
         sizes,
     )
+    history, unlisted = await factory_history(user_id)
+    price = price_per_point(history)
     return {
         "reported": True,
         **budget,
+        "tokens_per_point": price["tokens_per_point"],
+        "price_confidence": price["confidence"],
+        "capacity_points": capacity_points(budget["budget_tokens"], price),
         "plan": plan,
         "planned_tokens": sum(item["estimate_tokens"] or 0 for item in plan),
+        "planned_points": sum(item["size"] or 0 for item in plan if not item.get("split")),
         "not_planned": not_planned,
-        "unreadable": unreadable,
+        "unreadable": unreadable + [repo for repo in unlisted if repo not in unreadable],
     }
 
 

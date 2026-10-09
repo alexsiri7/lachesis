@@ -670,9 +670,9 @@ def test_usage_by_issue_sums_tokens_per_issue_and_kind() -> None:
     from decimal import Decimal
 
     rows = [
-        {"issue": 1, "kind": "tests", "tokens": Decimal(5)},
-        {"issue": 1, "kind": "triage", "tokens": 2},
-        {"issue": 2, "kind": "implementation", "tokens": Decimal(40)},
+        {"issue": 1, "key": "tests", "tokens": Decimal(5)},
+        {"issue": 1, "key": "triage", "tokens": 2},
+        {"issue": 2, "key": "implementation", "tokens": Decimal(40)},
     ]
     mock = _mock_engine(rows)
     with patch("db._engine", return_value=mock):
@@ -683,6 +683,16 @@ def test_usage_by_issue_sums_tokens_per_issue_and_kind() -> None:
     sql, params = mock.connect.return_value.execute.call_args[0]
     assert "GROUP BY issue, kind" in str(sql)
     assert params == {"user_id": "uid", "repo_name": "owner/repo"}
+
+
+def test_usage_by_issue_by_model_sums_tokens_per_issue_and_model() -> None:
+    mock = _mock_engine([{"issue": 1, "key": "claude", "tokens": 7}])
+    with patch("db._engine", return_value=mock):
+        result = db.usage_by_issue("uid", "owner/repo", by="model")
+
+    assert result == {1: {"claude": 7}}
+    sql, _ = mock.connect.return_value.execute.call_args[0]
+    assert "GROUP BY issue, model" in str(sql)
 
 
 def test_record_run_outcome_stores_it_against_the_latest_run_with_its_event() -> None:
@@ -785,7 +795,7 @@ def test_set_estimate_replaces_the_issues_estimate() -> None:
     mock = _mock_engine([row])
     with patch("db._engine", return_value=mock):
         result = db.set_estimate(
-            "uid", "owner/repo", 230, "implementation", "sprints", 4600, "normal", "capability", 8
+            "uid", "owner/repo", 230, "implementation", "sprints", 4600, "normal", "kind", 8
         )
 
     assert result == row
@@ -800,7 +810,7 @@ def test_set_estimate_replaces_the_issues_estimate() -> None:
         "capability": "sprints",
         "tokens": 4600,
         "confidence": "normal",
-        "basis": "capability",
+        "basis": "kind",
         "samples": 8,
     }
 
@@ -817,13 +827,15 @@ def test_estimates_migration_allows_exactly_the_typed_values_and_one_estimate_pe
     from pathlib import Path
     from typing import get_args
 
-    migration = (Path(db.__file__).parent / "alembic/versions/016_estimates.py").read_text()
-    for column, values in (
-        ("kind", db.UsageKind),
-        ("confidence", db.EstimateConfidence),
-        ("basis", db.EstimateBasis),
+    versions = Path(db.__file__).parent / "alembic/versions"
+    migration = (versions / "016_estimates.py").read_text()
+    bases = (versions / "028_point_prices.py").read_text().split("def downgrade")[0]
+    for source, column, values in (
+        (migration, "kind", db.UsageKind),
+        (migration, "confidence", db.EstimateConfidence),
+        (bases, "basis", db.EstimateBasis),
     ):
-        check = re.search(rf"\"{column} IN \((.*?)\)\"", migration)
+        check = re.search(rf"\"{column} IN \((.*?)\)\"", source)
         assert check is not None
         assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(values))
     assert 'sa.UniqueConstraint("user_id", "repo_name", "issue"' in migration
