@@ -56,6 +56,18 @@ _CHECKS: dict[str, list[str]] = {
         "Vulnerabilities in the code: injection, broken access control, secrets, unsafe defaults.",
         "Dependencies with known vulnerabilities or no longer maintained.",
     ],
+    "clean-code": [
+        "Names that reveal intent: no abbreviations, puns or names that say less than the "
+        "thing does.",
+        "Small functions that do one thing, at one level of abstraction.",
+        "Few arguments, and no flag arguments.",
+        "No side effects hidden behind a name that does not mention them.",
+        "No duplication.",
+        "Comments that explain why, not restate what the code says.",
+        "Classes and modules with a single responsibility.",
+        "Dependencies that point inward: policy never depends on detail.",
+        "Tests that are fast, independent, repeatable, self-validating and as clean as the code.",
+    ],
     "tests": [
         "Tests that pass without checking what they claim.",
         "Behaviour with no test at all.",
@@ -65,6 +77,11 @@ _CHECKS: dict[str, list[str]] = {
         "Behaviour no requirement describes.",
     ],
 }
+
+_NAME_THE_STANDARD = (
+    "These are Robert C. Martin's clean code standards. Each finding must name the standard "
+    "it breaks and where (file and function)."
+)
 
 _FILING = (
     "File every finding with file_audit_finding naming this issue; change no code, test or "
@@ -271,6 +288,8 @@ def _audit_body(kind: str, capability: str | None, repo: str) -> str:
     checks = _CHECKS["spec"] if capability else _CHECKS[kind]
     lines = [f"A {kind} audit of {subject}. Check:", ""]
     lines += [f"- {check}" for check in checks]
+    if kind == "clean-code":
+        lines += ["", _NAME_THE_STANDARD]
     return "\n".join([*lines, "", _FILING])
 
 
