@@ -33,7 +33,9 @@ from github import (
     get_merge_base,
     get_production_deployment,
     get_pull_request,
+    get_pull_request_files,
     get_repo_settings,
+    get_scenario_results,
     list_blocked_by_numbers,
     list_blockers,
     list_files,
@@ -1033,6 +1035,90 @@ async def test_list_pull_request_files_raises_on_http_error(httpx_mock: HTTPXMoc
     httpx_mock.add_response(status_code=500)
     with pytest.raises(httpx.HTTPStatusError):
         await list_pull_request_files("owner/repo", 7)
+
+
+async def test_get_pull_request_files_keeps_each_patch_and_says_when_github_withholds_it(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        json=[
+            {"filename": "a.md", "status": "modified", "patch": "@@ -1 +1 @@\n+x"},
+            {"filename": "b.md", "status": "renamed", "previous_filename": "c.md"},
+        ]
+    )
+
+    files = await get_pull_request_files("owner/repo", 7)
+
+    assert files == [
+        {
+            "filename": "a.md",
+            "previous_filename": None,
+            "status": "modified",
+            "patch": "@@ -1 +1 @@\n+x",
+        },
+        {"filename": "b.md", "previous_filename": "c.md", "status": "renamed", "patch": None},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# get_scenario_results
+# ---------------------------------------------------------------------------
+
+
+def _check_run(text: str, *, completed_at: str, sha: str, status: str = "completed") -> dict:
+    return {
+        "name": "scenario-results",
+        "head_sha": sha,
+        "status": status,
+        "completed_at": completed_at,
+        "output": {"text": text},
+    }
+
+
+async def test_get_scenario_results_reads_the_latest_completed_run(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=(
+            "https://api.github.com/repos/owner/repo/commits/main/check-runs"
+            "?check_name=scenario-results&per_page=100"
+        ),
+        json={
+            "check_runs": [
+                _check_run('{"a": {"S": "failed"}}', completed_at="2026-10-01T00:00:00Z", sha="1"),
+                _check_run('{"a": {"S": "passed"}}', completed_at="2026-10-02T00:00:00Z", sha="2"),
+                _check_run("", completed_at="", sha="3", status="in_progress"),
+            ]
+        },
+    )
+
+    assert await get_scenario_results("owner/repo") == {
+        "commit": "2",
+        "capabilities": {"a": {"S": "passed"}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (404, {"message": "Not Found"}),
+        (422, {"message": "No commit found for SHA: main"}),
+        (200, {"check_runs": []}),
+        (200, {"check_runs": [_check_run("not json", completed_at="x", sha="1")]}),
+        (200, {"check_runs": [_check_run('{"a": ["S"]}', completed_at="x", sha="1")]}),
+    ],
+)
+async def test_get_scenario_results_is_none_when_nothing_readable_is_published(
+    httpx_mock: HTTPXMock, status: int, body: dict
+) -> None:
+    httpx_mock.add_response(status_code=status, json=body)
+
+    assert await get_scenario_results("owner/repo") is None
+
+
+async def test_get_scenario_results_raises_on_http_error(httpx_mock: HTTPXMock) -> None:
+    """A failed read must not read as "nothing is published"."""
+    httpx_mock.add_response(status_code=500)
+    with pytest.raises(httpx.HTTPStatusError):
+        await get_scenario_results("owner/repo")
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, TypedDict
 
 import httpx
 
@@ -18,6 +18,7 @@ from derive import (
     IssueFacts,
     SpecChangeState,
     derive_spec_change,
+    hold_in_progress,
     spec_change_dropped,
 )
 from spec_reference import SpecReference, append_reference, parse_reference
@@ -53,8 +54,14 @@ _NORMATIVE = re.compile(r"\b(?:SHALL|MUST)\b")
 _FENCE_OPENING = re.compile(r" {0,3}(?:(`{3,})[^`]*|(~{3,}).*)")
 _FENCE_CLOSING = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
 _SPEC_PATH = re.compile(rf"{SPECS_DIR}/({_CAPABILITY_NAME.pattern})/spec\.md")
+_HEADING_LINE = re.compile(r"#{1,6}[ \t]")
+_SCENARIO_HEADING = re.compile(r"#### Scenario:[ \t]*(.*?)[ \t]*")
+_HUNK_HEADER = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 RequirementChange = Literal["added", "changed"]
+
+SCENARIO_PASSED = "passed"
+SCENARIO_RESULTS = (SCENARIO_PASSED, "xfail", "failed", "untested")
 
 
 async def uses_specs(repo: str) -> bool:
@@ -275,6 +282,92 @@ async def spec_change_requirements(
     return changes
 
 
+def _scenario_title(line: str) -> str | None:
+    match = _SCENARIO_HEADING.fullmatch(line.rstrip())
+    return match.group(1) if match else None
+
+
+def _scenario_containing(lines: list[str], number: int) -> str | None:
+    """Return the scenario that line *number* (from 1) of *lines* falls under, if any."""
+    for line in reversed(lines[:number]):
+        if _HEADING_LINE.match(line):
+            return _scenario_title(line)
+    return None
+
+
+def patch_scenarios(patch: str) -> tuple[list[str], list[int]]:
+    """Return the scenarios a spec's unified diff adds or modifies, and the changes it cannot place.
+
+    A scenario is touched when its heading is added or a line under it is added or removed.
+    A hunk shows only a few lines around each change, so a change before the hunk's first
+    heading is returned instead as its line number in the new spec: a removed line as the
+    line before it.
+    """
+    touched: dict[str, None] = {}
+    unplaced: list[int] = []
+    number = 0
+    current: str | None = None
+    placed = False
+
+    def change(at: int) -> None:
+        if not placed:
+            unplaced.append(at)
+        elif current is not None:
+            touched[current] = None
+
+    for line in patch.split("\n"):
+        hunk = _HUNK_HEADER.match(line)
+        if hunk:
+            number, current, placed = int(hunk.group(1)), None, False
+            continue
+        marker, text = line[:1], line[1:]
+        if marker == "-":
+            change(number - 1)
+        elif marker in ("+", " "):
+            if _HEADING_LINE.match(text):
+                current, placed = _scenario_title(text), True
+            if marker == "+":
+                change(number)
+            number += 1
+    return list(touched), unplaced
+
+
+async def spec_change_scenarios(repo: str, number: int) -> list[tuple[str, str]]:
+    """Return the scenarios spec change *number* adds or modifies, as ``(capability, title)``.
+
+    Read from the diff of every capability's spec in its pull request.  Changes the diff
+    cannot place, or every scenario when GitHub withholds the diff, are found in the spec
+    at the pull request's head.  A scenario a later change removed is still returned.  A
+    failed GitHub read raises.
+    """
+    head: str | None = None
+
+    async def lines_at_head(path: str) -> list[str]:
+        nonlocal head
+        if head is None:
+            commits = await github.get_merge_base(repo, number)
+            if commits is None:
+                raise FileNotFoundError(f"Pull request #{number} not found in {repo!r}")
+            head = commits[1]
+        return (await _spec_at(repo, path, head) or "").split("\n")
+
+    scenarios: list[tuple[str, str]] = []
+    for file in await github.get_pull_request_files(repo, number):
+        match = _SPEC_PATH.fullmatch(file["filename"])
+        if match is None or file["status"] == "removed":
+            continue
+        path = file["filename"]
+        found: list[str | None]
+        if file["patch"] is None:
+            found = [_scenario_title(line) for line in await lines_at_head(path)]
+        else:
+            titles, unplaced = patch_scenarios(file["patch"])
+            lines = await lines_at_head(path) if unplaced else []
+            found = [*titles, *(_scenario_containing(lines, at) for at in unplaced)]
+        scenarios.extend((match.group(1), title) for title in dict.fromkeys(found) if title)
+    return scenarios
+
+
 def _check_capabilities(
     capabilities: Mapping[str, str | None], refusal: str = "Spec change refused"
 ) -> None:
@@ -484,12 +577,85 @@ class SpecProgress(NamedTuple):
     description, which the entry itself does not carry.  ``references`` holds the
     reference block of every issue naming a spec change, by issue number, and
     ``facts`` the facts read for those issues, partial or empty when the read failed.
+    ``scenario_results`` are those published for the default branch, ``None`` when
+    there are none.
     """
 
     spec_gaps: dict[str, int]
     landing_candidates: list[landing.SpecChangeCandidate]
     references: dict[int, SpecReference]
     facts: dict[int, IssueFacts]
+    scenario_results: github.ScenarioResults | None = None
+
+
+class PendingScenario(TypedDict):
+    """A scenario a built spec change adds or modifies that does not pass yet."""
+
+    capability: str
+    scenario: str
+    # failed, xfail or untested; None when no scenario results are published.
+    result: str | None
+
+
+def pending_scenarios(
+    scenarios: list[tuple[str, str]], results: github.ScenarioResults | None
+) -> list[PendingScenario]:
+    """Return the *scenarios* that do not pass on the default branch, according to *results*.
+
+    A scenario the results do not name is no longer specified, so nothing is pending on it.
+    """
+    pending: list[PendingScenario] = []
+    for capability, scenario in scenarios:
+        if results is None:
+            result = None
+        else:
+            result = results["capabilities"].get(capability, {}).get(scenario)
+            if result is None or result == SCENARIO_PASSED:
+                continue
+        pending.append({"capability": capability, "scenario": scenario, "result": result})
+    return pending
+
+
+def _all_pass(results: github.ScenarioResults | None) -> bool:
+    return results is not None and all(
+        result == SCENARIO_PASSED
+        for titles in results["capabilities"].values()
+        for result in titles.values()
+    )
+
+
+async def _hold_until_scenarios_pass(
+    repo: str, entry: dict[str, Any], results: github.ScenarioResults | None
+) -> None:
+    """Hold built spec change *entry* in progress while a scenario it touches does not pass."""
+    scenarios = await spec_change_scenarios(repo, entry["spec_change"])
+    entry["pending_scenarios"] = pending_scenarios(scenarios, results)
+    if entry["pending_scenarios"]:
+        hold_in_progress(entry["derived"])
+
+
+def scenario_view(results: github.ScenarioResults | None) -> dict[str, Any]:
+    """Every scenario's result by capability, or why there are none.
+
+    Returns ``{"published": True, "commit", "capabilities": {capability: {result:
+    [scenario, ...]}}}`` with every result from ``passed``, ``xfail``, ``failed`` and
+    ``untested`` present, or ``{"published": False, "message"}``.
+    """
+    if results is None:
+        return {
+            "published": False,
+            "message": (
+                f"No {github.SCENARIO_RESULTS_CHECK!r} check run is published for the latest "
+                "commit on the default branch, so no scenario has a result yet."
+            ),
+        }
+    capabilities: dict[str, dict[str, list[str]]] = {}
+    for capability, titles in sorted(results["capabilities"].items()):
+        view: dict[str, list[str]] = {result: [] for result in SCENARIO_RESULTS}
+        for title, result in titles.items():
+            view.setdefault(result, []).append(title)
+        capabilities[capability] = view
+    return {"published": True, "commit": results["commit"], "capabilities": capabilities}
 
 
 def _spec_change_entry(
@@ -524,6 +690,7 @@ def _spec_change_entry(
         "warning": warning,
         "dropped": reason is not None,
         "derived": derive_spec_change(state, pull["updated_at"], numbers, facts, failure=failure),
+        "pending_scenarios": [],
     }
     if reason is not None:
         entry["reason"] = reason
@@ -553,6 +720,11 @@ async def read_spec_progress(repo: str) -> SpecProgress:
     each one, and the open issues labelled ``spec-gap``; the named issues' facts
     then come in one batch.  A spec-gap issue without a reference block names no
     capability and is not counted.  Nothing is written.
+
+    A spec change whose issues are all done is held in progress while a scenario
+    it adds or modifies does not pass in the scenario results published for the
+    default branch, or no results are published; its ``pending_scenarios`` name
+    each.  A spec change is only diffed when some scenario does not pass.
     """
     items = await github.list_all_issues(repo)
     naming: dict[int, list[int]] = {}
@@ -588,18 +760,23 @@ async def read_spec_progress(repo: str) -> SpecProgress:
             exc,
         )
         failure = "transient"
-    return SpecProgress(
-        dict(sorted(spec_gaps.items())),
-        [
-            landing.SpecChangeCandidate(
-                pull["body"],
-                _spec_change_entry(pull, sorted(naming.get(pull["number"], [])), facts, failure),
+    candidates = [
+        landing.SpecChangeCandidate(
+            pull["body"],
+            _spec_change_entry(pull, sorted(naming.get(pull["number"], [])), facts, failure),
+        )
+        for pull in pulls
+    ]
+    results = await github.get_scenario_results(repo)
+    if not _all_pass(results):
+        await asyncio.gather(
+            *(
+                _hold_until_scenarios_pass(repo, candidate.entry, results)
+                for candidate in candidates
+                if candidate.entry["derived"]["status"] == "done"
             )
-            for pull in pulls
-        ],
-        references,
-        facts,
-    )
+        )
+    return SpecProgress(dict(sorted(spec_gaps.items())), candidates, references, facts, results)
 
 
 async def list_spec_changes(repo: str, include_inactive: bool = False) -> list[dict[str, Any]]:
@@ -607,9 +784,11 @@ async def list_spec_changes(repo: str, include_inactive: bool = False) -> list[d
 
     Each entry carries ``spec_change`` (its pull request number), ``title``, ``url``,
     ``state`` (``open``, ``merged`` or ``closed``), ``pr`` (the open pull request the
-    change awaits, ``None`` once it has merged or closed), ``warning``, ``dropped``
-    and, when dropped, its ``reason``.  Its issues are those whose reference block
-    names it.  Dropped spec changes are excluded unless ``include_inactive`` is true.
+    change awaits, ``None`` once it has merged or closed), ``warning``, ``dropped``,
+    ``pending_scenarios`` (those holding a built change in progress, see
+    :func:`read_spec_progress`) and, when dropped, its ``reason``.  Its issues are
+    those whose reference block names it.  Dropped spec changes are excluded unless
+    ``include_inactive`` is true.
     """
     repo = await _resolve_repo(repo)
     if not await uses_specs(repo):
