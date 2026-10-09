@@ -26,6 +26,7 @@ from auth import (
     via_factory_token,
 )
 from settings import settings
+from tools import audits as audit_tools
 from tools import contents as contents_tools
 from tools import estimates as estimate_tools
 from tools import events as event_tools
@@ -548,6 +549,52 @@ mcp.tool(
         "Returns the stored size with the time it was set."
     ),
 )(estimate_tools.size_issue)
+
+mcp.tool(
+    description=(
+        "Record one audit run in a registered repository: `kind` (architecture, security, "
+        "tests or requirements), `outcome` (clean, findings or failed), `finished_at` (ISO "
+        "8601), the `model` that ran it, the `issues` it filed, its `capability` for an audit "
+        "of one capability, and the tokens it used. Report every run, failed ones too: a "
+        "failed audit stays due. Returns the stored run."
+    ),
+)(audit_tools.report_audit_run)
+
+mcp.tool(
+    description=(
+        "Return the audit history of every registered repository: for each audit kind its "
+        "`last_run` (finished_at, outcome, model, issues, capability, tokens; null when it "
+        "never ran there), whether it is `due`, the pull requests `merged_since` its last "
+        "successful run and, for tests and requirements audits in a repository that uses "
+        "specs, the `capability` it would cover next (least recently audited, never audited "
+        "first). An audit is due when it never ran, its last run failed, pull requests "
+        "merged since its last successful run, the model route_run now picks for audits "
+        "differs from that run's, or (security only) 60 days have passed since it. `due` "
+        "lists the due audits in order: most merges since their last run first, then the "
+        "oldest last run. Derived on every read."
+    ),
+)(audit_tools.read_audit_history)
+
+mcp.tool(
+    description=(
+        "Start the next due audit of `kind` in a registered repository: opens its audit "
+        "issue, labelled `audit`, naming the capability for a tests or requirements audit "
+        "in a repository that uses specs and listing the checks to make. Refused while an "
+        "earlier audit issue there is open, and when no audit of that kind is due. Returns "
+        "the issue number with the kind, capability and the model to run it on."
+    ),
+)(audit_tools.start_audit)
+
+mcp.tool(
+    description=(
+        "File one finding of an audit as a spec-gap issue naming its capability. `finding` "
+        "is weak_test (also labelled acceptance-tests), unmet_requirement, "
+        "undescribed_behaviour or ambiguous_wording. The last two wait on the author with "
+        "a question framed as a decision: keep the behaviour and specify it or remove it; "
+        "which reading of the wording is intended. Audits file findings and never fix them. "
+        "Returns the new issue's number."
+    ),
+)(audit_tools.file_audit_finding)
 
 mcp.tool(
     description=(

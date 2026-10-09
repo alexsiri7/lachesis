@@ -25,6 +25,8 @@ Tables (all namespaced lachesis_):
                             audit finding
   lachesis_issue_sizes    — each issue's size in Fibonacci points, 21 meaning larger
                             than 13
+  lachesis_audit_runs     — every audit run: repo, kind, capability, model, when it
+                            finished, outcome, issues filed and tokens
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -1137,6 +1139,87 @@ def sizes_by_issue(user_id: str, repo_name: str | None = None) -> dict[tuple[str
     with _engine().connect() as conn:
         rows = conn.execute(text(sql), params).mappings().all()
     return {(row["repo_name"], int(row["issue"])): int(row["size"]) for row in rows}
+
+
+# lachesis_audit_runs
+# ---------------------------------------------------------------------------
+
+AuditKind = Literal["architecture", "security", "tests", "requirements"]
+AuditOutcome = Literal["clean", "findings", "failed"]
+
+_AUDIT_RUN_COLUMNS = (
+    "id, repo_name, kind, capability, model, finished_at, outcome, issues, tokens_in, "
+    "tokens_out, reported_at"
+)
+
+
+def record_audit_run(
+    user_id: str,
+    repo_name: str,
+    kind: AuditKind,
+    capability: str | None,
+    model: str,
+    finished_at: datetime,
+    outcome: AuditOutcome,
+    issues: list[int],
+    tokens_in: int,
+    tokens_out: int,
+) -> dict[str, Any]:
+    """Store one audit run."""
+    if kind not in get_args(AuditKind):
+        raise ValueError(f"kind must be one of {', '.join(get_args(AuditKind))}, got {kind!r}")
+    if outcome not in get_args(AuditOutcome):
+        raise ValueError(
+            f"outcome must be one of {', '.join(get_args(AuditOutcome))}, got {outcome!r}"
+        )
+    sql = text(
+        f"""
+        INSERT INTO lachesis_audit_runs
+            (user_id, repo_name, kind, capability, model, finished_at, outcome, issues,
+             tokens_in, tokens_out)
+        VALUES
+            (:user_id, :repo_name, :kind, :capability, :model, :finished_at, :outcome,
+             :issues, :tokens_in, :tokens_out)
+        RETURNING {_AUDIT_RUN_COLUMNS}
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "kind": kind,
+        "capability": capability,
+        "model": model,
+        "finished_at": finished_at,
+        "outcome": outcome,
+        "issues": issues,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    if row is None:
+        raise RuntimeError(f"record_audit_run returned no row for {repo_name!r}")
+    return _audit_run(row)
+
+
+def list_audit_runs(user_id: str) -> list[dict[str, Any]]:
+    """Return every audit run of the account, oldest first."""
+    sql = text(
+        f"SELECT {_AUDIT_RUN_COLUMNS} FROM lachesis_audit_runs WHERE user_id = :user_id "
+        "ORDER BY finished_at, id"
+    )
+    with _engine().connect() as conn:
+        rows = conn.execute(sql, {"user_id": user_id}).mappings().all()
+    return [_audit_run(row) for row in rows]
+
+
+def _audit_run(row: Any) -> dict[str, Any]:
+    return {
+        **row,
+        "issues": [int(n) for n in row["issues"] or []],
+        "tokens_in": int(row["tokens_in"]),
+        "tokens_out": int(row["tokens_out"]),
+    }
 
 
 # ---------------------------------------------------------------------------

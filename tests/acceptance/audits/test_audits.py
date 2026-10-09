@@ -152,7 +152,6 @@ def _due(history: dict[str, Any], kind: str) -> list[str]:
 # --- Every audit run is recorded ------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Run recorded")
 async def test_run_recorded(lachesis: Lachesis) -> None:
     await _repo(lachesis, "owner/filmduel")
@@ -175,7 +174,6 @@ async def test_run_recorded(lachesis: Lachesis) -> None:
     assert last["model"] == model
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Failed run recorded")
 async def test_failed_run_recorded(lachesis: Lachesis) -> None:
     await _repo(lachesis, "owner/reli")
@@ -196,7 +194,6 @@ async def test_failed_run_recorded(lachesis: Lachesis) -> None:
     assert "owner/reli" in _due(history, "tests")
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Never audited")
 async def test_never_audited(lachesis: Lachesis) -> None:
     await _repo(lachesis, "owner/kith")
@@ -210,7 +207,6 @@ async def test_never_audited(lachesis: Lachesis) -> None:
 # --- Audits fall due when the code or the auditor changes -----------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Quiet project skipped")
 async def test_quiet_project_skipped(lachesis: Lachesis) -> None:
     await _repo(lachesis, "owner/kith", items=[_pull("owner/kith", 7, merged_days_ago=5)])
@@ -222,7 +218,6 @@ async def test_quiet_project_skipped(lachesis: Lachesis) -> None:
     assert "owner/kith" not in _due(history, "tests")
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Busiest project first")
 async def test_busiest_project_first(lachesis: Lachesis) -> None:
     model = await _auditor_model(lachesis)
@@ -239,7 +234,6 @@ async def test_busiest_project_first(lachesis: Lachesis) -> None:
     assert due.index("owner/reli") < due.index("owner/filmduel")
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "New auditor model")
 async def test_new_auditor_model(lachesis: Lachesis) -> None:
     repos = ("owner/kith", "owner/dibs")
@@ -253,7 +247,6 @@ async def test_new_auditor_model(lachesis: Lachesis) -> None:
     assert sorted(due) == sorted(repos)
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Security audit of a quiet project")
 async def test_security_audit_of_a_quiet_project(lachesis: Lachesis) -> None:
     await _repo(lachesis, "owner/kith", items=[_pull("owner/kith", 7, merged_days_ago=90)])
@@ -308,7 +301,6 @@ async def test_audit_in_the_plan(lachesis: Lachesis) -> None:
     assert planned["estimate_tokens"] == 30
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Previous audit unfinished")
 async def test_previous_audit_unfinished(lachesis: Lachesis) -> None:
     # Neither repo was ever audited, so every kind is due in both; reli's last audit
@@ -349,7 +341,6 @@ async def _spec_repo_for_audit(lachesis: Lachesis, repo: str) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Least recently audited capability")
 async def test_least_recently_audited_capability(lachesis: Lachesis) -> None:
     await _spec_repo_for_audit(lachesis, "owner/lachesis")
@@ -371,7 +362,6 @@ async def test_least_recently_audited_capability(lachesis: Lachesis) -> None:
     assert "backlog" in f"{opened['title']}\n{opened.get('body', '')}"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Audit issue content")
 async def test_audit_issue_content(lachesis: Lachesis) -> None:
     await _spec_repo_for_audit(lachesis, "owner/lachesis")
@@ -414,7 +404,6 @@ async def _file_finding(lachesis: Lachesis, finding: str, title: str) -> dict[st
     return opened
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Weak test found")
 async def test_weak_test_found(lachesis: Lachesis) -> None:
     opened = await _file_finding(
@@ -426,7 +415,6 @@ async def test_weak_test_found(lachesis: Lachesis) -> None:
     assert "Capability: backlog" in opened["body"]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Undescribed behaviour")
 async def test_undescribed_behaviour(lachesis: Lachesis) -> None:
     opened = await _file_finding(
