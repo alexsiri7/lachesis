@@ -22,6 +22,11 @@ type GuardConfig = {
   // When true the weekly cap grows with the week: weeklyCapPercent times the
   // share of the 7-day window elapsed, so the cap is not spent on day one.
   pace: boolean
+  // What a cap does. 'wrap-up' (the default) refuses nothing: past the cap every
+  // tool result carries a reminder to finish the work in hand and start nothing
+  // new, so no change is left half-made. 'stop' refuses every tool call but the
+  // allowed few, for an account that must never go past its cap.
+  mode: 'wrap-up' | 'stop'
 }
 
 const WINDOW_MS: Record<string, number> = {
@@ -76,7 +81,8 @@ async function configDir($: EngineInterface): Promise<string> {
 }
 
 // <config dir>/budget-guard.json, e.g.
-// { "enabled": true, "weeklyCapPercent": 65, "fiveHourCapPercent": 60, "pace": true }
+// { "enabled": true, "weeklyCapPercent": 65, "fiveHourCapPercent": 60, "pace": true,
+//   "mode": "wrap-up" }
 // Missing or unreadable means the guard is off.
 async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
   try {
@@ -87,6 +93,7 @@ async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
       weeklyCapPercent: Number(raw.weeklyCapPercent ?? 100),
       fiveHourCapPercent: Number(raw.fiveHourCapPercent ?? 100),
       pace: raw.pace === true,
+      mode: raw.mode === 'stop' ? 'stop' : 'wrap-up',
     }
   } catch {
     return undefined
@@ -122,6 +129,15 @@ function breaches(guard: GuardConfig, windows: SessionRateLimit[], now: number):
       ? [`${LABELS[w.kind]} at ${w.percentUsed}% (cap ${cap}%)`]
       : []
   })
+}
+
+// What the model reads after each tool result while a window is past its cap.
+export function wrapUpNote(over: string[]): string {
+  return (
+    `Budget guard, wrap-up mode: ${over.join('; ')}. Finish the change in hand and get it ` +
+    'green, then merge it or leave a handoff note (add_note) with where it stands. Do not ' +
+    'start new work: no new issue, branch or task. Then report usage and tell the user.'
+  )
 }
 
 // The latest windows, written to <config dir>/plan-usage.json after every measurement, so
@@ -168,28 +184,39 @@ export const register: Register = on => {
     } else {
       const over = breaches(guard, usage.rateLimits, now)
       lines.push(
-        `Budget guard: on (${describeCaps(guard, usage.rateLimits, now)})` +
-          (over.length ? ` - TRIPPED: ${over.join('; ')}` : ' - within budget'),
+        `Budget guard: on, ${guard.mode} mode (${describeCaps(guard, usage.rateLimits, now)})` +
+          (over.length
+            ? guard.mode === 'stop'
+              ? ` - TRIPPED: ${over.join('; ')}`
+              : ` - WRAP UP: ${over.join('; ')}. Finish what is in hand; start nothing new.`
+            : ' - within budget'),
       )
     }
     return { result: lines.join('\n') }
   }).catch($ => ({ deny: `${$.plugin.name}: could not read usage.` }))
 
-  // The guard: while it is on and a window is at its cap, every other tool
-  // call is refused, so budgeted work stops however the model reasons.
+  // The guard, while it is on and a window is at its cap. In wrap-up mode every
+  // tool call runs and its result reminds the model to finish the work in hand
+  // and start nothing new: stopping midway leaves worse damage than a small
+  // overshoot. In stop mode every other tool call is refused.
   on('tool.call', async ($, e, next) => {
     if (ALWAYS_ALLOWED.some(re => re.test(e.tool))) return next(e)
     const guard = await readGuard($)
     if (!guard) return next(e)
     const over = breaches(guard, (await $.session.usage()).rateLimits, await $.clock.now())
     if (!over.length) return next(e)
-    return {
-      deny:
-        `Budget guard: ${over.join('; ')}. Stop the budgeted work now: leave a ` +
-        'handoff note on the issue (add_note), report usage, and tell the user. ' +
-        'Only those tools are allowed until the window resets or the guard is turned off.',
+    if (guard.mode === 'stop') {
+      return {
+        deny:
+          `Budget guard: ${over.join('; ')}. Stop the budgeted work now: leave a ` +
+          'handoff note on the issue (add_note), report usage, and tell the user. ' +
+          'Only those tools are allowed until the window resets or the guard is turned off.',
+      }
     }
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: `${$.plugin.name}: budget guard failed; refusing to be safe.` }))
+    const result = await next(e)
+    if (result.deny !== undefined || result.isError) return result
+    return { ...result, context: [...(result.context ?? []), wrapUpNote(over)] }
+  }).catch(($, e, next) => next(e)) // a guard that cannot read lets the work go on
 
   on('session.measure', async ($, e, next) => {
     await recordWindows($, e.rateLimits)
@@ -198,7 +225,13 @@ export const register: Register = on => {
     const guard = await readGuard($)
     if (guard) {
       const over = breaches(guard, e.rateLimits, now)
-      $.ui.status(over.length ? `⛔ budget guard tripped: ${fig}` : `budget guard on · ${fig}`)
+      $.ui.status(
+        !over.length
+          ? `budget guard on · ${fig}`
+          : guard.mode === 'stop'
+            ? `⛔ budget guard tripped: ${fig}`
+            : `⚠ wrap up, start nothing new: ${fig}`,
+      )
     } else {
       $.ui.status(fig || undefined)
     }
