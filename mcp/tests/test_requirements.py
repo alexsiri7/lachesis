@@ -505,6 +505,7 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
             "blocked_by": [],
             "added_to_project": False,
             "ready": True,
+            "size": None,
         }
     ]
 
@@ -736,6 +737,7 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
             "blocked_by": [],
             "added_to_project": False,
             "ready": True,
+            "size": None,
         }
     ]
 
@@ -3227,6 +3229,7 @@ def _patch_backlog(
         patch("db.list_focus", return_value=focus or []),
         patch("db.get_fuel", return_value=fuel),
         patch("db.list_estimates", return_value=estimates or []),
+        patch("db.sizes_by_issue", return_value={}),
     ):
         yield fake
 

@@ -178,6 +178,9 @@ mcp.tool(
         "Issues are the task layer — they break down *how* a requirement's "
         "desired behaviour will be built. Issues are created ready and take their "
         "computed place in the backlog; pass `ready: false` on one to park it instead. "
+        "Give each issue a `size` in Fibonacci points (1, 2, 3, 5, 8 or 13; 21 for larger "
+        "than 13, to be split), as size_issue takes it; an invalid size refuses the whole "
+        "call before anything is created. "
         "Call `link_issues` after to attach them to the requirement. In a repo that uses "
         "specs, every issue must say what it implements: `capability` (the capability "
         "name) and exactly one "
@@ -532,9 +535,19 @@ mcp.tool(
         "that (basis `capability`). With none in the capability it falls back to past issues "
         "of that kind in the repository, at low confidence (basis `kind`). With no history at "
         "all, `tokens` is null (basis `none`). Returns the stored estimate with its samples "
-        "and time."
+        "and time, and the issue's `size` in points (null until it is sized)."
     ),
 )(estimate_tools.estimate_issue)
+
+mcp.tool(
+    description=(
+        "Set the size of an issue in a registered repository, in Fibonacci points: 1, 2, 3, "
+        "5, 8 or 13. Give 21 for an issue judged larger than 13: it is never planned itself; "
+        "read_sprint plans splitting it instead (marked `split`). Every issue is sized when "
+        "it is triaged, and the author may resize it at any time. Any other size is refused. "
+        "Returns the stored size with the time it was set."
+    ),
+)(estimate_tools.size_issue)
 
 mcp.tool(
     description=(

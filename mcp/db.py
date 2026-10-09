@@ -23,6 +23,8 @@ Tables (all namespaced lachesis_):
                             capability and confidence
   lachesis_run_outcomes   — failures reported against a run: rework, a retry or an
                             audit finding
+  lachesis_issue_sizes    — each issue's size in Fibonacci points, 21 meaning larger
+                            than 13
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -1085,6 +1087,56 @@ def list_estimates(user_id: str) -> list[dict[str, Any]]:
     with _engine().connect() as conn:
         rows = conn.execute(sql, {"user_id": user_id}).mappings().all()
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# lachesis_issue_sizes
+# ---------------------------------------------------------------------------
+
+# Fibonacci points; 21 stands for "larger than 13", an issue to split before planning.
+SIZES = (1, 2, 3, 5, 8, 13, 21)
+TOO_BIG = 21
+
+
+def check_size(size: int) -> None:
+    """Refuse anything but a Fibonacci size or TOO_BIG."""
+    if size not in SIZES:
+        raise ValueError(
+            f"size must be one of {', '.join(map(str, SIZES[:-1]))} points, or {TOO_BIG} for "
+            f"an issue larger than 13 that must be split; got {size!r}"
+        )
+
+
+def set_size(user_id: str, repo_name: str, issue: int, size: int) -> dict[str, Any]:
+    """Replace *issue*'s size with *size*."""
+    check_size(size)
+    sql = text(
+        """
+        INSERT INTO lachesis_issue_sizes (user_id, repo_name, issue, size)
+        VALUES (:user_id, :repo_name, :issue, :size)
+        ON CONFLICT (user_id, repo_name, issue) DO UPDATE
+            SET size = EXCLUDED.size, sized_at = now()
+        RETURNING repo_name, issue, size, sized_at
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "issue": issue, "size": size}
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    if row is None:
+        raise RuntimeError(f"set_size returned no row for {repo_name!r} issue {issue}")
+    return dict(row)
+
+
+def sizes_by_issue(user_id: str, repo_name: str | None = None) -> dict[tuple[str, int], int]:
+    """Return every sized issue of the account as (repo, issue) -> size."""
+    sql = "SELECT repo_name, issue, size FROM lachesis_issue_sizes WHERE user_id = :user_id"
+    params: dict[str, Any] = {"user_id": user_id}
+    if repo_name is not None:
+        sql += " AND repo_name = :repo_name"
+        params["repo_name"] = repo_name
+    with _engine().connect() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
+    return {(row["repo_name"], int(row["issue"])): int(row["size"]) for row in rows}
 
 
 # ---------------------------------------------------------------------------
