@@ -10,7 +10,7 @@ Audits are factory work like any other: they are planned into the sprint, paid f
 
 ### Requirement: Every audit run is recorded
 
-The system SHALL record every audit run with its repository, its audit kind (architecture, security, clean code, tests or requirements), its capability where the audit has one, the model that ran it, when it ran, its outcome (clean, findings or failed), the issues it filed and the tokens it used. It SHALL return, for each registered repository and audit kind, the last run with its time and outcome, and say "never" for an audit that has never run there.
+The system SHALL record every audit run with its repository, its audit kind (architecture, security, clean code, tests, requirements or north star), its capability where the audit has one, the model that ran it, when it ran, its outcome (clean, findings or failed), the issues it filed and the tokens it used. It SHALL return, for each registered repository and audit kind, the last run with its time and outcome, and say "never" for an audit that has never run there.
 
 #### Scenario: Run recorded
 - GIVEN a security audit of filmduel that finished and filed issues #40 and #41
@@ -94,6 +94,16 @@ A clean code audit issue SHALL direct its auditor to check the code against Robe
 - WHEN its audit issue is read
 - THEN it lists those standards
 - AND it asks for each finding to name the standard broken and where
+
+### Requirement: A north-star audit holds the specs to the north star
+
+In a repository with a north star (`docs/north-star.md`), a north-star audit issue SHALL direct its auditor to take each story in turn and find what in the specs, the backlog or the factory's behaviour stands between the system and that story. Each gap SHALL be filed as a spec-gap issue when the specs already promise the behaviour, or as a question to the author proposing the spec change that would close it when they do not.
+
+#### Scenario: North-star audit content
+- GIVEN a north-star audit is started for a repository with a north star
+- WHEN its audit issue is read
+- THEN it lists the north star's stories
+- AND it says how to file a gap the specs already cover and one they do not
 
 ### Requirement: Findings are filed, not fixed
 

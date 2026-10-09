@@ -18,12 +18,18 @@ The open issues of a repository SHALL form a single ordered backlog. Reading it 
 
 ### Requirement: Order is computed
 
-The system SHALL order the backlog by tier, highest first: interrupt; security (spec gaps found by a security audit or a security incident); in the author's focus; work implementing an active milestone, nearest-done milestone first; everything else. Within a tier, older issues SHALL come first. An issue that has been ready and unblocked for two whole sprints without being picked up SHALL move up one tier, so no work starves. The system SHALL NOT offer a way to set an issue's rank by hand.
+The system SHALL order the backlog by tier, highest first: interrupt; security (spec gaps found by a security audit or a security incident); in the author's focus; work implementing a spec change the author asked for, for two sprints after it merges; work implementing an active milestone, nearest-done milestone first; everything else. Within a tier, older issues SHALL come first. An issue that has been ready and unblocked for two whole sprints without being picked up SHALL move up one tier, so no work starves. The system SHALL NOT offer a way to set an issue's rank by hand.
 
 #### Scenario: Security before milestone work
 - GIVEN a ready milestone issue created yesterday and a ready security spec gap created today
 - WHEN the backlog is read
 - THEN the security spec gap comes first
+
+#### Scenario: The author's request ranks high
+- GIVEN a spec change the author asked for merged yesterday
+- AND an older ready issue in the last tier
+- WHEN the backlog is read
+- THEN the issues implementing the author's spec change come before the older issue
 
 #### Scenario: Starving work rises
 - GIVEN a ready, unblocked issue in the last tier that has waited two whole sprints

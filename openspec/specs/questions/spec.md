@@ -20,6 +20,21 @@ The system SHALL store each question as a record of its own holding: the questio
 - WHEN issue 160 is closed
 - THEN the question is still open and readable
 
+### Requirement: Small questions settle by default while the author is away
+
+A question of kind clarification or improvement MAY carry a default answer and a wait, three days unless the asker gives another. When the wait passes with no answer, the system SHALL record the default as the answer with the outcome `defaulted`, release the issues it blocked as an answer would, and note on each that the default was taken. Questions of every other kind, which decide what a project should be, SHALL NOT carry a default and SHALL wait for the author. The author MAY later answer a defaulted question, which records the new answer and its outcome as usual.
+
+#### Scenario: Away for a week
+- GIVEN a clarification question with a default, blocking issue 160, asked four days ago and unanswered
+- WHEN the open questions are read
+- THEN the question is answered with its default and the outcome defaulted
+- AND issue 160 is released with a note saying the default was taken
+
+#### Scenario: Spec decision waits
+- GIVEN a spec contradiction question asked a month ago
+- WHEN a default is offered for it
+- THEN the default is refused and the question keeps waiting for the author
+
 ### Requirement: Budget questions never block work
 
 A question of kind budget asks the author to raise the spending cap for models outside the Claude allowance, and SHALL state what the extra spend would deliver. It SHALL NOT block any issue: while it is open, work continues within the existing cap.

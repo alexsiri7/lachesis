@@ -89,6 +89,21 @@ Before writing the message, the briefing SHALL tell the agent to make these fixe
 - WHEN the morning briefing is followed
 - THEN the message has no line about fixes
 
+### Requirement: The briefing closes the week
+
+On the first morning after the primary account's weekly reset, the briefing SHALL tell the agent to have the sprint that ended reviewed, once, before writing the message, and to mention it in one line. Defaulted questions since the last briefing SHALL be listed in one line each, so the author sees every default the factory took.
+
+#### Scenario: Sprint just ended
+- GIVEN the weekly allowance reset last night and the sprint has not been reviewed
+- WHEN the morning briefing is followed
+- THEN the sprint review is sent
+- AND the message says so in one line
+
+#### Scenario: Defaults taken
+- GIVEN two questions settled by default since yesterday's briefing
+- WHEN the morning briefing is followed
+- THEN the message lists both, one line each
+
 ### Requirement: The briefing opens with factory health
 
 The message SHALL open with one line saying whether the factory is working, from when work was last reported, and one line on fuel: each account's use of its week against its pace and when it resets, and the overflow against its cap. Fuel that has not been reported SHALL be stated as a fault.
