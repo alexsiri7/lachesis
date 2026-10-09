@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #173")
 @scenario("agent-guidance", "Implementer asks about tests")
 async def test_implementer_asks_about_tests(lachesis: Lachesis) -> None:
     await lachesis.call_tool("register_repo", {"repo": REPO})

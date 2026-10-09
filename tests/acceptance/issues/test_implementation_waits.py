@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -34,7 +32,6 @@ def _issue(number: int, *, labels: tuple[str, ...] = (), body: str = "") -> dict
     }
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #173")
 @scenario("issues", "Implementation issue created")
 async def test_implementation_issue_created(lachesis: Lachesis) -> None:
     github = lachesis.github

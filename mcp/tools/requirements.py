@@ -42,14 +42,22 @@ Spec-change workflow, for a repository that uses specs — follow these steps in
 1. list_capabilities / get_capability — read the capabilities the work touches, and the
    open spec changes already editing them.
 2. propose_spec_change — open a spec change editing those capabilities, with the why as
-   its description. update_spec_change edits it until it merges. When the author asked
+   its description. It also opens the spec change's acceptance-tests issue and returns
+   its number. update_spec_change edits it until it merges. When the author asked
    for the change in this conversation, pass author_request=true: its work then ranks
    above the routine backlog. A change an agent or an audit proposes leaves it false.
 3. create_github_issues — each issue names its capability, the spec change it implements
    (spec_change: PR number) and optionally the requirement within the capability. There
    is no linking step: an issue states what it implements when it is created. Give every
    issue a size in Fibonacci points (1, 2, 3, 5, 8 or 13); anything larger is 21 and gets
-   split into smaller issues before it is planned. size_issue resizes one later.
+   split into smaller issues before it is planned. size_issue resizes one later. Each
+   issue implementing a spec change is created blocked by its acceptance-tests issue.
+
+Delivery rules. Acceptance tests come first: the acceptance-tests issue writes them from
+the spec, against the public interface only, each marked expected to fail, on the spec
+change's own branch, so the spec and its tests merge together. Implementation makes them
+pass, and may only remove expected-failure markers from acceptance tests — never write,
+weaken or delete one. Audits file findings and ask the author; they never fix.
 
 Work that brings the code in line with the spec as it already stands is a spec gap: create
 its issue with its capability and spec_gap: true instead of a spec change.
@@ -1157,7 +1165,7 @@ def _spec_references(issues: list[dict[str, Any]]) -> list[SpecReference]:
     return [
         SpecReference(
             spec_change=issue.get("spec_change"),
-            capability=issue["capability"].strip(),
+            capabilities=(issue["capability"].strip(),),
             requirement=(issue.get("requirement") or "").strip() or None,
         )
         for issue in issues
@@ -1176,10 +1184,12 @@ async def create_github_issues(
     In a repository that uses specs, each issue must also carry ``capability`` and
     exactly one of ``spec_change`` (pull request number) or ``spec_gap: true``, and
     may carry ``requirement``; the reference is appended to its body and spec gaps
-    are labelled ``spec-gap``. Elsewhere these fields are ignored.
+    are labelled ``spec-gap``. An issue implementing a spec change, unless itself
+    labelled ``acceptance-tests``, is blocked by that spec change's acceptance-tests
+    issues. Elsewhere these fields are ignored.
     """
     # specs imports this module, so it cannot be imported at the top.
-    from .specs import uses_specs
+    from .specs import ACCEPTANCE_TESTS_LABEL, uses_specs
 
     if any(key in issue for issue in issues for key in ("before", "after")):
         raise ValueError(
@@ -1233,9 +1243,21 @@ async def create_github_issues(
                     project_id,
                 )
 
-    # Phase 2: Wire blocked_by dependencies
-    for issue_input, result in zip(issues, results, strict=True):
-        blocked_by: list[int] = issue_input.get("blocked_by") or []
+    implements = [
+        None
+        if reference is None or ACCEPTANCE_TESTS_LABEL in (issue.get("labels") or [])
+        else reference.spec_change
+        for issue, reference in zip(issues, references, strict=True)
+    ]
+    tests_issues = await _acceptance_tests_issues(
+        repo, {change for change in implements if change is not None}
+    )
+
+    # Phase 2: Wire blocked_by dependencies, implementation waiting for its tests
+    for issue_input, result, spec_change in zip(issues, results, implements, strict=True):
+        blocked_by: list[int] = list(issue_input.get("blocked_by") or [])
+        if spec_change is not None:
+            blocked_by += [n for n in tests_issues.get(spec_change, []) if n not in blocked_by]
         for blocker_number in blocked_by:
             if blocker_number in number_to_id:
                 blocker_id = number_to_id[blocker_number]
@@ -1253,6 +1275,22 @@ async def create_github_issues(
         _apply_backlog_overrides(repo, issues, results)
 
     return results
+
+
+async def _acceptance_tests_issues(repo: str, spec_changes: set[int]) -> dict[int, list[int]]:
+    """Map each of *spec_changes* to the numbers of its acceptance-tests issues."""
+    from .specs import ACCEPTANCE_TESTS_LABEL
+
+    found: dict[int, list[int]] = {}
+    if not spec_changes:
+        return found
+    for item in await github.list_all_issues(repo):
+        if item["is_pull_request"] or ACCEPTANCE_TESTS_LABEL not in item["labels"]:
+            continue
+        reference = parse_reference(item["body"])
+        if reference is not None and reference.spec_change in spec_changes:
+            found.setdefault(reference.spec_change, []).append(item["number"])
+    return found
 
 
 # ---------------------------------------------------------------------------

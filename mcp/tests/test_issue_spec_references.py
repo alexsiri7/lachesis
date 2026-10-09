@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 import pytest
@@ -40,6 +41,23 @@ def _mock_created(httpx_mock: HTTPXMock, number: int) -> None:
     )
 
 
+def _mock_listed(httpx_mock: HTTPXMock, *items: dict) -> None:
+    httpx_mock.add_response(
+        method="GET", url=re.compile(rf"^{re.escape(_ISSUES_URL)}\?"), json=list(items)
+    )
+
+
+def _listed_issue(number: int, labels: list[str], body: str) -> dict:
+    return {
+        "number": number,
+        "title": f"Issue {number}",
+        "html_url": f"https://github.com/{_REPO}/issues/{number}",
+        "body": body,
+        "state": "open",
+        "labels": [{"name": label} for label in labels],
+    }
+
+
 def _created_issues(httpx_mock: HTTPXMock) -> list[dict]:
     return [
         json.loads(request.content)
@@ -55,6 +73,7 @@ def _created_issues(httpx_mock: HTTPXMock) -> list[dict]:
 async def test_implementing_a_spec_change(httpx_mock: HTTPXMock) -> None:
     _mock_spec_repo(httpx_mock)
     _mock_created(httpx_mock, 160)
+    _mock_listed(httpx_mock)
 
     await create_github_issues(
         _REPO,
@@ -168,6 +187,7 @@ async def test_referenced_issues_still_wire_dependencies(httpx_mock: HTTPXMock) 
     _mock_spec_repo(httpx_mock)
     _mock_created(httpx_mock, 1)
     _mock_created(httpx_mock, 2)
+    _mock_listed(httpx_mock)
     dependency_url = f"{_ISSUES_URL}/2/dependencies/blocked_by"
     httpx_mock.add_response(method="POST", url=dependency_url, json={})
 
@@ -189,6 +209,41 @@ async def test_referenced_issues_still_wire_dependencies(httpx_mock: HTTPXMock) 
     assert json.loads(httpx_mock.get_request(url=dependency_url).content) == {"issue_id": 1001}
     for issue in _created_issues(httpx_mock):
         assert issue["body"].endswith("\n\n---\nSpec change: #152\nCapability: backlog")
+
+
+async def test_implementation_waits_for_its_spec_changes_tests(httpx_mock: HTTPXMock) -> None:
+    _mock_spec_repo(httpx_mock)
+    _mock_created(httpx_mock, 160)
+    _mock_created(httpx_mock, 161)
+    tests_body = "Write them.\n\n---\nSpec change: #152\nCapability: backlog, issues"
+    _mock_listed(
+        httpx_mock,
+        _listed_issue(153, ["acceptance-tests"], tests_body),
+        _listed_issue(154, ["acceptance-tests"], tests_body.replace("#152", "#99")),
+        _listed_issue(155, [], tests_body),
+    )
+    httpx_mock.add_response(
+        url=f"{_ISSUES_URL}/153", json={**_listed_issue(153, ["acceptance-tests"], ""), "id": 1153}
+    )
+    dependency_url = f"{_ISSUES_URL}/160/dependencies/blocked_by"
+    httpx_mock.add_response(method="POST", url=dependency_url, json={})
+
+    result = await create_github_issues(
+        _REPO,
+        [
+            {"title": "Build", "body": "b", "spec_change": 152, "capability": "backlog"},
+            {
+                "title": "More tests",
+                "body": "t",
+                "spec_change": 152,
+                "capability": "backlog",
+                "labels": ["acceptance-tests"],
+            },
+        ],
+    )
+
+    assert [issue["blocked_by"] for issue in result] == [[153], []]
+    assert json.loads(httpx_mock.get_request(url=dependency_url).content) == {"issue_id": 1153}
 
 
 async def test_repository_without_specs_ignores_reference_fields(httpx_mock: HTTPXMock) -> None:
@@ -254,8 +309,8 @@ async def test_failed_label_creation_creates_no_issues(httpx_mock: HTTPXMock) ->
 # Reading the block back
 # ---------------------------------------------------------------------------
 
-_CHANGE = SpecReference(152, "backlog", "The system says what to work on next")
-_GAP = SpecReference(None, "issues")
+_CHANGE = SpecReference(152, ("backlog",), "The system says what to work on next")
+_GAP = SpecReference(None, ("issues",))
 
 
 @pytest.mark.parametrize("ref", [_CHANGE, _GAP])
@@ -263,9 +318,19 @@ def test_parse_reads_back_what_was_written(ref: SpecReference) -> None:
     assert parse_reference(append_reference("Some work.", ref)) == ref
 
 
+def test_a_reference_naming_several_capabilities_names_no_single_one() -> None:
+    ref = SpecReference(152, ("backlog", "issues"))
+    body = append_reference("Tests.", ref)
+
+    assert body.endswith("Capability: backlog\nCapability: issues")
+    assert parse_reference(body) == ref
+    assert ref.capability is None
+    assert _CHANGE.capability == "backlog"
+
+
 def test_parse_tolerates_crlf_and_trailing_whitespace() -> None:
     body = "Work.\r\n\r\n---  \r\nSpec change: #152 \r\nCapability: backlog\t\r\n\r\n"
-    assert parse_reference(body) == SpecReference(152, "backlog")
+    assert parse_reference(body) == SpecReference(152, ("backlog",))
 
 
 def test_parse_reads_only_after_the_last_rule() -> None:
@@ -284,6 +349,7 @@ def test_parse_reads_only_after_the_last_rule() -> None:
         "---\nSpec gap: no\nCapability: backlog",
         "---\nSpec change: 152\nCapability: backlog",
         "---\nSpec change: #152\nCapability: backlog\nOther: x",
+        "---\nSpec change: #152\nCapability: backlog\nCapability:",
     ],
 )
 def test_parse_returns_none_without_a_complete_block(body: str) -> None:
