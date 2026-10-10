@@ -25,11 +25,13 @@ class FakeGitHub:
     """Answers each request with the latest responses registered for its method and path.
 
     The query string plays no part in matching. Anything unregistered gets GitHub's 404.
+    A GraphQL request answered by :meth:`on_graphql` is not matched by its path.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._responses: dict[tuple[str, str], deque[tuple[int, Any]]] = {}
+        self._graphql: list[tuple[str, str, Any]] = []
         self.requests: list[RecordedRequest] = []
 
     def on(self, method: str, path: str, *, json: Any = None, status: int = 200) -> None:
@@ -42,6 +44,15 @@ class FakeGitHub:
         with self._lock:
             self._responses[(method.upper(), path)] = deque((status, body) for body in json)
 
+    def on_graphql(self, repo: str, containing: str, *, json: Any) -> None:
+        """Answer GraphQL queries about *repo* whose text contains *containing* with *json*.
+
+        Repositories read concurrently share the one /graphql path, so their queries are
+        told apart by the repository they name. The latest registration that matches wins.
+        """
+        with self._lock:
+            self._graphql.append((repo, containing, json))
+
     def requests_to(self, method: str, path: str) -> list[RecordedRequest]:
         with self._lock:
             return [r for r in self.requests if r.method == method.upper() and r.path == path]
@@ -49,6 +60,7 @@ class FakeGitHub:
     def reset(self) -> None:
         with self._lock:
             self._responses.clear()
+            self._graphql.clear()
             self.requests.clear()
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -58,6 +70,20 @@ class FakeGitHub:
             self.requests.append(
                 RecordedRequest(request.method, path, dict(request.url.params), body)
             )
+            graphql = self._graphql_answer(request.method, path, body)
+            if graphql is not None:
+                return httpx.Response(200, json=graphql)
             queued = self._responses.get((request.method, path), deque([(404, NOT_FOUND)]))
             status, payload = queued.popleft() if len(queued) > 1 else queued[0]
         return httpx.Response(status, json=payload)
+
+    def _graphql_answer(self, method: str, path: str, body: Any) -> Any:
+        if method != "POST" or path != "/graphql" or not isinstance(body, dict):
+            return None
+        variables = body.get("variables") or {}
+        repo = f"{variables.get('owner')}/{variables.get('name')}"
+        query = body.get("query") or ""
+        for registered, containing, payload in reversed(self._graphql):
+            if registered == repo and containing in query:
+                return payload
+        return None
