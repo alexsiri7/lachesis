@@ -21,6 +21,7 @@ from tools.sprints import (
     plan_sprint,
     plan_with_improvement,
     read_sprint,
+    repeated_failures,
     report_sprint,
     sprint_budget,
     sprint_findings,
@@ -528,9 +529,11 @@ def _listed(
     state_reason: str | None = None,
     *,
     is_pull_request: bool = False,
+    body: str = "",
 ) -> dict[str, Any]:
     return {
         "number": number,
+        "body": body,
         "title": f"Issue {number}",
         "url": f"https://github.com/owner/repo/issues/{number}",
         "state": state,
@@ -654,6 +657,71 @@ async def test_report_sprint_lists_every_open_experiment(set_user_id: str) -> No
         10.0,
     )
     assert (experiment["state"], experiment["results"]) == ("open", [])
+
+
+_WIDGETS = "Build it.\n\n---\nSpec change: #1\nCapability: widgets"
+
+
+def test_a_failure_on_three_issues_of_one_capability_is_repeated() -> None:
+    runs = [
+        *(_run(n, retries=1) for n in (1, 2, 3)),
+        _run(1, rework=1),
+        _run(2, rework=2),
+        _run(4, retries=1),
+        _run(1, retries=1, repo="owner/b"),
+    ]
+    capabilities = {
+        **{("owner/repo", n): "widgets" for n in (1, 2, 3)},
+        ("owner/repo", 4): None,
+        ("owner/b", 1): "widgets",
+    }
+
+    assert repeated_failures(runs, capabilities) == [
+        {"repo": "owner/repo", "outcome": "retry", "capability": "widgets", "issues": [1, 2, 3]}
+    ]
+
+
+@contextlib.contextmanager
+def _three_retries_in_widgets():
+    listing = [_listed(n, body=_WIDGETS) for n in (10, 11, 12)]
+    with (
+        _ended_sprint(),
+        patch("db.list_runs", return_value=[_run(n, retries=1) for n in (10, 11, 12)]),
+        patch("github.list_all_issues", AsyncMock(return_value=listing)),
+        patch("db.create_experiment") as create,
+    ):
+        yield create
+
+
+async def test_report_sprint_stops_the_line_with_an_experiment(set_user_id: str) -> None:
+    with _three_retries_in_widgets() as create:
+        result = await report_sprint()
+
+    assert result["stop_the_line"] == [
+        {"repo": "owner/repo", "outcome": "retry", "capability": "widgets", "issues": [10, 11, 12]}
+    ]
+    create.assert_called_once()
+    user_id, repo, title, _, _, baseline, target, issues = create.call_args.args
+    assert (user_id, repo, title) == ("test-uid", "owner/repo", "Stop the line: retry in widgets")
+    assert (baseline, target, issues) == (3, 0, [10, 11, 12])
+
+
+async def test_report_sprint_keeps_the_line_stopped_by_an_open_experiment(
+    set_user_id: str,
+) -> None:
+    open_fix = {
+        **_experiment_row([10, 11, 12]),
+        "repo_name": "owner/repo",
+        "title": "Stop the line: retry in widgets",
+    }
+    with (
+        _three_retries_in_widgets() as create,
+        patch("db.list_open_experiments", return_value=[open_fix]),
+    ):
+        result = await report_sprint()
+
+    create.assert_not_called()
+    assert [e["issues"] for e in result["experiments"]] == [[10, 11, 12]]
 
 
 async def test_report_sprint_returns_a_stored_report_without_sending(set_user_id: str) -> None:

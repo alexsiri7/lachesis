@@ -189,10 +189,15 @@ search_answered_questions, and if an answer already settles the finding, follow 
 - any other finding, which the factory can fix itself: create_github_issues for that work in
   the finding's repository, following the workflow that applies there.
 Then improve how the factory works, which never waits on the author:
-- judge each experiment the report lists against its measure now, with judge_experiment and
-  a reason: kept when it met its target, then make its change standard by changing the
-  guidance or proposing a spec change; otherwise reverted, undoing its change, or extended
-  for one more sprint, at most once;
+- each entry in stop_the_line is a failure repeated on three issues of one capability this
+  sprint. The report opened an experiment on those issues to remove its cause, and it is one
+  of your improvements whatever else you choose: find the cause and create_github_issues for
+  the work removing it. Three factory escalations stuck the same way this sprint stop the
+  line too: record_experiment to remove that cause;
+- judge each other experiment the report lists against its measure now, with
+  judge_experiment and a reason: kept when it met its target, then make its change standard
+  by changing the guidance or proposing a spec change; otherwise reverted, undoing its
+  change, or extended for one more sprint, at most once;
 - choose one or two improvements from the sprint's misses, audit findings and north-star
   gaps — to the factory's guidance, sizing, routing, scripts or checks, never to what a
   project should be — create_github_issues for each one's work, and record_experiment with
