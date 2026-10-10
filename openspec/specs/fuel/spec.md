@@ -62,12 +62,19 @@ The system SHALL keep the latest overflow report, the money spent through Reques
 
 ### Requirement: A reserve is kept for emergencies
 
-The system SHALL hold back 20 percent of each account's factory share as a reserve, usable only for security work and production incidents. Work of any other kind SHALL NOT draw on the reserve. Nothing, emergencies included, SHALL use an account beyond its factory share.
+The system SHALL hold back 10 percent of each account's factory share as a reserve, usable only for security work and production incidents, until 24 hours before that account's weekly allowance resets. From then until the reset, whatever is left of the reserve SHALL be usable for any work, so the factory can use its whole share and no allowance is lost at the reset. Outside that last day, work of any other kind SHALL NOT draw on the reserve. Nothing, emergencies included, SHALL use an account beyond its factory share.
 
 #### Scenario: Only emergencies use the reserve
 - GIVEN only the reserve remains on every account
+- AND every account's reset is more than 24 hours away
 - WHEN the next issue is requested
 - THEN only security or incident work is offered
+
+#### Scenario: Unused reserve released before the reset
+- GIVEN only the reserve remains on the factory account
+- AND its weekly allowance resets in 20 hours
+- WHEN the next issue is requested
+- THEN work of any kind may be offered on the factory account
 
 #### Scenario: The share is never exceeded
 - GIVEN the account main has a 65 percent share and has reported 65 percent used
