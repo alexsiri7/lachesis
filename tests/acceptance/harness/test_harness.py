@@ -61,6 +61,20 @@ def test_github_answers_anything_unregistered_with_not_found() -> None:
     assert response.json() == NOT_FOUND
 
 
+def test_github_answers_in_turn_then_repeats_the_last() -> None:
+    github = FakeGitHub()
+    github.on_each("POST", "/repos/owner/repo/issues", json=[{"number": 1}, {"number": 2}])
+
+    numbers = [
+        github.handle(
+            httpx.Request("POST", "https://api.github.com/repos/owner/repo/issues")
+        ).json()["number"]
+        for _ in range(3)
+    ]
+
+    assert numbers == [1, 2, 2]
+
+
 async def test_oauth_clients_are_kept_in_the_database(lachesis: Lachesis) -> None:
     async with httpx.AsyncClient(base_url=lachesis.base_url) as http:
         registered = await http.post(
