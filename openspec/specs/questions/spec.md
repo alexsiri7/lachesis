@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Questions are decisions only the author can make. They block work, they outlive the issue that raised them, and their answers become part of how projects are run: a standing rule, a spec change, a new project, or simply an answer. Questions are kept as records of their own, not only as issue comments, so the author has one queue to answer, agents never ask the same thing twice, and the answers form a decision log.
+Questions are what only the author can settle: decisions about what a project should be, and tasks only the author can do or provide, such as a secret, an account, a DNS record or access to a service. They block work, they outlive the issue that raised them, and their answers become part of how projects are run: a standing rule, a spec change, a new project, or simply an answer. Questions are kept as records of their own, not only as issue comments, so the author has one queue to answer, agents never ask the same thing twice, and the answers form a decision log. Work is split so that the author's part is as small as it can be and everything else stays with the agents.
 
 ## Requirements
 
 ### Requirement: A question is a record
 
-The system SHALL store each question as a record of its own holding: the question, the context needed to answer it, optional suggested options, its kind, who asked it, what it is about (a repository, and optionally a capability, spec change, milestone or issue) and the issues it blocks. Kinds SHALL be spec contradiction, large work, maturity, improvement, budget and clarification. Questions SHALL survive server restarts and SHALL NOT be lost when an issue they mention closes.
+The system SHALL store each question as a record of its own holding: the question, the context needed to answer it, optional suggested options, its kind, who asked it, what it is about (a repository, and optionally a capability, spec change, milestone or issue) and the issues it blocks. Kinds SHALL be spec contradiction, large work, maturity, improvement, budget, clarification and author task. Questions SHALL survive server restarts and SHALL NOT be lost when an issue they mention closes.
 
 #### Scenario: Asking with options
 - GIVEN the worker cannot tell whether a change contradicts the backlog capability
@@ -20,9 +20,43 @@ The system SHALL store each question as a record of its own holding: the questio
 - WHEN issue 160 is closed
 - THEN the question is still open and readable
 
+### Requirement: Author tasks ask for something only the author can do
+
+A question of kind author task SHALL ask the author to do or provide one concrete thing that no agent can: a secret or API key, an account or sign-up, a DNS record, a payment, or access to a service. It SHALL state exactly what to do, where, and how the agent will know it is done (for example, which variable must be set on which service). It SHALL NOT carry a default. The author answers it by saying it is done, or by handing over what was asked for when that is safe to record; the answer releases the issues it blocks as any answer does.
+
+#### Scenario: Asking for a key
+- GIVEN the worker needs an API key set on a Railway service before issue 160 can be finished
+- WHEN it asks an author task naming the variable, the service and the provider to get the key from, blocking issue 160
+- THEN the question is stored with kind author task and those details
+- AND issue 160 is labelled needs-author
+
+#### Scenario: No default for an author task
+- GIVEN an author task asked a week ago
+- WHEN a default is offered for it
+- THEN the default is refused and the task keeps waiting for the author
+
+### Requirement: Work that needs the author is split
+
+When an issue is triaged or sized, the agent SHALL separate the steps only the author can take from the rest. Each such step SHALL become an author task blocking only the issues that cannot finish without it, and every step an agent can do SHALL stay in agent issues that remain ready. An issue SHALL NOT be left holding author-only steps without a matching author task.
+
+#### Scenario: Provisioning split
+- GIVEN an issue to deploy a service that needs a hosting project created, an API key from the author and a DNS record in the author's DNS provider
+- WHEN the issue is triaged
+- THEN the agent work (configuration as code, documentation, health checks) stays in ready issues
+- AND the API key and the DNS record are each an author task blocking only the issue that verifies the live service
+
+### Requirement: A run never parks silently on an author-only step
+
+A run that cannot continue without something only the author can do or provide SHALL ask an author task naming exactly the missing step before it ends, unless an open question already covers it. It SHALL NOT end with the issue released and no question recorded.
+
+#### Scenario: Missing access found mid-run
+- GIVEN a run on issue 160 discovers it has no access to the DNS provider
+- WHEN the run ends
+- THEN an author task asking for the DNS record is open and blocks issue 160
+
 ### Requirement: Small questions settle by default while the author is away
 
-A question of kind clarification or improvement MAY carry a default answer and a wait, three days unless the asker gives another. When the wait passes with no answer, the system SHALL record the default as the answer with the outcome `defaulted`, release the issues it blocked as an answer would, and note on each that the default was taken. Questions of every other kind, which decide what a project should be, SHALL NOT carry a default and SHALL wait for the author. The author MAY later answer a defaulted question, which records the new answer and its outcome as usual.
+A question of kind clarification or improvement MAY carry a default answer and a wait, three days unless the asker gives another. When the wait passes with no answer, the system SHALL record the default as the answer with the outcome `defaulted`, release the issues it blocked as an answer would, and note on each that the default was taken. Questions of every other kind, which decide what a project should be or ask the author to act, SHALL NOT carry a default and SHALL wait for the author. The author MAY later answer a defaulted question, which records the new answer and its outcome as usual.
 
 #### Scenario: Away for a week
 - GIVEN a clarification question with a default, blocking issue 160, asked four days ago and unanswered
@@ -70,12 +104,17 @@ Every new question SHALL reach the author as a push notification through the cha
 
 ### Requirement: One queue of open questions
 
-The system SHALL list open questions across every registered repository, oldest first, each with its kind, what it is about, what it blocks and how long it has waited. The author's assistant and agents SHALL read the same list.
+The system SHALL list open questions across every registered repository, oldest first, each with its kind, what it is about, what it blocks and how long it has waited. Author tasks SHALL be listable on their own, so the author can see everything they have to do in one place. The author's assistant and agents SHALL read the same list.
 
 #### Scenario: Reading the queue
 - GIVEN open questions in two repositories
 - WHEN open questions are listed
 - THEN both appear oldest first, each with its kind, subject, blocked issues and waiting time
+
+#### Scenario: Only my tasks
+- GIVEN an open clarification question and an open author task
+- WHEN open questions are listed filtered to author tasks
+- THEN only the author task is returned
 
 ### Requirement: Answering records the outcome
 
