@@ -1157,7 +1157,19 @@ def test_judge_experiment_refuses_an_unknown_verdict() -> None:
     engine.assert_not_called()
 
 
-@pytest.mark.parametrize(("verdict", "state"), [("kept", "kept"), ("extended", "open")])
+def test_list_open_experiments_leaves_out_judged_experiments() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        assert db.list_open_experiments("uid") == []
+
+    sql = " ".join(str(mock.connect.return_value.execute.call_args[0][0]).split())
+    assert "WHERE user_id = :user_id AND state = 'open'" in sql
+    assert mock.connect.return_value.execute.call_args[0][1] == {"user_id": "uid"}
+
+
+@pytest.mark.parametrize(
+    ("verdict", "state"), [("kept", "kept"), ("reverted", "reverted"), ("extended", "open")]
+)
 def test_judge_experiment_appends_the_result_to_an_open_experiment(
     verdict: str, state: str
 ) -> None:
