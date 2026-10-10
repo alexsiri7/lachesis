@@ -30,8 +30,6 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -304,7 +302,6 @@ async def test_improvement_share_respected(lachesis: Lachesis) -> None:
     assert 60 in [entry["number"] for entry in sprint["plan"]]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #327")
 @scenario("sprints", "Same failure three times")
 async def test_same_failure_three_times(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()

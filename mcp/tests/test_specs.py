@@ -954,6 +954,8 @@ async def test_sprint_review_guidance(httpx_mock: HTTPXMock, specs: bool | None)
     assert "create_github_issues for that work" in review
     assert review.index("search_answered_questions") < review.index("ask_question")
     assert "judge_experiment" in review
+    assert "stop_the_line" in review
+    assert "whatever else you choose" in review
     assert "make its change standard" in review
     assert "choose one or two improvements" in review
     assert "record_experiment" in review
@@ -1036,6 +1038,7 @@ _GUIDANCE_FIELDS = {
     "first_report",
     "spec_change",
     "spec_gap",
+    "stop_the_line",
     "uses_specs",
     "wait_days",
     "waiting_on_author",

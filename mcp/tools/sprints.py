@@ -13,7 +13,7 @@ import github
 import notify
 from settings import settings
 
-from .estimates import Price, factory_history, price_per_point
+from .estimates import Price, _capability, factory_history, price_per_point
 from .experiments import experiment_view
 from .fuel import RESERVE_PERCENT, accounts_status, fuel_status
 from .repos import _require_user_id, normalize_repo
@@ -283,6 +283,7 @@ async def read_sprint() -> dict[str, Any]:
 
 
 ESTIMATE_MISS_FACTOR = 2
+REPEAT_THRESHOLD = 3
 
 
 def ended_sprint(row: dict[str, Any] | None, now: datetime) -> tuple[datetime, datetime] | None:
@@ -449,6 +450,52 @@ def sprint_findings(
     ]
 
 
+def repeated_failures(
+    runs: list[dict[str, Any]], capabilities: dict[tuple[str, int], str | None]
+) -> list[dict[str, Any]]:
+    """Return each failure repeated in the sprint: a retry or rework on the runs of at
+    least ``REPEAT_THRESHOLD`` issues of one capability, by repo, outcome and capability.
+
+    An issue missing from *capabilities*, or naming no single capability, repeats nothing.
+    """
+    struck: dict[tuple[str, str, str], set[int]] = {}
+    for run in runs:
+        key = (normalize_repo(run["repo_name"]), run["issue"])
+        capability = capabilities.get(key)
+        if capability is None:
+            continue
+        for outcome, count in (("retry", run["retries"]), ("rework", run["rework"])):
+            if count:
+                struck.setdefault((key[0], outcome, capability), set()).add(run["issue"])
+    return [
+        {"repo": repo, "outcome": outcome, "capability": capability, "issues": sorted(issues)}
+        for (repo, outcome, capability), issues in sorted(struck.items())
+        if len(issues) >= REPEAT_THRESHOLD
+    ]
+
+
+def _stop_the_line(user_id: str, repeat: dict[str, Any]) -> None:
+    """Open the experiment removing *repeat*'s cause, unless one is open already."""
+    title = f"Stop the line: {repeat['outcome']} in {repeat['capability']}"
+    if any(
+        normalize_repo(row["repo_name"]) == repeat["repo"] and row["title"] == title
+        for row in db.list_open_experiments(user_id)
+    ):
+        return
+    issues = ", ".join(f"#{number}" for number in repeat["issues"])
+    db.create_experiment(
+        user_id,
+        repeat["repo"],
+        title,
+        f"Find and remove the cause of the {repeat['outcome']} that struck {issues} "
+        f"in {repeat['capability']}.",
+        f"issues of {repeat['capability']} with a {repeat['outcome']} in a sprint",
+        len(repeat["issues"]),
+        0,
+        repeat["issues"],
+    )
+
+
 def _push_body(report: dict[str, Any]) -> str:
     delivered = report["delivered"]
     claude = report["spending"]["claude"]
@@ -488,7 +535,9 @@ async def report_sprint() -> dict[str, Any]:
 
     Storing the report claims the sprint before the finding notes and the push
     notification, so a report that fails after it drops them rather than repeating
-    them. Every later call returns the stored report.
+    them. Every later call returns the stored report. The experiments stopping the line
+    are opened before the claim so that the report lists them; a retried report finds
+    them open and opens none again.
     """
     user_id = _require_user_id()
     fuel = db.get_fuel(user_id)
@@ -509,6 +558,7 @@ async def report_sprint() -> dict[str, Any]:
     delivered: list[dict[str, Any]] = []
     carryover: list[dict[str, Any]] = []
     usage: dict[str, dict[int, dict[str, int]]] = {}
+    capabilities: dict[tuple[str, int], str | None] = {}
     unreadable: list[str] = []
     for repo in [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]:
         try:
@@ -521,6 +571,8 @@ async def report_sprint() -> dict[str, Any]:
         for issue in listing:
             if issue["is_pull_request"]:
                 continue
+            if (repo, issue["number"]) in worked_on:
+                capabilities[(repo, issue["number"])] = _capability(issue["body"])
             if issue["state"] == "open" and (repo, issue["number"]) in worked_on:
                 carryover.append(_issue_ref(repo, issue))
             elif (
@@ -535,6 +587,9 @@ async def report_sprint() -> dict[str, Any]:
     accuracy = estimate_accuracy(
         [(ref["repo"], ref["number"]) for ref in delivered], db.list_estimates(user_id), usage
     )
+    stop_the_line = repeated_failures(runs, capabilities)
+    for repeat in stop_the_line:
+        _stop_the_line(user_id, repeat)
     report = {
         "start": start.isoformat(),
         "end": end.isoformat(),
@@ -549,6 +604,7 @@ async def report_sprint() -> dict[str, Any]:
         "estimates": accuracy,
         "carryover": carryover,
         "findings": sprint_findings(start, end, accuracy["issues"], runs),
+        "stop_the_line": stop_the_line,
         "experiments": [experiment_view(row) for row in db.list_open_experiments(user_id)],
         "unreadable": unreadable,
     }
