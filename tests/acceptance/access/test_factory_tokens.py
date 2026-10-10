@@ -16,7 +16,7 @@ async def _create(lachesis: Lachesis, name: str) -> str:
 
 
 def _as(lachesis: Lachesis, token: str) -> Lachesis:
-    return Lachesis(lachesis.base_url, token, lachesis.github)
+    return Lachesis(lachesis.base_url, token, lachesis.github, lachesis.ntfy)
 
 
 @scenario("access", "A script reports with its token")

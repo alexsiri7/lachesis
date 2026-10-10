@@ -12,7 +12,7 @@ from harness import Lachesis, scenario
 
 @scenario("access", "Unauthenticated call")
 async def test_unauthenticated_call(lachesis: Lachesis) -> None:
-    client = Lachesis(lachesis.base_url, "not-a-token", lachesis.github)
+    client = Lachesis(lachesis.base_url, "not-a-token", lachesis.github, lachesis.ntfy)
 
     # The MCP client raises on a 401 before any tool result exists.
     with pytest.raises(ExceptionGroup) as raised:
