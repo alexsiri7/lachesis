@@ -75,6 +75,26 @@ def test_github_answers_in_turn_then_repeats_the_last() -> None:
     assert numbers == [1, 2, 2]
 
 
+def test_github_answers_graphql_by_repository_and_query() -> None:
+    github = FakeGitHub()
+    github.on("POST", "/graphql", json={"data": "by path"})
+    github.on_graphql("owner/a", "issue(", json={"data": "a issues"})
+    github.on_graphql("owner/b", "issue(", json={"data": "b issues"})
+
+    def answer(repo: str, query: str) -> object:
+        owner, _, name = repo.partition("/")
+        request = httpx.Request(
+            "POST",
+            "https://api.github.com/graphql",
+            json={"query": query, "variables": {"owner": owner, "name": name}},
+        )
+        return github.handle(request).json()["data"]
+
+    assert answer("owner/a", "{ issue(number: 1) { number } }") == "a issues"
+    assert answer("owner/b", "{ issue(number: 1) { number } }") == "b issues"
+    assert answer("owner/a", "{ pullRequest(number: 1) { number } }") == "by path"
+
+
 async def test_ntfy_is_the_stub(lachesis: Lachesis) -> None:
     await lachesis.call_tool("set_ntfy_config", {"topic": "lachesis-author"})
 
