@@ -1,7 +1,8 @@
 """The secrets rules, given in every workflow the guidance returns (spec change #354).
 
 "Any repository" is each of the three answers ``get_initial_instructions`` gives: for a
-repository that uses specs, for one that does not, and with no repository named.
+repository that uses specs, for one that does not, and with no repository named. The worker's
+workflow is the unattended agent's, which ``get_morning_briefing`` returns.
 """
 
 from __future__ import annotations
@@ -24,9 +25,15 @@ async def _every_workflow(lachesis: Lachesis) -> list[str]:
     )
     lachesis.github.on("GET", f"/repos/{PLAIN_REPO}/contents/openspec/specs", json=[])
 
+    calls = [
+        ("get_initial_instructions", {"repo": SPEC_REPO}),
+        ("get_initial_instructions", {"repo": PLAIN_REPO}),
+        ("get_initial_instructions", {}),
+        ("get_morning_briefing", {}),
+    ]
     guidance = []
-    for arguments in ({"repo": SPEC_REPO}, {"repo": PLAIN_REPO}, {}):
-        result = await lachesis.call_tool("get_initial_instructions", arguments)
+    for tool, arguments in calls:
+        result = await lachesis.call_tool(tool, arguments)
         assert not result.is_error, result.text
         text = result.json()
         assert isinstance(text, str)
