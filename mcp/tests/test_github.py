@@ -1164,8 +1164,20 @@ async def test_list_open_issues_sorted_ascending(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url="https://api.github.com/repos/owner/repo/issues?state=open&per_page=100",
         json=[
-            {"number": 7, "title": "Later", "body": None, "created_at": "2026-02-01T00:00:00Z"},
-            {"number": 3, "title": "Earlier", "body": "b", "created_at": "2026-01-01T00:00:00Z"},
+            {
+                "number": 7,
+                "title": "Later",
+                "body": None,
+                "state": "open",
+                "created_at": "2026-02-01T00:00:00Z",
+            },
+            {
+                "number": 3,
+                "title": "Earlier",
+                "body": "b",
+                "state": "open",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
         ],
     )
 
@@ -1194,8 +1206,27 @@ async def test_list_open_issues_excludes_pull_requests(httpx_mock: HTTPXMock) ->
     httpx_mock.add_response(
         url="https://api.github.com/repos/owner/repo/issues?state=open&per_page=100",
         json=[
-            {"number": 1, "title": "An issue", "created_at": "2026-01-01T00:00:00Z"},
-            {"number": 2, "title": "A PR", "pull_request": {"url": "..."}},
+            {
+                "number": 1,
+                "title": "An issue",
+                "state": "open",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+            {"number": 2, "title": "A PR", "state": "open", "pull_request": {"url": "..."}},
+        ],
+    )
+
+    result = await list_open_issues("owner/repo")
+
+    assert [issue["number"] for issue in result] == [1]
+
+
+async def test_list_open_issues_excludes_closed_issues(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/issues?state=open&per_page=100",
+        json=[
+            {"number": 1, "title": "Open", "state": "open", "created_at": "2026-01-01T00:00:00Z"},
+            {"number": 2, "title": "Done", "state": "closed", "created_at": "2026-01-01T00:00:00Z"},
         ],
     )
 

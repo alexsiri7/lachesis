@@ -302,7 +302,8 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
     Each is ``{"number": int, "title": str, "labels": [str], "body": str,
     "created_at": str}``, ``created_at`` being GitHub's ISO 8601 timestamp.
 
-    The /issues endpoint also returns pull requests; those are filtered out.
+    The /issues endpoint also returns pull requests; those are filtered out, as is
+    anything not open whatever the query asked for.
     """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
@@ -313,7 +314,9 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
     if not resp.is_success:
         logger.warning("github.list_open_issues failed repo=%s status=%s", repo, resp.status_code)
         resp.raise_for_status()
-    issues = [item for item in resp.json() if "pull_request" not in item]
+    issues = [
+        item for item in resp.json() if "pull_request" not in item and item["state"] == "open"
+    ]
     return sorted(
         (
             {

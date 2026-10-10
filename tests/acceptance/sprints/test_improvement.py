@@ -177,7 +177,6 @@ def _listed(review: dict[str, Any], experiment: dict[str, Any]) -> dict[str, Any
     return listed
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #327")
 @scenario("sprints", "Experiment chosen")
 async def test_experiment_chosen(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()
@@ -209,7 +208,6 @@ async def test_experiment_chosen(lachesis: Lachesis) -> None:
     assert [(entry["number"], entry.get("improvement", False)) for entry in rest] == [(60, False)]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #327")
 @scenario("sprints", "Experiment kept")
 async def test_experiment_kept(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()
@@ -235,7 +233,6 @@ async def test_experiment_kept(lachesis: Lachesis) -> None:
     assert judged["results"][-1]["value"] == 6
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #327")
 @scenario("sprints", "Experiment reverted")
 async def test_experiment_reverted(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()
@@ -277,7 +274,6 @@ async def test_experiment_reverted(lachesis: Lachesis) -> None:
     assert judged["state"] == "reverted"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #327")
 @scenario("sprints", "Improvement share respected")
 async def test_improvement_share_respected(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()
