@@ -158,6 +158,10 @@ async def test_last_issue_lands(lachesis: Lachesis) -> None:
     assert CAPABILITY in notification.body
     assert notification.click == f"https://github.com/{REPO}/blob/HEAD/{REQUIREMENT_PATH}"
 
+    await _list(lachesis)
+
+    assert len(_sent(lachesis)) == 1
+
 
 @scenario("landing-notifications", "Partial landing")
 async def test_partial_landing(lachesis: Lachesis) -> None:
