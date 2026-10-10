@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+
 from harness import Lachesis, scenario
 
 NOW = datetime.now(UTC)
@@ -50,6 +52,7 @@ async def test_reading_the_sprint(lachesis: Lachesis) -> None:
         assert key in sprint
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #357")
 @scenario("sprints", "Shared account adds to the budget")
 async def test_shared_account_adds_to_the_budget(lachesis: Lachesis) -> None:
     await _ok(
@@ -62,5 +65,5 @@ async def test_shared_account_adds_to_the_budget(lachesis: Lachesis) -> None:
     sprint = await _ok(lachesis, "read_sprint", {})
 
     weekly = sprint["allowance"]["weekly_tokens"]
-    # factory: 100% share less its 20 reserve = 80; main: 65% less 13 = 52.
-    assert sprint["budget_tokens"] == round(weekly * 0.80) + round(weekly * 0.52)
+    # factory: 100% share less its 10 reserve = 90; main: 65% less 6.5 = 58.5.
+    assert sprint["budget_tokens"] == round(weekly * 0.90) + round(weekly * 0.585)
