@@ -1,4 +1,4 @@
-"""What a test holds: an authenticated MCP client for the running app, plus the GitHub stub."""
+"""What a test holds: an authenticated MCP client for the running app, and its stubs."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import TextContent
 
 from harness.github import FakeGitHub
+from harness.ntfy import FakeNtfy
 
 
 @dataclass(frozen=True)
@@ -24,9 +25,10 @@ class ToolResult:
 
 
 class Lachesis:
-    def __init__(self, base_url: str, token: str, github: FakeGitHub) -> None:
+    def __init__(self, base_url: str, token: str, github: FakeGitHub, ntfy: FakeNtfy) -> None:
         self.base_url = base_url
         self.github = github
+        self.ntfy = ntfy
         self._token = token
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> ToolResult:

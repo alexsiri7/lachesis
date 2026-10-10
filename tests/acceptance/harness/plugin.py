@@ -25,8 +25,9 @@ def _app() -> Iterator[RunningApp]:
 @pytest.fixture
 def lachesis(_app: RunningApp) -> Lachesis:
     _app.github.reset()
+    _app.ntfy.reset()
     _app.database.reset()
-    return Lachesis(_app.base_url, _app.token, _app.github)
+    return Lachesis(_app.base_url, _app.token, _app.github, _app.ntfy)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
