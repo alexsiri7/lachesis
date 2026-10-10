@@ -15,6 +15,7 @@ class Notification:
     body: str
     click: str | None
     priority: str | None
+    tags: str | None
 
 
 class FakeNtfy:
@@ -45,6 +46,7 @@ class FakeNtfy:
                     body=request.content.decode("utf-8"),
                     click=request.headers.get("Click"),
                     priority=request.headers.get("Priority"),
+                    tags=request.headers.get("Tags"),
                 )
             )
         return httpx.Response(200, json={"event": "message"})

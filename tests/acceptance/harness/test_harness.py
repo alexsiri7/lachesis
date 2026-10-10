@@ -84,6 +84,7 @@ async def test_ntfy_is_the_stub(lachesis: Lachesis) -> None:
     [notification] = lachesis.ntfy.notifications
     assert notification.topic == "lachesis-author"
     assert notification.title == "Lachesis test notification"
+    assert notification.tags == "white_check_mark"
 
 
 def test_ntfy_refuses_every_connection_once_unreachable() -> None:
