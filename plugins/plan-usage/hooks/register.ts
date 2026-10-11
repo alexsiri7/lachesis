@@ -25,6 +25,11 @@ type GuardConfig = {
   // When true the weekly cap grows with the week: weeklyCapPercent times the
   // share of the 7-day window elapsed, so the cap is not spent on day one.
   pace: boolean
+  // Optional stepped weekly cap: [elapsedPercent, capPercent] pairs, e.g.
+  // [[0, 65], [90, 90], [95, 100]] holds the week to 65% until 90% of it has
+  // passed, then 90%, then 100% for the last 5%. Spare capacity most of the
+  // week, all of it used by the end. Overrides weeklyCapPercent and pace.
+  weeklySteps?: [number, number][]
   // What a cap does. 'wrap-up' (the default) refuses nothing: past the cap every
   // tool result carries a reminder to finish the work in hand and start nothing
   // new, so no change is left half-made. 'stop' refuses every tool call but the
@@ -96,6 +101,7 @@ async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
       weeklyCapPercent: Number(raw.weeklyCapPercent ?? 100),
       fiveHourCapPercent: Number(raw.fiveHourCapPercent ?? 100),
       pace: raw.pace === true,
+      weeklySteps: parseSteps(raw.weeklySteps),
       mode: raw.mode === 'stop' ? 'stop' : 'wrap-up',
     }
   } catch {
@@ -103,12 +109,35 @@ async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
   }
 }
 
-// The cap in force for a window now. With pace on, the weekly cap is
+// Valid [elapsed, cap] pairs sorted by elapsed, or undefined when absent or empty.
+function parseSteps(raw: unknown): [number, number][] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const steps = raw
+    .filter(s => Array.isArray(s) && s.length === 2)
+    .map(([e, c]) => [Number(e), Number(c)] as [number, number])
+    .filter(([e, c]) => Number.isFinite(e) && Number.isFinite(c))
+    .sort((a, b) => a[0] - b[0])
+  return steps.length ? steps : undefined
+}
+
+// The cap of the last step whose elapsed threshold has been reached.
+function stepCap(steps: [number, number][], elapsed: number): number {
+  let cap = steps[0]![1]
+  for (const [e, c] of steps) if (elapsed >= e) cap = c
+  return cap
+}
+
+// The cap in force for a window now. With weeklySteps, the weekly cap is the
+// step reached by the share of the week elapsed. With pace on, the weekly cap is
 // weeklyCapPercent times the share of the week elapsed, to one decimal; a
 // window with no reset time falls back to the full cap.
 function capFor(guard: GuardConfig, w: SessionRateLimit, now: number): number | undefined {
   if (w.kind === 'five_hour') return guard.fiveHourCapPercent
   if (w.kind !== 'seven_day') return undefined
+  if (guard.weeklySteps) {
+    const t = windowTiming(w, now)
+    return t ? stepCap(guard.weeklySteps, t.elapsedExact) : guard.weeklySteps[0]![1]
+  }
   const t = guard.pace ? windowTiming(w, now) : undefined
   if (!t) return guard.weeklyCapPercent
   return Math.round(guard.weeklyCapPercent * t.elapsedExact) / 100
@@ -116,6 +145,11 @@ function capFor(guard: GuardConfig, w: SessionRateLimit, now: number): number | 
 
 function describeCaps(guard: GuardConfig, windows: SessionRateLimit[], now: number): string {
   const week = windows.find(w => w.kind === 'seven_day')
+  if (guard.weeklySteps) {
+    const steps = guard.weeklySteps.map(([e, c]) => `${c}% from ${e}%`).join(', ')
+    const inForce = week ? ` ${capFor(guard, week, now)}% now` : ''
+    return `7-day cap${inForce} (stepped by week elapsed: ${steps}), 5-hour cap ${guard.fiveHourCapPercent}%`
+  }
   const weekCap = week && guard.pace ? capFor(guard, week, now) : undefined
   const weekly =
     weekCap !== undefined && weekCap !== guard.weeklyCapPercent
