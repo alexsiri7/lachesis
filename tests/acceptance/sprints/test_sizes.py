@@ -193,7 +193,6 @@ async def test_estimate_from_points(lachesis: Lachesis) -> None:
     assert estimate["confidence"] == "normal"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("sprints", "How far the budget goes")
 async def test_how_far_the_budget_goes(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()

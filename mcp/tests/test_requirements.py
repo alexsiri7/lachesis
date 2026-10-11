@@ -3261,6 +3261,7 @@ def _mock_open_issues(
                 "title": f"Issue {n}",
                 "labels": [{"name": name} for name in (labels or {}).get(n, [])],
                 "body": (bodies or {}).get(n, ""),
+                "state": "open",
                 "created_at": (created or {})
                 .get(n, _BACKLOG_EPOCH + timedelta(hours=n))
                 .isoformat()
@@ -3440,7 +3441,7 @@ async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
 
 
 def _implementing(spec_change: int) -> str:
-    return append_reference("Body.", SpecReference(spec_change, "backlog"))
+    return append_reference("Body.", SpecReference(spec_change, ("backlog",)))
 
 
 def _milestone(milestone_id: int, spec_changes: list[int], *, started_days_ago: int) -> dict:

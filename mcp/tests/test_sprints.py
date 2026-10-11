@@ -13,11 +13,15 @@ import db
 import main
 from auth import current_db_user_id
 from settings import settings
+from tools.estimates import price_per_point
 from tools.sprints import (
+    capacity_points,
     ended_sprint,
     estimate_accuracy,
     plan_sprint,
+    plan_with_improvement,
     read_sprint,
+    repeated_failures,
     report_sprint,
     sprint_budget,
     sprint_findings,
@@ -26,11 +30,13 @@ from tools.sprints import (
 
 
 @pytest.fixture(autouse=True)
-def _no_accounts_or_overflow():
-    """No registered accounts and no overflow report unless a test says otherwise."""
+def _no_accounts_overflow_or_experiments():
+    """No registered accounts, overflow report or open experiments unless a test says
+    otherwise."""
     with (
         patch("db.list_fuel", return_value=[]),
         patch("db.get_overflow", return_value=None),
+        patch("db.list_open_experiments", return_value=[]),
     ):
         yield
 
@@ -179,7 +185,12 @@ def _open_issue(number: int, created_at: datetime) -> dict[str, Any]:
 
 
 @contextlib.contextmanager
-def _two_repos(*, focus: list[dict] | None = None, unreadable: str | None = None):
+def _two_repos(
+    *,
+    focus: list[dict] | None = None,
+    unreadable: str | None = None,
+    sizes: dict[tuple[str, int], int] | None = None,
+):
     """Repos A and B, each with one recent issue estimated at 60 of 100 tokens left."""
     now = datetime.now(UTC)
     open_issues = {
@@ -192,6 +203,16 @@ def _two_repos(*, focus: list[dict] | None = None, unreadable: str | None = None
             raise RuntimeError("gone")
         return open_issues[repo]
 
+    async def list_all_issues(repo: str) -> list[dict[str, Any]]:
+        if repo == unreadable:
+            raise RuntimeError("gone")
+        return [{**item, "state": "closed", "is_pull_request": False} for item in closed[repo]]
+
+    # Closed issue 9 in owner/a: 3 points that cost 120 tokens.
+    closed = {"owner/a": [_open_issue(9, now - timedelta(days=9))], "owner/b": []}
+    usage = {"owner/a": {9: {"implementation": 120}}, "owner/b": {}}
+    models = {"owner/a": {9: {"claude": 120}}, "owner/b": {}}
+
     estimates = [
         {"repo_name": "owner/a", "issue": 1, "tokens": 60},
         {"repo_name": "owner/b", "issue": 2, "tokens": 60},
@@ -203,11 +224,16 @@ def _two_repos(*, focus: list[dict] | None = None, unreadable: str | None = None
             return_value=_fuel(used=0.0, spent=0.0, resets_at=now + timedelta(days=3)),
         ),
         patch("db.list_estimates", return_value=estimates),
-        patch("db.sizes_by_issue", return_value={}),
+        patch("db.sizes_by_issue", return_value={("owner/a", 9): 3, **(sizes or {})}),
+        patch(
+            "db.usage_by_issue",
+            side_effect=lambda _u, repo, by="kind": (models if by == "model" else usage)[repo],
+        ),
         patch("db.list_backlog", return_value=[]),
         patch("db.list_milestones", return_value=[]),
         patch("db.list_focus", return_value=focus or []),
         patch("github.list_open_issues", AsyncMock(side_effect=list_open_issues)),
+        patch("github.list_all_issues", AsyncMock(side_effect=list_all_issues)),
         patch.object(settings, "claude_weekly_allowance_tokens", 125),
         patch.object(settings, "claude_usd_per_million_tokens", 0.0),
     ):
@@ -224,6 +250,98 @@ async def test_read_sprint_plans_the_backlog_in_order(set_user_id: str) -> None:
     assert result["planned_tokens"] == 60
     assert result["not_planned"] == 1
     assert result["unreadable"] == []
+
+
+async def test_read_sprint_states_its_capacity_in_points_at_the_price_of_a_point(
+    set_user_id: str,
+) -> None:
+    """Scenario: How far the budget goes — a budget of 100 at 40 per point is 2 points."""
+    with _two_repos():
+        result = await read_sprint()
+
+    assert result["budget_tokens"] == 100
+    assert result["tokens_per_point"] == 40
+    assert result["price_confidence"] == "low"
+    assert result["capacity_points"] == 2
+
+
+async def test_read_sprint_counts_the_points_planned_but_not_an_issue_to_split(
+    set_user_id: str,
+) -> None:
+    with _two_repos(sizes={("owner/a", 1): 5, ("owner/b", 2): 21}):
+        result = await read_sprint()
+
+    assert [(item["number"], item.get("split", False)) for item in result["plan"]] == [
+        (1, False),
+        (2, True),
+    ]
+    assert result["planned_points"] == 5
+
+
+def test_improvement_work_is_planned_first_within_its_share() -> None:
+    """Scenario: Improvement share respected — a budget of 100 gives improvement work 10."""
+    plan, not_planned = plan_with_improvement(
+        [_entry(1), _entry(2), _entry(3), _entry(4)],
+        {("owner/repo", 2), ("owner/repo", 3)},
+        _estimates({1: 50, 2: 6, 3: 6, 4: 40}),
+        left_tokens=100,
+        improvement_tokens=10,
+    )
+
+    assert [(item["number"], item.get("improvement", False)) for item in plan] == [
+        (2, True),
+        (1, False),
+        (4, False),
+    ]
+    assert not_planned == 1
+
+
+def test_improvement_work_never_takes_more_than_is_left() -> None:
+    plan, _ = plan_with_improvement(
+        [_entry(1), _entry(2)],
+        {("owner/repo", 1)},
+        _estimates({1: 8, 2: 1}),
+        left_tokens=5,
+        improvement_tokens=10,
+    )
+
+    assert [item["number"] for item in plan] == [2]
+
+
+def _experiment_row(issues: list[int]) -> dict[str, Any]:
+    return {
+        "id": 4,
+        "repo_name": "owner/b",
+        "title": "Self-review",
+        "change": "Review the diff first.",
+        "measure": "rework_rate",
+        "baseline": 40.0,
+        "target": 10.0,
+        "issues": issues,
+        "state": "open",
+        "results": [],
+        "created_at": _NOW,
+    }
+
+
+async def test_read_sprint_plans_open_experiments_first_in_their_share(
+    set_user_id: str,
+) -> None:
+    with (
+        _two_repos(),
+        patch("db.list_open_experiments", return_value=[_experiment_row([2])]),
+        patch.object(settings, "improvement_share_percent", 60),
+    ):
+        result = await read_sprint()
+
+    assert result["improvement_budget_tokens"] == 60
+    assert [(item["repo"], item["number"], item.get("improvement")) for item in result["plan"]] == [
+        ("owner/b", 2, True)
+    ]
+
+
+def test_with_no_price_there_is_no_capacity() -> None:
+    assert capacity_points(100, price_per_point([])) is None
 
 
 async def test_read_sprint_replans_when_focus_changes(set_user_id: str) -> None:
@@ -411,9 +529,11 @@ def _listed(
     state_reason: str | None = None,
     *,
     is_pull_request: bool = False,
+    body: str = "",
 ) -> dict[str, Any]:
     return {
         "number": number,
+        "body": body,
         "title": f"Issue {number}",
         "url": f"https://github.com/owner/repo/issues/{number}",
         "state": state,
@@ -504,6 +624,7 @@ async def test_report_sprint_reports_the_sprint_that_ended(set_user_id: str) -> 
         (2, 1.0),
     ]
     assert [f["issue"] for f in result["findings"]] == [1, 10]
+    assert result["experiments"] == []
     assert result["unreadable"] == []
 
     mocks["claim"].assert_called_once()
@@ -519,6 +640,88 @@ async def test_report_sprint_reports_the_sprint_that_ended(set_user_id: str) -> 
         "Carried over: 3 issues.",
         "Findings: 2.",
     ]
+
+
+async def test_report_sprint_lists_every_open_experiment(set_user_id: str) -> None:
+    with (
+        _ended_sprint(),
+        patch("db.list_open_experiments", return_value=[_experiment_row([50])]),
+    ):
+        result = await report_sprint()
+
+    [experiment] = result["experiments"]
+    assert (experiment["id"], experiment["repo"], experiment["issues"]) == (4, "owner/b", [50])
+    assert (experiment["measure"], experiment["baseline"], experiment["target"]) == (
+        "rework_rate",
+        40.0,
+        10.0,
+    )
+    assert (experiment["state"], experiment["results"]) == ("open", [])
+
+
+_WIDGETS = "Build it.\n\n---\nSpec change: #1\nCapability: widgets"
+
+
+def test_a_failure_on_three_issues_of_one_capability_is_repeated() -> None:
+    runs = [
+        *(_run(n, retries=1) for n in (1, 2, 3)),
+        _run(1, rework=1),
+        _run(2, rework=2),
+        _run(4, retries=1),
+        _run(1, retries=1, repo="owner/b"),
+    ]
+    capabilities = {
+        **{("owner/repo", n): "widgets" for n in (1, 2, 3)},
+        ("owner/repo", 4): None,
+        ("owner/b", 1): "widgets",
+    }
+
+    assert repeated_failures(runs, capabilities) == [
+        {"repo": "owner/repo", "outcome": "retry", "capability": "widgets", "issues": [1, 2, 3]}
+    ]
+
+
+@contextlib.contextmanager
+def _three_retries_in_widgets():
+    listing = [_listed(n, body=_WIDGETS) for n in (10, 11, 12)]
+    with (
+        _ended_sprint(),
+        patch("db.list_runs", return_value=[_run(n, retries=1) for n in (10, 11, 12)]),
+        patch("github.list_all_issues", AsyncMock(return_value=listing)),
+        patch("db.create_experiment") as create,
+    ):
+        yield create
+
+
+async def test_report_sprint_stops_the_line_with_an_experiment(set_user_id: str) -> None:
+    with _three_retries_in_widgets() as create:
+        result = await report_sprint()
+
+    assert result["stop_the_line"] == [
+        {"repo": "owner/repo", "outcome": "retry", "capability": "widgets", "issues": [10, 11, 12]}
+    ]
+    create.assert_called_once()
+    user_id, repo, title, _, _, baseline, target, issues = create.call_args.args
+    assert (user_id, repo, title) == ("test-uid", "owner/repo", "Stop the line: retry in widgets")
+    assert (baseline, target, issues) == (3, 0, [10, 11, 12])
+
+
+async def test_report_sprint_keeps_the_line_stopped_by_an_open_experiment(
+    set_user_id: str,
+) -> None:
+    open_fix = {
+        **_experiment_row([10, 11, 12]),
+        "repo_name": "owner/repo",
+        "title": "Stop the line: retry in widgets",
+    }
+    with (
+        _three_retries_in_widgets() as create,
+        patch("db.list_open_experiments", return_value=[open_fix]),
+    ):
+        result = await report_sprint()
+
+    create.assert_not_called()
+    assert [e["issues"] for e in result["experiments"]] == [[10, 11, 12]]
 
 
 async def test_report_sprint_returns_a_stored_report_without_sending(set_user_id: str) -> None:

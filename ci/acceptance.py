@@ -13,7 +13,7 @@ SPECS_DIR = REPO_ROOT / "openspec" / "specs"
 ACCEPTANCE_DIR = REPO_ROOT / "tests" / "acceptance"
 HARNESS_DIR = ACCEPTANCE_DIR / "harness"
 
-_SCENARIO_HEADING = re.compile(r"^#### Scenario:\s*(.+?)\s*$", re.MULTILINE)
+_SCENARIO_HEADING = re.compile(r"^#### Scenario:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 
 
 Definition = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
@@ -26,10 +26,15 @@ class Claim:
     test: str
 
 
+def scenario_titles(spec: str) -> list[str]:
+    """Every scenario title in *spec*, in order.  A heading without a title names no scenario."""
+    return [title for title in _SCENARIO_HEADING.findall(spec) if title]
+
+
 def spec_scenarios(specs_dir: Path = SPECS_DIR) -> dict[str, list[str]]:
     """Map each capability to its scenario titles, in spec order."""
     return {
-        spec.parent.name: _SCENARIO_HEADING.findall(spec.read_text())
+        spec.parent.name: scenario_titles(spec.read_text())
         for spec in sorted(specs_dir.glob("*/spec.md"))
     }
 

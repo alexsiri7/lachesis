@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any
 
+import pytest
+
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -75,6 +77,7 @@ def _issue(
     }
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #357")
 @scenario("progress-reporting", "Two accounts on the page")
 async def test_two_accounts_on_the_page(lachesis: Lachesis) -> None:
     await _ok(lachesis, "register_account", {"name": "factory", "share_percent": 100})
@@ -101,8 +104,8 @@ async def test_two_accounts_on_the_page(lachesis: Lachesis) -> None:
     accounts = {e["data-account"]: e for e in _with(fuel, "data-account")}
     assert float(accounts["factory"]["data-used"]) == 100
     assert float(accounts["main"]["data-used"]) == 19
-    assert float(accounts["main"]["data-reserve"]) == 13
-    assert float(accounts["main"]["data-usable"]) == 33
+    assert float(accounts["main"]["data-reserve"]) == 6.5
+    assert float(accounts["main"]["data-usable"]) == 39.5
     [overflow] = _with(fuel, "data-overflow-cap")
     assert float(overflow["data-overflow-spent"]) == 0
     assert float(overflow["data-overflow-cap"]) == 10

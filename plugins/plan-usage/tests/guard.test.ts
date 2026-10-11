@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { wrapUpNote } from '../hooks/register'
+import { shareOfCap, wrapUpNote } from '../hooks/register'
 
 const GUARD_ON = JSON.stringify({ enabled: true, weeklyCapPercent: 65, fiveHourCapPercent: 60 })
 const GUARD_STOP = JSON.stringify({ enabled: true, weeklyCapPercent: 65, fiveHourCapPercent: 60, mode: 'stop' })
@@ -186,4 +186,39 @@ test('the wrap-up note says to finish, not to start', async () => {
   expect(note).toContain('5-hour window at 61%')
   expect(note).toContain('Finish the change in hand')
   expect(note).toContain('Do not start new work')
+})
+
+test('share of cap: 50% used against a 60% cap is 83% of the cap', () => {
+  expect(shareOfCap(50, 60)).toBe(83)
+  expect(shareOfCap(50, undefined)).toBeUndefined()
+  expect(shareOfCap(50, 0)).toBeUndefined()
+})
+
+test('the usage tool shows how much of each cap is used', async ($, on) => {
+  setup(on, GUARD_ON, 30, 52)
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('5-hour window: 30% used; 50% of the 60% cap')
+  expect(r.result).toContain('7-day window: 52% used; 80% of the 65% cap')
+})
+
+test('the status line shows each cap and how much of it is used', async ($, on) => {
+  const shown: (string | undefined)[] = []
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({ value: GUARD_ON }))
+  on('fs.write', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: Date.UTC(2026, 9, 6) }))
+  on('session.measure', (_$: any, e: any) => ({ changed: e.changed }))
+  on('ui.status', (_$: any, e: any) => {
+    shown.push(e.text ?? e.value)
+    return { value: undefined }
+  })
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 30 },
+      { kind: 'seven_day', percentUsed: 52 },
+    ],
+    changed: ['rateLimits'],
+  } as any)
+  expect(shown.at(-1)).toBe('budget guard on · 5h 30% · 50% of 60% cap | 7d 52% · 80% of 65% cap')
 })

@@ -10,11 +10,19 @@ _SPEC_CHANGE = re.compile(r"#(\d+)")
 
 
 class SpecReference(NamedTuple):
-    """A spec change (pull request number) or, when ``spec_change`` is None, a spec gap."""
+    """A spec change (pull request number) or, when ``spec_change`` is None, a spec gap.
+
+    Only a spec change's acceptance-tests issue names more than one capability.
+    """
 
     spec_change: int | None
-    capability: str
+    capabilities: tuple[str, ...]
     requirement: str | None = None
+
+    @property
+    def capability(self) -> str | None:
+        """The one capability named, or None when several are."""
+        return self.capabilities[0] if len(self.capabilities) == 1 else None
 
 
 def format_reference(ref: SpecReference) -> str:
@@ -24,7 +32,7 @@ def format_reference(ref: SpecReference) -> str:
         lines.append("Spec gap: yes")
     else:
         lines.append(f"Spec change: #{ref.spec_change}")
-    lines.append(f"Capability: {ref.capability}")
+    lines.extend(f"Capability: {name}" for name in ref.capabilities)
     if ref.requirement is not None:
         lines.append(f"Requirement: {ref.requirement}")
     return "\n".join(lines)
@@ -54,19 +62,28 @@ def parse_reference(body: str) -> SpecReference | None:
     start = len(lines) - lines[::-1].index(_SEPARATOR)
 
     fields: dict[str, str] = {}
+    capabilities: list[str] = []
     for line in lines[start:]:
         key, sep, value = line.partition(":")
         if not sep or key in fields:
             return None
-        fields[key] = value.strip()
+        if key == "Capability":
+            capabilities.append(value.strip())
+        else:
+            fields[key] = value.strip()
 
-    capability = fields.pop("Capability", "")
     requirement = fields.pop("Requirement", None)
     spec_change = fields.pop("Spec change", None)
     spec_gap = fields.pop("Spec gap", None)
-    if fields or not capability or (spec_change is None) == (spec_gap is None):
+    if (
+        fields
+        or not capabilities
+        or not all(capabilities)
+        or (spec_change is None) == (spec_gap is None)
+    ):
         return None
+    names = tuple(capabilities)
     if spec_gap is not None:
-        return SpecReference(None, capability, requirement) if spec_gap == "yes" else None
+        return SpecReference(None, names, requirement) if spec_gap == "yes" else None
     match = _SPEC_CHANGE.fullmatch(spec_change or "")
-    return SpecReference(int(match.group(1)), capability, requirement) if match else None
+    return SpecReference(int(match.group(1)), names, requirement) if match else None

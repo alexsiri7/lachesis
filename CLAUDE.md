@@ -47,7 +47,8 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
     scorecard.py     report_run_outcome records rework, a retry or an audit finding against the latest run of a kind on an issue; read_scorecard derives per model and kind runs, merged without rework, retries, audit findings, tokens, cost, trust (5 consecutive clean runs; lost at 2 failures in the last 5) and may_trial (triage and summarising first, then kinds above a trusted one) on every read, never stored
     routing.py       route_run: the model for a run, and for Claude the account that pays for it (most usable allowance, not paused, within pace unless an emergency; the primary on a tie) — the cheapest trusted for its kind that costs less than Claude while overflow is under the Requesty cap, else Claude on the allowance, else the cheapest trusted overflow model once the allowance outside the reserve is spent or a shorter limit is in force; Claude trusted for every kind by default; derived on every read, never stored
     milestones.py    Milestones grouping spec changes: create, start, drop, add and remove spec changes, get and list, and review_milestone returning a started milestone's gaps; state (planned, active, verifying, done, dropped) is derived on every read from the spec changes' issues and the production deployment, never stored
-    sprints.py       read_sprint: the sprint from one reset of the primary account's weekly allowance to the next, its budget in tokens (every account's share less its reserve, plus the overflow cap), spending, and the plan — the computed backlog as far as estimates fit what is left; derived on every read, never stored; next_issue holds work other than security outside the budget or pace; report_sprint reports the sprint that last ended once, storing the report, noting each miss as a finding on its issue and sending one push notification
+    sprints.py       read_sprint: the sprint from one reset of the primary account's weekly allowance to the next, its budget in tokens (every account's share less its reserve, plus the overflow cap), spending, and the plan — the computed backlog as far as estimates fit what is left; derived on every read, never stored; next_issue holds work other than security outside the budget or pace; report_sprint reports the sprint that last ended once, storing the report, noting each miss as a finding on its issue and sending one push notification, and lists every open experiment; the open experiments' issues are planned first, within the improvement share of the budget (IMPROVEMENT_SHARE_PERCENT, 10 by default)
+    experiments.py   record_experiment: an improvement to how the factory works, with the measure it should move, its baseline and target, and the issues holding its work; judge_experiment at a sprint review: kept, reverted or extended one more sprint, at most once
     focus.py         set_focus and clear_focus: the author's focus on repositories or milestones, which puts their issues in the focus tier of the computed backlog order
     notes.py         add_note and list_notes: append-only work notes on exactly one issue or milestone; next_issue returns the offered issue's notes
     questions.py     ask_question: record a question for the author and mark the issues it blocks needs-author, pushing it to the author; ask_author asks one about a single issue through it; answer_question records an answer and its outcome, posts it on the blocked issues and releases those no other open question blocks; answer_author answers a single issue through it; list_open_questions is the one queue of open questions across registered repos, oldest first; search_answered_questions finds answered questions by repo and text, with answer and outcome; a clarification or improvement question may carry a default, which settle_expired_defaults takes (outcome defaulted) once its wait passes, on every read of the open questions (list_open_questions, next_issue, the dashboards); list_defaulted_questions lists those settled by default in the last hours, for the morning briefing
@@ -61,7 +62,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   pyproject.toml
   requirements.txt
 tests/acceptance/   One acceptance test per spec scenario (see "Acceptance tests" below)
-  harness/         The only route into the app: MCP over HTTP, GitHub stubbed, a disposable Postgres
+  harness/         The only route into the app: MCP over HTTP, GitHub and ntfy stubbed, a disposable Postgres
   coverage.yml     `enforce:` turns scenario-coverage gaps from a report into a failure
 plugins/plan-usage/ Claude Code plugin for budgeted accounts: usage tool, status line, budget guard, plan-usage.json for fuel reporting (this repo is its marketplace: .claude-plugin/marketplace.json)
 ci/                Delivery checks run by .github/workflows/delivery.yml and ci.yml, with their unit tests
@@ -110,8 +111,9 @@ Every `#### Scenario:` in `openspec/specs/` gets exactly one test under
 `harness`. A test the code does not yet satisfy carries
 `@pytest.mark.xfail(strict=True, reason="spec change #N")`; once it passes, the marker must go.
 Tests use only `harness` (the `lachesis` fixture calls MCP tools; `lachesis.github` stubs
-GitHub) and never import from `mcp/`. Implementation pull requests may only remove xfail
-markers from these tests; spec changes and `acceptance-tests` issues may change them.
+GitHub; `lachesis.ntfy` records push notifications) and never import from `mcp/`.
+Implementation pull requests may only remove xfail markers from these tests; spec changes and
+`acceptance-tests` issues may change them.
 
 The harness migrates the Postgres database named by `ACCEPTANCE_DATABASE_URL`, connecting as
 a superuser, and empties every table but the user's before each test: use a throwaway database.

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from scenario_results import check_run, scenario_results
 
 
@@ -13,6 +15,11 @@ def test_every_spec_scenario_gets_a_result() -> None:
         "backlog": {"A": "passed", "B": "failed", "C": "xfail", "D": "untested"},
         "access": {"E": "untested"},
     }
+
+
+def test_an_unknown_outcome_is_refused() -> None:
+    with pytest.raises(ValueError, match="skipped"):
+        scenario_results({"backlog": ["A"]}, {"backlog": {"A": "skipped"}})
 
 
 def test_the_check_run_text_is_the_results_json() -> None:

@@ -1,4 +1,4 @@
-"""Tests for mcp/tools/estimates.py — token estimates from the history of past issues."""
+"""Tests for mcp/tools/estimates.py — the price of a point from past issues, and estimates."""
 
 from __future__ import annotations
 
@@ -10,7 +10,14 @@ import pytest
 from auth import current_db_user_id
 from github import IssueSummary
 from spec_reference import SpecReference, append_reference
-from tools.estimates import estimate_from_history, estimate_issue, issue_kind
+from tools.estimates import (
+    PastIssue,
+    estimate_issue,
+    estimate_tokens,
+    issue_kind,
+    past_issues,
+    price_per_point,
+)
 
 _REGISTERED = [{"id": "r1", "repo_name": "alexsiri7/lachesis", "created_at": "t"}]
 
@@ -34,7 +41,7 @@ def _issue(
     capability: str | None = None,
     pr: bool = False,
 ) -> IssueSummary:
-    body = "x" if capability is None else append_reference("x", SpecReference(226, capability))
+    body = "x" if capability is None else append_reference("x", SpecReference(226, (capability,)))
     return {
         "number": number,
         "title": f"Issue {number}",
@@ -49,69 +56,85 @@ def _issue(
     }
 
 
-def test_eight_past_implementation_issues_in_the_capability_give_a_normal_confidence_estimate() -> (
-    None
-):
-    """Scenario: eight past implementation issues in backlog — derived and normal confidence."""
-    issues = [_issue(n, capability="backlog") for n in range(1, 9)]
-    usage = {n: {"implementation": n * 1000, "triage": 100} for n in range(1, 9)}
-
-    estimate = estimate_from_history(20, "implementation", "backlog", issues, usage)
-
-    assert estimate == {
-        "tokens": 4600,
-        "confidence": "normal",
-        "basis": "capability",
-        "samples": 8,
-    }
+def _past(
+    number: int, tokens: int, size: int, kind: str = "implementation", model: str = "claude"
+) -> PastIssue:
+    return PastIssue("alexsiri7/lachesis", number, kind, model, tokens, size)
 
 
-def test_fewer_than_five_matching_issues_are_low_confidence() -> None:
-    issues = [_issue(n, capability="backlog") for n in range(1, 5)]
-    usage = {n: {"implementation": 1000} for n in range(1, 5)}
+def test_eight_past_issues_of_the_kind_and_model_give_a_normal_confidence_price() -> None:
+    """Scenario: Estimate from points — 2 per point, eight closed, 5 points is 10."""
+    past = [_past(n, 10, 5) for n in range(1, 9)]
 
-    estimate = estimate_from_history(20, "implementation", "backlog", issues, usage)
+    price = price_per_point(past, "implementation", "claude")
 
-    assert estimate["confidence"] == "low"
-    assert estimate["basis"] == "capability"
-    assert estimate["samples"] == 4
-
-
-def test_exactly_five_matching_issues_are_normal_confidence() -> None:
-    issues = [_issue(n, capability="backlog") for n in range(1, 6)]
-    usage = {n: {"implementation": 1000} for n in range(1, 6)}
-
-    estimate = estimate_from_history(20, "implementation", "backlog", issues, usage)
-
-    assert estimate["confidence"] == "normal"
-    assert estimate["samples"] == 5
+    assert price == {"tokens_per_point": 2, "confidence": "normal", "basis": "kind", "samples": 8}
+    assert estimate_tokens(5, price) == 10
 
 
-def test_history_ignores_open_issues_pull_requests_the_target_other_kinds_and_capabilities() -> (
-    None
-):
-    issues = [
-        _issue(1, capability="backlog"),
-        _issue(2, state="open", capability="backlog"),
-        _issue(3, capability="backlog", pr=True),
-        _issue(20, capability="backlog"),
-        _issue(4, capability="backlog"),
-        _issue(5, capability="fuel"),
-        _issue(6, capability="backlog"),
+def test_the_price_is_the_tokens_of_its_issues_over_their_points() -> None:
+    past = [_past(1, 30, 1), _past(2, 30, 2), _past(3, 30, 3), _past(4, 30, 5), _past(5, 30, 1)]
+
+    assert price_per_point(past, "implementation")["tokens_per_point"] == 150 / 12
+
+
+def test_below_five_of_the_kind_and_model_the_price_is_across_all_kinds_at_low_confidence() -> None:
+    past = [
+        *(_past(n, 4, 1) for n in range(1, 5)),
+        _past(5, 4, 1, model="claude-sonnet"),
+        _past(6, 16, 1, kind="tests"),
     ]
-    usage = {
-        1: {"implementation": 700},
-        2: {"implementation": 9000},
-        3: {"implementation": 9000},
-        20: {"implementation": 9000},
-        4: {"implementation": 100, "tests": 9000},
-        5: {"implementation": 9000},
+
+    price = price_per_point(past, "implementation", "claude")
+
+    assert price == {
+        "tokens_per_point": 6,
+        "confidence": "low",
+        "basis": "all kinds",
+        "samples": 6,
     }
 
-    estimate = estimate_from_history(20, "implementation", "backlog", issues, usage)
 
-    assert estimate["samples"] == 1
-    assert estimate["tokens"] == 700
+def test_without_a_model_every_model_of_the_kind_counts() -> None:
+    past = [
+        *(_past(n, 4, 1) for n in range(1, 4)),
+        *(_past(n, 4, 1, model="claude-x") for n in (4, 5)),
+    ]
+
+    price = price_per_point(past, "implementation")
+
+    assert price["confidence"] == "normal"
+    assert price["samples"] == 5
+
+
+def test_with_no_history_there_is_no_price_or_estimate() -> None:
+    price = price_per_point([], "implementation", "claude")
+
+    assert price == {"tokens_per_point": None, "confidence": "low", "basis": "none", "samples": 0}
+    assert estimate_tokens(5, price) is None
+
+
+@pytest.mark.parametrize("size", [None, 21])
+def test_an_unsized_issue_or_one_too_big_to_plan_has_no_estimate(size: int | None) -> None:
+    assert estimate_tokens(size, price_per_point([_past(1, 4, 1)])) is None
+
+
+def test_past_issues_are_closed_sized_issues_with_usage_by_their_main_kind_and_model() -> None:
+    issues = [
+        _issue(1),
+        _issue(2, state="open"),
+        _issue(3, pr=True),
+        _issue(4),
+        _issue(5),
+        _issue(6),
+    ]
+    usage = {n: {"implementation": 100, "tests": 300} for n in (1, 2, 3, 4, 6)}
+    models = {n: {"claude": 300, "claude-sonnet": 100} for n in (1, 2, 3, 4, 6)}
+    sizes = {1: 2, 2: 2, 3: 2, 5: 2, 6: 21}
+
+    past = past_issues("alexsiri7/lachesis", issues, usage, models, sizes)
+
+    assert past == [PastIssue("alexsiri7/lachesis", 1, "tests", "claude", 400, 2)]
 
 
 def test_a_past_issue_is_the_kind_that_used_most_tokens_with_ties_in_kind_order() -> None:
@@ -119,58 +142,104 @@ def test_a_past_issue_is_the_kind_that_used_most_tokens_with_ties_in_kind_order(
     assert issue_kind({"tests": 10, "triage": 10}) == "triage"
 
 
-def test_with_no_history_in_the_capability_it_falls_back_to_the_kind_at_low_confidence() -> None:
-    issues = [_issue(n, capability="fuel") for n in range(1, 7)]
-    usage = {n: {"implementation": 1000} for n in range(1, 7)}
-
-    estimate = estimate_from_history(20, "implementation", "backlog", issues, usage)
-
-    assert estimate == {"tokens": 1000, "confidence": "low", "basis": "kind", "samples": 6}
-
-
-def test_with_no_history_tokens_is_none() -> None:
-    estimate = estimate_from_history(20, "implementation", "backlog", [_issue(1)], {})
-
-    assert estimate == {"tokens": None, "confidence": "low", "basis": "none", "samples": 0}
-
-
-def test_issues_without_a_reference_block_match_each_other() -> None:
-    issues = [_issue(1), _issue(2, capability="backlog")]
-    usage = {1: {"tests": 300}, 2: {"tests": 900}}
-
-    estimate = estimate_from_history(20, "tests", None, issues, usage)
-
-    assert estimate == {"tokens": 300, "confidence": "low", "basis": "capability", "samples": 1}
-
-
-async def test_estimate_issue_stores_the_estimate_with_the_issue(
+async def test_estimate_issue_prices_the_issues_size_from_every_registered_repo(
     set_user_id: str, registered: None
 ) -> None:
     issues = [_issue(230, state="open", capability="sprints")] + [
         _issue(n, capability="sprints") for n in range(1, 4)
     ]
     usage = {n: {"implementation": n * 1000} for n in range(1, 4)}
-    stored = {"repo_name": "alexsiri7/lachesis", "issue": 230, "tokens": 2000}
+    models = {n: {"claude": n * 1000} for n in range(1, 4)}
+    sizes = {("alexsiri7/lachesis", n): 1 for n in range(1, 4)} | {("alexsiri7/lachesis", 230): 3}
+    stored = {"repo_name": "alexsiri7/lachesis", "issue": 230, "tokens": 6000}
     with (
         patch("tools.estimates.github.list_all_issues", AsyncMock(return_value=issues)),
-        patch("tools.estimates.db.usage_by_issue", return_value=usage) as usage_by_issue,
+        patch(
+            "tools.estimates.db.usage_by_issue",
+            side_effect=lambda _u, _r, by="kind": models if by == "model" else usage,
+        ),
         patch("tools.estimates.db.set_estimate", return_value=stored) as set_estimate,
-        patch("tools.estimates.db.sizes_by_issue", return_value={}),
+        patch("tools.estimates.db.sizes_by_issue", return_value=sizes),
     ):
-        result = await estimate_issue("lachesis", 230, "implementation")
+        result = await estimate_issue("lachesis", 230, "implementation", "claude")
 
-    assert result == {**stored, "size": None}
-    usage_by_issue.assert_called_once_with("test-uid", "alexsiri7/lachesis")
+    assert result == {
+        "repo_name": "alexsiri7/lachesis",
+        "issue": 230,
+        "model": "claude",
+        "size": 3,
+        "estimate_tokens": 6000,
+        "tokens_per_point": 2000,
+    }
     set_estimate.assert_called_once_with(
         "test-uid",
         "alexsiri7/lachesis",
         230,
         "implementation",
         "sprints",
-        2000,
+        6000,
         "low",
-        "capability",
+        "all kinds",
         3,
+    )
+
+
+async def test_estimate_issue_leaves_out_a_repo_whose_issues_cannot_be_listed(
+    set_user_id: str,
+) -> None:
+    repos = _REGISTERED + [{"id": "r2", "repo_name": "alexsiri7/other", "created_at": "t"}]
+    issues = [_issue(230, state="open"), *(_issue(n) for n in range(1, 6))]
+
+    async def listing(repo: str) -> list[IssueSummary]:
+        if repo == "alexsiri7/other":
+            raise RuntimeError("GitHub is down")
+        return issues
+
+    with (
+        patch("tools.requirements.db.list_repos", return_value=repos),
+        patch("tools.estimates.github.list_all_issues", AsyncMock(side_effect=listing)),
+        patch(
+            "tools.estimates.db.usage_by_issue",
+            side_effect=lambda _u, _r, by="kind": {
+                n: {"claude" if by == "model" else "tests": 8} for n in range(1, 6)
+            },
+        ),
+        patch("tools.estimates.db.set_estimate", side_effect=lambda *a: {"tokens": a[5]}),
+        patch(
+            "tools.estimates.db.sizes_by_issue",
+            return_value={("alexsiri7/lachesis", n): 2 for n in range(1, 6)},
+        ),
+    ):
+        result = await estimate_issue("lachesis", 230, "tests")
+
+    assert result["tokens_per_point"] == 4
+    assert result["estimate_tokens"] is None
+
+
+async def test_an_issue_naming_several_capabilities_is_estimated_in_none_of_them(
+    set_user_id: str, registered: None
+) -> None:
+    tests_issue = {
+        **_issue(230, state="open"),
+        "body": append_reference("x", SpecReference(226, ("sprints", "fuel"))),
+    }
+    issues = [tests_issue, _issue(1, capability="sprints"), _issue(2, capability="fuel")]
+    usage = {1: {"tests": 1000}, 2: {"tests": 3000}}
+    sizes = {
+        ("alexsiri7/lachesis", 1): 1,
+        ("alexsiri7/lachesis", 2): 1,
+        ("alexsiri7/lachesis", 230): 1,
+    }
+    with (
+        patch("tools.estimates.github.list_all_issues", AsyncMock(return_value=issues)),
+        patch("tools.estimates.db.usage_by_issue", return_value=usage),
+        patch("tools.estimates.db.set_estimate", return_value={"tokens": 2000}) as set_estimate,
+        patch("tools.estimates.db.sizes_by_issue", return_value=sizes),
+    ):
+        await estimate_issue("lachesis", 230, "tests")
+
+    set_estimate.assert_called_once_with(
+        "test-uid", "alexsiri7/lachesis", 230, "tests", None, 2000, "low", "all kinds", 2
     )
 
 

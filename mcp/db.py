@@ -27,6 +27,8 @@ Tables (all namespaced lachesis_):
                             than 13
   lachesis_audit_runs     — every audit run: repo, kind, capability, model, when it
                             finished, outcome, issues filed and tokens
+  lachesis_experiments    — improvements to how the factory works: the change, its
+                            measure, baseline and target, its issues, state and results
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -975,21 +977,24 @@ def record_usage_report(
     return dict(row)
 
 
-def usage_by_issue(user_id: str, repo_name: str) -> dict[int, dict[str, int]]:
-    """Return the tokens in and out reported on each issue in *repo_name*, by kind of work."""
+def usage_by_issue(
+    user_id: str, repo_name: str, by: Literal["kind", "model"] = "kind"
+) -> dict[int, dict[str, int]]:
+    """Return the tokens in and out reported on each issue in *repo_name*, by kind of work
+    or, with *by* ``model``, by model."""
     sql = text(
-        """
-        SELECT issue, kind, SUM(tokens_in + tokens_out) AS tokens
+        f"""
+        SELECT issue, {by} AS key, SUM(tokens_in + tokens_out) AS tokens
         FROM lachesis_usage_reports
         WHERE user_id = :user_id AND repo_name = :repo_name
-        GROUP BY issue, kind
+        GROUP BY issue, {by}
         """
     )
     with _engine().connect() as conn:
         rows = conn.execute(sql, {"user_id": user_id, "repo_name": repo_name}).mappings().all()
     usage: dict[int, dict[str, int]] = {}
     for row in rows:
-        usage.setdefault(row["issue"], {})[row["kind"]] = int(row["tokens"])
+        usage.setdefault(row["issue"], {})[row["key"]] = int(row["tokens"])
     return usage
 
 
@@ -1078,7 +1083,7 @@ def list_runs(
 # ---------------------------------------------------------------------------
 
 EstimateConfidence = Literal["low", "normal"]
-EstimateBasis = Literal["capability", "kind", "none"]
+EstimateBasis = Literal["kind", "all kinds", "none"]
 
 _ESTIMATE_COLUMNS = (
     "repo_name, issue, kind, capability, tokens, confidence, basis, samples, estimated_at"
@@ -1805,13 +1810,13 @@ def milestones_done_between(user_id: str, start: datetime, end: datetime) -> lis
         FROM lachesis_events e
         JOIN lachesis_milestones m
           ON m.user_id = e.user_id AND m.repo_name = e.repo_name
-         AND e.subject = m.id::text || ':done'
+         AND e.subject = m.id::text || :done_suffix
         WHERE e.user_id = :user_id AND e.kind = 'milestone_state_changed'
           AND e.created_at >= :start AND e.created_at < :end
         ORDER BY m.id, e.created_at
         """
     )
-    params = {"user_id": user_id, "start": start, "end": end}
+    params = {"user_id": user_id, "start": start, "end": end, "done_suffix": ":done"}
     with _engine().connect() as conn:
         return [dict(row) for row in conn.execute(sql, params).mappings().all()]
 
@@ -1864,3 +1869,122 @@ def claim_sprint_report(
     with _engine().begin() as conn:
         row = conn.execute(sql, params).mappings().first()
     return None if row is None else dict(row)
+
+
+# ---------------------------------------------------------------------------
+# lachesis_experiments
+# ---------------------------------------------------------------------------
+
+ExperimentVerdict = Literal["kept", "reverted", "extended"]
+
+_EXPERIMENT_COLUMNS = (
+    "id, repo_name, title, change, measure, baseline, target, issues, state, results, created_at"
+)
+
+
+def create_experiment(
+    user_id: str,
+    repo_name: str,
+    title: str,
+    change: str,
+    measure: str,
+    baseline: float,
+    target: float,
+    issues: list[int],
+) -> dict[str, Any]:
+    """Store an open experiment with no results and return it."""
+    sql = text(
+        f"""
+        INSERT INTO lachesis_experiments
+            (user_id, repo_name, title, change, measure, baseline, target, issues)
+        VALUES (:user_id, :repo_name, :title, :change, :measure, :baseline, :target, :issues)
+        RETURNING {_EXPERIMENT_COLUMNS}
+        """
+    )
+    params = {
+        "user_id": user_id,
+        "repo_name": repo_name,
+        "title": title,
+        "change": change,
+        "measure": measure,
+        "baseline": baseline,
+        "target": target,
+        "issues": issues,
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+    if row is None:
+        raise RuntimeError(f"create_experiment returned no row for {repo_name!r}")
+    return dict(row)
+
+
+def list_open_experiments(user_id: str) -> list[dict[str, Any]]:
+    """Return the account's open experiments, oldest first."""
+    sql = text(
+        f"""
+        SELECT {_EXPERIMENT_COLUMNS}
+        FROM lachesis_experiments
+        WHERE user_id = :user_id AND state = 'open'
+        ORDER BY id
+        """
+    )
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql, {"user_id": user_id}).mappings().all()]
+
+
+def judge_experiment(
+    user_id: str,
+    experiment_id: int,
+    value: float,
+    verdict: ExperimentVerdict,
+    reason: str,
+    judged_at: datetime,
+) -> dict[str, Any]:
+    """Append the judgement to an open experiment's results and return the experiment.
+
+    ``kept`` and ``reverted`` close it; ``extended`` leaves it open, and only once.
+    Raises ``ValueError`` for an experiment that is not found, not open, or already
+    extended when *verdict* is ``extended``.
+    """
+    if verdict not in get_args(ExperimentVerdict):
+        raise ValueError(
+            f"verdict must be one of {', '.join(get_args(ExperimentVerdict))}, got {verdict!r}"
+        )
+    sql = text(
+        f"""
+        UPDATE lachesis_experiments
+        SET state = :state, results = results || CAST(:result AS jsonb)
+        WHERE user_id = :user_id AND id = :id AND state = 'open'
+          AND (:verdict <> 'extended' OR NOT results @> '[{{"verdict": "extended"}}]')
+        RETURNING {_EXPERIMENT_COLUMNS}
+        """
+    )
+    result = {"value": value, "verdict": verdict, "reason": reason, "judged_at": judged_at}
+    params = {
+        "user_id": user_id,
+        "id": experiment_id,
+        "state": "open" if verdict == "extended" else verdict,
+        "verdict": verdict,
+        "result": json.dumps([result], default=str),
+    }
+    with _engine().begin() as conn:
+        row = conn.execute(sql, params).mappings().first()
+        if row is not None:
+            return dict(row)
+        found = (
+            conn.execute(
+                text(
+                    "SELECT state FROM lachesis_experiments WHERE user_id = :user_id AND id = :id"
+                ),
+                {"user_id": user_id, "id": experiment_id},
+            )
+            .mappings()
+            .first()
+        )
+    if found is None:
+        raise ValueError(f"Experiment {experiment_id} not found")
+    if found["state"] != "open":
+        raise ValueError(f"Experiment {experiment_id} is already {found['state']}")
+    raise ValueError(
+        f"Experiment {experiment_id} was already given one more sprint: keep or revert it"
+    )

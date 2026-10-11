@@ -69,19 +69,31 @@ function windowTiming(
   return { left: formatSpan(msLeft), elapsed: Math.round(elapsedExact), elapsedExact }
 }
 
-function describeWindow(w: SessionRateLimit, now: number): string {
+// How much of the guard's cap a window has used: 50% used against a 60% cap is
+// 83% of the cap. Undefined when there is no cap for the window.
+export function shareOfCap(used: number, cap: number | undefined): number | undefined {
+  if (cap === undefined || !(cap > 0)) return undefined
+  return Math.round((used / cap) * 100)
+}
+
+function describeWindow(w: SessionRateLimit, now: number, cap?: number): string {
   const label = LABELS[w.kind] ?? w.kind
   const resets = w.resetsAt ? `, resets ${w.resetsAt}` : ''
   const t = windowTiming(w, now)
   const timing = t ? ` (in ${t.left}; ${t.elapsed}% of the window elapsed)` : ''
-  return `${label}: ${w.percentUsed}% used${resets}${timing}`
+  const share = shareOfCap(w.percentUsed, cap)
+  const ofCap = share !== undefined ? `; ${share}% of the ${cap}% cap` : ''
+  return `${label}: ${w.percentUsed}% used${resets}${timing}${ofCap}`
 }
 
-// "7d 38%/67% ↺2d 7h": used / elapsed, then time to the reset.
-function shortWindow(w: SessionRateLimit, now: number): string {
+// "7d 38%/67% ↺2d 7h · 58% of 65% cap": used / elapsed, the time to the reset,
+// then (with the guard on) how much of the window's cap is used.
+function shortWindow(w: SessionRateLimit, now: number, cap?: number): string {
   const t = windowTiming(w, now)
   const name = SHORT[w.kind] ?? w.kind
-  return t ? `${name} ${w.percentUsed}%/${t.elapsed}% ↺${t.left}` : `${name} ${w.percentUsed}%`
+  const base = t ? `${name} ${w.percentUsed}%/${t.elapsed}% ↺${t.left}` : `${name} ${w.percentUsed}%`
+  const share = shareOfCap(w.percentUsed, cap)
+  return share !== undefined ? `${base} · ${share}% of ${cap}% cap` : base
 }
 
 async function configDir($: EngineInterface): Promise<string> {
@@ -216,14 +228,14 @@ export const register: Register = on => {
   on('tool.call', { tool: TOOL }, async $ => {
     const usage = await $.session.usage()
     const now = await $.clock.now()
+    const guard = await readGuard($)
     const lines = usage.rateLimits.length
-      ? usage.rateLimits.map(w => describeWindow(w, now))
+      ? usage.rateLimits.map(w => describeWindow(w, now, guard && capFor(guard, w, now)))
       : ['No rate-limit reading yet (none reported by the last API response).']
     if (usage.cost) lines.push(`Session cost so far: $${usage.cost.usd.toFixed(2)}`)
     if (usage.context.percent !== undefined) {
       lines.push(`Context window: ${usage.context.percent}% full`)
     }
-    const guard = await readGuard($)
     if (!guard) {
       lines.push('Budget guard: off')
     } else {
@@ -271,16 +283,17 @@ export const register: Register = on => {
 }
 
 // The status line: each window's use against time elapsed and the time to its
-// reset, and the guard's state. Redrawn on every measurement and every minute
-// between them, so the countdown to each reset stays current.
+// reset, how much of its cap is used, and the guard's state. Redrawn on every
+// measurement and every minute between them, so the countdown to each reset
+// stays current.
 async function showStatus($: EngineInterface, windows: SessionRateLimit[]): Promise<void> {
   const now = await $.clock.now()
-  const fig = windows.map(w => shortWindow(w, now)).join(' · ')
   const guard = await readGuard($)
   if (!guard) {
-    $.ui.status(fig || undefined)
+    $.ui.status(windows.map(w => shortWindow(w, now)).join(' · ') || undefined)
     return
   }
+  const fig = windows.map(w => shortWindow(w, now, capFor(guard, w, now))).join(' | ')
   const over = breaches(guard, windows, now)
   $.ui.status(
     !over.length

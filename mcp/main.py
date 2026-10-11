@@ -30,6 +30,7 @@ from tools import audits as audit_tools
 from tools import contents as contents_tools
 from tools import estimates as estimate_tools
 from tools import events as event_tools
+from tools import experiments as experiment_tools
 from tools import focus as focus_tools
 from tools import fuel as fuel_tools
 from tools import milestones as milestone_tools
@@ -189,7 +190,9 @@ mcp.tool(
         "(work bringing the code in line with the spec as it stands, such as an audit "
         "finding or a bug), plus an optional `requirement` within the capability. The "
         "whole call is refused, creating nothing, if any issue lacks these. The reference "
-        "is appended to the issue body and spec gaps are labelled `spec-gap`. In repos "
+        "is appended to the issue body and spec gaps are labelled `spec-gap`. An issue "
+        "implementing a spec change, unless itself labelled acceptance-tests, is created "
+        "blocked by that spec change's acceptance-tests issue. In repos "
         "without specs these fields are ignored."
     ),
 )(req_tools.create_github_issues)
@@ -551,17 +554,18 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Estimate an issue in a registered repository in tokens, from the measured usage of "
-        "past issues of the same kind and capability, and store the estimate with the issue, "
-        "replacing any earlier one. Give the `issue` (number) and its `kind` of work, one of "
-        "triage, summarising, audit, tests, implementation, spec work. A past issue is a "
-        "closed issue with usage reports; its kind is the kind of work that used the most "
-        "tokens on it, and its capability comes from its reference block. The estimate is "
-        "their mean total tokens, with confidence normal from 5 such issues and low below "
-        "that (basis `capability`). With none in the capability it falls back to past issues "
-        "of that kind in the repository, at low confidence (basis `kind`). With no history at "
-        "all, `tokens` is null (basis `none`). Returns the stored estimate with its samples "
-        "and time, and the issue's `size` in points (null until it is sized)."
+        "Estimate an issue in a registered repository in tokens, as its size times the price "
+        "of a point, and store the estimate with the issue, replacing any earlier one. Give "
+        "the `issue` (number), its `kind` of work, one of triage, summarising, audit, tests, "
+        "implementation, spec work, and the `model` it will run on if known. The price is "
+        "measured from past issues: closed, sized issues with usage reports across the "
+        "registered repositories, each of the kind of work and the model that used the most "
+        "tokens on it; it is their tokens divided by their points. From 5 past issues of the "
+        "kind (and model, when given) the price is theirs at confidence normal (basis "
+        "`kind`); below that it is the price across all kinds and models, at low confidence "
+        "(basis `all kinds`). With no history at all, or an issue not yet sized or sized "
+        "21, `estimate_tokens` is null. Returns the stored estimate with its samples and "
+        "time, `estimate_tokens`, `tokens_per_point` and the issue's `size` in points."
     ),
 )(estimate_tools.estimate_issue)
 
@@ -673,11 +677,19 @@ mcp.tool(
         "with its `start` and `end`; its budget in tokens: the weekly allowance (the "
         "configured CLAUDE_WEEKLY_ALLOWANCE_TOKENS) less the 20 percent reserve, plus the "
         "Requesty cap converted at the configured Claude price; what is spent and left; "
-        "whether spending is within today's pace; and the `plan` — the registered "
-        "repositories' backlogs in computed order, ready and not waiting on the author, each "
-        "included when its estimate fits what is left. An issue with no estimate is "
-        "included, with `estimate_tokens` null. Derived on every read, so it follows focus "
-        "changes. `reported` is false when no fuel has been reported."
+        "whether spending is within today's pace; `improvement_budget_tokens`, the share of "
+        "the budget kept for improvement work (the configured IMPROVEMENT_SHARE_PERCENT, 10 "
+        "by default); and the `plan` — first the open experiments' issues, marked "
+        "`improvement` true, as far as their estimates fit that share, then the registered "
+        "repositories' backlogs in computed order; each ready and not waiting on the author, "
+        "and included when its estimate fits what is left. An experiment's issue that does "
+        "not fit the share is not planned. An issue with no estimate is "
+        "included, with `estimate_tokens` null. Also `tokens_per_point`, the price of a point "
+        "across all kinds and models of past issues (as estimate_issue measures it) with its "
+        "`price_confidence`; `capacity_points`, the budget divided by that price (null with "
+        "no history); and `planned_points`, the sizes of the planned issues. Derived on every "
+        "read, so it follows focus changes. `reported` is false when no fuel has been "
+        "reported."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(sprint_tools.read_sprint)
@@ -694,11 +706,35 @@ mcp.tool(
         "dollars on overflow runs, from the usage reported during the sprint; `estimates`: "
         "estimate against actual usage for each delivered issue with an estimate, and by "
         "kind and capability; `carryover`: open issues worked on during the sprint; "
-        "`findings`; and `unreadable` repositories. `reported` is false when no fuel has "
-        "been reported. Call it once at each allowance reset, from the scheduled sprint "
-        "review."
+        "`findings`; `experiments`: every experiment open at the review, with its measure, "
+        "baseline, target and results; and `unreadable` repositories. `reported` is false "
+        "when no fuel has been reported. Call it once at each allowance reset, from the "
+        "scheduled sprint review."
     ),
 )(sprint_tools.report_sprint)
+
+mcp.tool(
+    description=(
+        "Record an improvement experiment on how the factory works — its guidance, sizing, "
+        "routing, scripts or checks, never what a project should be — in a registered "
+        "repository: a `title`, the `change`, the `measure` it should move (such as "
+        "rework_rate, tokens_per_point, time_stuck or questions_per_issue), its value now "
+        "(`baseline`), the `target`, and the `issues` holding its work, which read_sprint "
+        "plans ahead of the ordinary backlog within the improvement share. Never waits on the "
+        "author. Returns the experiment with its `id`, `state` open and `results` empty."
+    ),
+)(experiment_tools.record_experiment)
+
+mcp.tool(
+    description=(
+        "Judge an open experiment at a sprint review against its measure's `value` now, with "
+        "the `reason`: `verdict` kept (it met its target; make its change standard, by "
+        "changing the guidance or proposing a spec change), reverted (undo its change) or "
+        "extended (one more sprint, at most once per experiment). Returns the experiment with "
+        "its `state` — kept, reverted, or open while extended — and the judgement appended "
+        "to `results` as `value`, `verdict`, `reason` and `judged_at`."
+    ),
+)(experiment_tools.judge_experiment)
 
 mcp.tool(
     description=(
@@ -908,8 +944,10 @@ mcp.tool(
         "the author asked for this change in the conversation: the pull request is also "
         "labelled author-request and its issues rank above milestone work for two sprints "
         "after it merges. Leave it false for changes an agent or an audit proposes. "
-        "Returns the pull request number and url; the number identifies the spec change "
-        "from then on."
+        "Also opens an issue labelled acceptance-tests naming the spec change and its "
+        "capabilities, whose tests are committed to the spec change's branch. "
+        "Returns the pull request number and url, and `acceptance_tests_issue`, that "
+        "issue's number; the pull request number identifies the spec change from then on."
     ),
 )(spec_tools.propose_spec_change)
 

@@ -1,4 +1,7 @@
-"""Runs the real Lachesis ASGI app on a local port against a disposable Postgres, GitHub stubbed."""
+"""Runs the real Lachesis ASGI app on a local port against a disposable Postgres.
+
+GitHub and ntfy.sh are stubbed.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ import sqlalchemy
 import uvicorn
 
 from harness.github import FakeGitHub
+from harness.ntfy import FakeNtfy
 
 APP_DIR = Path(__file__).resolve().parents[3] / "mcp"
 
@@ -45,6 +49,7 @@ class RunningApp:
     base_url: str
     token: str
     github: FakeGitHub
+    ntfy: FakeNtfy
     database: Database
 
 
@@ -105,6 +110,7 @@ def run_app() -> Iterator[RunningApp]:
         oauth = importlib.import_module("oauth")
 
         github = FakeGitHub()
+        ntfy = FakeNtfy()
         database = Database(url)
         user = db.upsert_user(USER_ID, USER_EMAIL)
         token = oauth.create_jwt(USER_ID, USER_EMAIL, str(user["id"]))
@@ -114,6 +120,7 @@ def run_app() -> Iterator[RunningApp]:
             router = stack.enter_context(respx.mock(assert_all_called=False))
             router.route(host="127.0.0.1").pass_through()
             router.route(host="api.github.com").mock(side_effect=github.handle)
+            router.route(host="ntfy.sh").mock(side_effect=ntfy.handle)
 
             server = uvicorn.Server(uvicorn.Config(main.app, log_level="warning"))
             thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
@@ -126,4 +133,4 @@ def run_app() -> Iterator[RunningApp]:
                     raise RuntimeError("the Lachesis app did not start")
                 time.sleep(0.01)
 
-            yield RunningApp(base_url, token, github, database)
+            yield RunningApp(base_url, token, github, ntfy, database)

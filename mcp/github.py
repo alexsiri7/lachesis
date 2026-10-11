@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -301,7 +302,8 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
     Each is ``{"number": int, "title": str, "labels": [str], "body": str,
     "created_at": str}``, ``created_at`` being GitHub's ISO 8601 timestamp.
 
-    The /issues endpoint also returns pull requests; those are filtered out.
+    The /issues endpoint also returns pull requests; those are filtered out, as is
+    anything not open whatever the query asked for.
     """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
@@ -312,7 +314,9 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
     if not resp.is_success:
         logger.warning("github.list_open_issues failed repo=%s status=%s", repo, resp.status_code)
         resp.raise_for_status()
-    issues = [item for item in resp.json() if "pull_request" not in item]
+    issues = [
+        item for item in resp.json() if "pull_request" not in item and item["state"] == "open"
+    ]
     return sorted(
         (
             {
@@ -457,11 +461,18 @@ async def list_labelled_prs(repo: str, label: str) -> list[dict[str, Any]]:
     ]
 
 
-async def list_pull_request_files(repo: str, pr_number: int) -> list[str]:
-    """Return the paths of the files changed by *pr_number* (up to 100).
+class PullRequestFile(TypedDict):
+    """One file a pull request changes, as its "Files changed" tab shows it."""
 
-    A renamed file contributes both its old and new path.
-    """
+    filename: str
+    previous_filename: str | None
+    status: str
+    # None when GitHub withholds the diff, as it does for a very large one.
+    patch: str | None
+
+
+async def get_pull_request_files(repo: str, pr_number: int) -> list[PullRequestFile]:
+    """Return the files changed by *pr_number* (up to 100)."""
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/pulls/{pr_number}/files",
@@ -470,18 +481,34 @@ async def list_pull_request_files(repo: str, pr_number: int) -> list[str]:
         )
     if not resp.is_success:
         logger.warning(
-            "github.list_pull_request_files failed repo=%s pr=%s status=%s",
+            "github.get_pull_request_files failed repo=%s pr=%s status=%s",
             repo,
             pr_number,
             resp.status_code,
         )
         resp.raise_for_status()
-    paths: list[str] = []
-    for f in resp.json():
-        paths.append(f["filename"])
-        if "previous_filename" in f:
-            paths.append(f["previous_filename"])
-    return paths
+    return [
+        {
+            "filename": f["filename"],
+            "previous_filename": f.get("previous_filename"),
+            "status": f.get("status", "modified"),
+            "patch": f.get("patch"),
+        }
+        for f in resp.json()
+    ]
+
+
+async def list_pull_request_files(repo: str, pr_number: int) -> list[str]:
+    """Return the paths of the files changed by *pr_number* (up to 100).
+
+    A renamed file contributes both its old and new path.
+    """
+    return [
+        path
+        for f in await get_pull_request_files(repo, pr_number)
+        for path in (f["filename"], f["previous_filename"])
+        if path is not None
+    ]
 
 
 async def get_merge_base(repo: str, pr_number: int) -> tuple[str, str] | None:
@@ -1674,3 +1701,55 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
         return None
 
     return verdict
+
+
+SCENARIO_RESULTS_CHECK = "scenario-results"
+
+
+class ScenarioResults(TypedDict):
+    """The ``scenario-results`` check run CI published for one default-branch commit."""
+
+    commit: str
+    # capability -> scenario title -> passed, failed, xfail or untested
+    capabilities: dict[str, dict[str, str]]
+
+
+async def get_scenario_results(repo: str) -> ScenarioResults | None:
+    """Return the scenario results published for the latest commit on ``main``.
+
+    ``None`` when there are none to read: the branch is missing, CI has published
+    no completed ``scenario-results`` check run for its latest commit, or the one
+    it published is not the JSON CI writes.  Any other failed read raises.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/commits/main/check-runs",
+            headers=_headers(),
+            params={"check_name": SCENARIO_RESULTS_CHECK, "per_page": 100},
+        )
+    if resp.status_code in (404, 422):
+        return None
+    if not resp.is_success:
+        logger.warning(
+            "github.get_scenario_results failed repo=%s status=%s", repo, resp.status_code
+        )
+        resp.raise_for_status()
+    runs = [
+        run
+        for run in resp.json().get("check_runs", [])
+        if run.get("name") == SCENARIO_RESULTS_CHECK and run.get("status") == "completed"
+    ]
+    if not runs:
+        return None
+    latest = max(runs, key=lambda run: run.get("completed_at") or "")
+    try:
+        capabilities = json.loads((latest.get("output") or {}).get("text") or "")
+        if not isinstance(capabilities, dict) or not all(
+            isinstance(titles, dict) and all(isinstance(o, str) for o in titles.values())
+            for titles in capabilities.values()
+        ):
+            raise ValueError("not capability -> scenario -> outcome")
+    except ValueError as exc:
+        logger.warning("github.get_scenario_results unreadable output repo=%s error=%r", repo, exc)
+        return None
+    return {"commit": str(latest["head_sha"]), "capabilities": capabilities}

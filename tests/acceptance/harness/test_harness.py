@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from harness import FakeGitHub, Lachesis, scenario
+from harness import FakeGitHub, FakeNtfy, Lachesis, scenario
 from harness.github import NOT_FOUND
 
 
@@ -59,6 +59,62 @@ def test_github_answers_anything_unregistered_with_not_found() -> None:
 
     assert response.status_code == 404
     assert response.json() == NOT_FOUND
+
+
+def test_github_answers_in_turn_then_repeats_the_last() -> None:
+    github = FakeGitHub()
+    github.on_each("POST", "/repos/owner/repo/issues", json=[{"number": 1}, {"number": 2}])
+
+    numbers = [
+        github.handle(
+            httpx.Request("POST", "https://api.github.com/repos/owner/repo/issues")
+        ).json()["number"]
+        for _ in range(3)
+    ]
+
+    assert numbers == [1, 2, 2]
+
+
+def test_github_answers_graphql_by_repository_and_query() -> None:
+    github = FakeGitHub()
+    github.on("POST", "/graphql", json={"data": "by path"})
+    github.on_graphql("owner/a", "issue(", json={"data": "a issues"})
+    github.on_graphql("owner/b", "issue(", json={"data": "b issues"})
+
+    def answer(repo: str, query: str) -> object:
+        owner, _, name = repo.partition("/")
+        request = httpx.Request(
+            "POST",
+            "https://api.github.com/graphql",
+            json={"query": query, "variables": {"owner": owner, "name": name}},
+        )
+        return github.handle(request).json()["data"]
+
+    assert answer("owner/a", "{ issue(number: 1) { number } }") == "a issues"
+    assert answer("owner/b", "{ issue(number: 1) { number } }") == "b issues"
+    assert answer("owner/a", "{ pullRequest(number: 1) { number } }") == "by path"
+
+
+async def test_ntfy_is_the_stub(lachesis: Lachesis) -> None:
+    await lachesis.call_tool("set_ntfy_config", {"topic": "lachesis-author"})
+
+    result = await lachesis.call_tool("send_test_notification", {})
+
+    assert result.json()["sent"] is True
+    [notification] = lachesis.ntfy.notifications
+    assert notification.topic == "lachesis-author"
+    assert notification.title == "Lachesis test notification"
+    assert notification.tags == "white_check_mark"
+
+
+def test_ntfy_refuses_every_connection_once_unreachable() -> None:
+    ntfy = FakeNtfy()
+    ntfy.unreachable()
+
+    with pytest.raises(httpx.ConnectError):
+        ntfy.handle(httpx.Request("POST", "https://ntfy.sh/lachesis-author", content=b"hi"))
+
+    assert ntfy.notifications == []
 
 
 async def test_oauth_clients_are_kept_in_the_database(lachesis: Lachesis) -> None:

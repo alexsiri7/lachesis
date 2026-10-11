@@ -6,6 +6,8 @@ See ``openspec/specs/progress-reporting/spec.md``.
 from __future__ import annotations
 
 import base64
+import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +23,14 @@ from groups import Candidate, group_requirements
 from landing import SpecChangeCandidate
 from spec_reference import SpecReference
 from tools.requirements import get_dashboard, list_requirements
-from tools.specs import list_spec_changes, read_spec_progress
+from tools.specs import (
+    list_spec_changes,
+    patch_scenarios,
+    pending_scenarios,
+    read_spec_progress,
+    scenario_view,
+    spec_change_status,
+)
 
 _GRAPHQL_URL = "https://api.github.com/graphql"
 _NOW = datetime.now(UTC)
@@ -209,6 +218,80 @@ def signed_in() -> Any:
     current_db_user_id.reset(token)
 
 
+_ISSUES_URL = re.compile(r"https://api\.github\.com/repos/owner/repo/issues\?.*")
+_CHECK_RUNS_URL = re.compile(
+    r"https://api\.github\.com/repos/[^/]+/[^/]+/commits/main/check-runs.*"
+)
+
+
+@pytest.fixture()
+def scenario_results() -> dict[str, dict[str, str]] | None:
+    """The scenario results CI published for the default branch: none fail unless a test says."""
+    return {"backlog": {"Ordered": "passed"}}
+
+
+@pytest.fixture(autouse=True)
+def _published(
+    request: pytest.FixtureRequest, scenario_results: dict[str, dict[str, str]] | None
+) -> None:
+    if "httpx_mock" not in request.fixturenames:
+        return
+    httpx_mock: HTTPXMock = request.getfixturevalue("httpx_mock")
+    if scenario_results is None:
+        httpx_mock.add_response(
+            url=_CHECK_RUNS_URL, json={"total_count": 0, "check_runs": []}, is_optional=True
+        )
+        return
+    httpx_mock.add_response(
+        url=_CHECK_RUNS_URL,
+        json={
+            "total_count": 1,
+            "check_runs": [
+                {
+                    "name": "scenario-results",
+                    "head_sha": "c0ffee",
+                    "status": "completed",
+                    "completed_at": _stamp(0),
+                    "output": {"text": json.dumps(scenario_results)},
+                }
+            ],
+        },
+        is_optional=True,
+        is_reusable=True,
+    )
+
+
+def _mock_spec_change_files(
+    httpx_mock: HTTPXMock, number: int, patch: str | None, capability: str = "backlog"
+) -> None:
+    httpx_mock.add_response(
+        url=f"https://api.github.com/repos/owner/repo/pulls/{number}/files?per_page=100",
+        json=[
+            {
+                "filename": f"openspec/specs/{capability}/spec.md",
+                "status": "modified",
+                **({} if patch is None else {"patch": patch}),
+            },
+            {"filename": "README.md", "status": "modified", "patch": "@@ -1 +1 @@\n+Hi"},
+        ],
+    )
+
+
+async def _list_built_spec_change(httpx_mock: HTTPXMock, number: int = 170) -> dict[str, Any]:
+    """List merged spec change *number*, whose one issue closed with a merged pull request."""
+    _mock_uses_specs(httpx_mock)
+    httpx_mock.add_response(
+        url=_ISSUES_URL,
+        json=[
+            _issue_item(number + 1, body=_reference(number), state="closed"),
+            _spec_change_item(number, merged_at=_stamp(5)),
+        ],
+    )
+    _mock_issue_activity(httpx_mock, _issue_node(number + 1, state="CLOSED", merged_pr=300))
+    [change] = await list_spec_changes("owner/repo")
+    return change
+
+
 # ---------------------------------------------------------------------------
 # Status is derived from the work
 # ---------------------------------------------------------------------------
@@ -243,6 +326,208 @@ async def test_spec_change_fully_built(httpx_mock: HTTPXMock) -> None:
         stale_after_days=14,
     )
     assert _group_of(grouped, spec_change=152) == "landed"
+
+
+_THREE_SCENARIOS = (
+    "@@ -1,3 +1,12 @@\n"
+    " ## Requirements\n"
+    "+#### Scenario: Ordered\n"
+    "+- GIVEN an order\n"
+    "+#### Scenario: Parked\n"
+    "+- GIVEN a parked issue\n"
+    "+#### Scenario: Focused\n"
+    "+- GIVEN a focus"
+)
+
+
+@pytest.mark.parametrize(
+    "scenario_results",
+    [{"backlog": {"Ordered": "passed", "Parked": "xfail", "Focused": "failed", "Held": "xfail"}}],
+)
+async def test_built_but_not_yet_passing(httpx_mock: HTTPXMock) -> None:
+    _mock_spec_change_files(httpx_mock, 170, _THREE_SCENARIOS)
+
+    change = await _list_built_spec_change(httpx_mock)
+
+    assert change["derived"]["status"] == "in-progress"
+    assert change["derived"]["landed_at"] is None
+    assert change["pending_scenarios"] == [
+        {"capability": "backlog", "scenario": "Parked", "result": "xfail"},
+        {"capability": "backlog", "scenario": "Focused", "result": "failed"},
+    ]
+
+
+@pytest.mark.parametrize("scenario_results", [{"backlog": {"Ordered": "xfail"}}])
+async def test_a_built_spec_change_is_done_once_its_own_scenarios_pass(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_change_files(httpx_mock, 170, "@@ -1,2 +1,4 @@\n+#### Scenario: Parked\n+- GIVEN")
+
+    change = await _list_built_spec_change(httpx_mock)
+
+    assert change["derived"]["status"] == "done"
+    assert change["pending_scenarios"] == []
+
+
+@pytest.mark.parametrize("scenario_results", [None])
+async def test_a_built_spec_change_waits_for_scenario_results_to_be_published(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_change_files(httpx_mock, 170, "@@ -1,2 +1,4 @@\n+#### Scenario: Parked\n+- GIVEN")
+
+    change = await _list_built_spec_change(httpx_mock)
+
+    assert change["derived"]["status"] == "in-progress"
+    assert change["pending_scenarios"] == [
+        {"capability": "backlog", "scenario": "Parked", "result": None}
+    ]
+
+
+@pytest.mark.parametrize("scenario_results", [{"backlog": {"Parked": "xfail"}}])
+async def test_a_change_the_diff_cannot_place_is_found_in_the_spec_at_the_head(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_change_files(httpx_mock, 170, "@@ -7,3 +7,3 @@\n context\n-- THEN old\n+- THEN new")
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/pulls/170",
+        json={"head": {"sha": "head1"}, "base": {"sha": "base0"}},
+    )
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/compare/base0...head1",
+        json={"merge_base_commit": {"sha": "base1"}},
+    )
+    spec = "\n".join(
+        [
+            "# Backlog",
+            "## Requirements",
+            "### Requirement: Park",
+            "x SHALL",
+            "#### Scenario: Parked",
+        ]
+        + ["- GIVEN", "- WHEN", "- THEN new", "- AND more"]
+    )
+    httpx_mock.add_response(
+        url=(
+            "https://api.github.com/repos/owner/repo/contents/openspec/specs/backlog/spec.md"
+            "?ref=head1"
+        ),
+        content=spec.encode(),
+    )
+
+    change = await _list_built_spec_change(httpx_mock)
+
+    assert change["pending_scenarios"] == [
+        {"capability": "backlog", "scenario": "Parked", "result": "xfail"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "scenario_results", [{"backlog": {"Ordered": "passed", "Parked": "xfail", "Held": "failed"}}]
+)
+async def test_every_scenario_of_a_spec_whose_diff_github_withholds_is_touched(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_change_files(httpx_mock, 170, None)
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/pulls/170",
+        json={"head": {"sha": "head1"}, "base": {"sha": "base0"}},
+    )
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/compare/base0...head1",
+        json={"merge_base_commit": {"sha": "base1"}},
+    )
+    spec = "\n".join(
+        [
+            "# Backlog",
+            "## Requirements",
+            "### Requirement: Park",
+            "x SHALL",
+            "#### Scenario: Ordered",
+            "- GIVEN",
+            "#### Scenario: Parked",
+            "- GIVEN",
+            "#### Scenario: Held",
+            "- GIVEN",
+        ]
+    )
+    httpx_mock.add_response(
+        url=(
+            "https://api.github.com/repos/owner/repo/contents/openspec/specs/backlog/spec.md"
+            "?ref=head1"
+        ),
+        content=spec.encode(),
+    )
+
+    change = await _list_built_spec_change(httpx_mock)
+
+    assert change["derived"]["status"] == "in-progress"
+    assert change["pending_scenarios"] == [
+        {"capability": "backlog", "scenario": "Parked", "result": "xfail"},
+        {"capability": "backlog", "scenario": "Held", "result": "failed"},
+    ]
+
+
+@pytest.mark.parametrize("scenario_results", [{"backlog": {"Parked": "xfail"}}])
+async def test_a_built_spec_change_github_will_not_diff_is_unreadable(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/pulls/170/files?per_page=100",
+        status_code=502,
+    )
+
+    change = await _list_built_spec_change(httpx_mock)
+
+    assert change["derived"]["status"] is None
+    assert change["derived"]["source"] == "unavailable"
+    assert change["derived"]["unavailable_cause"] == "transient"
+    assert change["derived"]["landed_at"] is None
+    assert spec_change_status(change) == "unreadable"
+
+
+def test_a_patch_names_the_scenarios_it_adds_or_modifies() -> None:
+    patch = (
+        "@@ -1,4 +1,5 @@\n"
+        " #### Scenario: Kept\n"
+        " - GIVEN a widget\n"
+        "+- AND another\n"
+        " #### Scenario: Untouched\n"
+        " - GIVEN nothing\n"
+        "@@ -20,3 +21,3 @@\n"
+        "-- THEN gone\n"
+        "+#### Scenario: Added\n"
+        " ### Requirement: Next\n"
+        "+Some text SHALL hold.\n"
+        "\\ No newline at end of file"
+    )
+
+    assert patch_scenarios(patch) == (["Kept", "Added"], [20])
+
+
+def test_a_scenario_no_longer_specified_is_not_pending() -> None:
+    results = {"commit": "c0ffee", "capabilities": {"backlog": {"Parked": "untested"}}}
+
+    pending = pending_scenarios([("backlog", "Parked"), ("backlog", "Removed")], results)
+
+    assert pending == [{"capability": "backlog", "scenario": "Parked", "result": "untested"}]
+
+
+def test_capability_view() -> None:
+    passing = ["Ordered", "Focused", "Interrupted", "Drawn", "Held"]
+    results = {
+        "commit": "c0ffee",
+        "capabilities": {"backlog": {**{title: "passed" for title in passing}, "Parked": "xfail"}},
+    }
+
+    view = scenario_view(results)
+
+    assert view == {
+        "published": True,
+        "commit": "c0ffee",
+        "capabilities": {
+            "backlog": {"passed": passing, "xfail": ["Parked"], "failed": [], "untested": []}
+        },
+    }
 
 
 def test_requirement_file_shipped_but_never_updated() -> None:
@@ -314,12 +599,12 @@ def test_a_spec_change_with_an_unread_issue_is_unreadable_not_done() -> None:
 
 async def test_spec_change_abandoned(httpx_mock: HTTPXMock) -> None:
     _mock_uses_specs(httpx_mock)
-    httpx_mock.add_response(json=[_spec_change_item(160, state="closed")])
+    httpx_mock.add_response(url=_ISSUES_URL, json=[_spec_change_item(160, state="closed")])
 
     assert await list_spec_changes("owner/repo") == []
 
     _mock_uses_specs(httpx_mock)
-    httpx_mock.add_response(json=[_spec_change_item(160, state="closed")])
+    httpx_mock.add_response(url=_ISSUES_URL, json=[_spec_change_item(160, state="closed")])
     [change] = await list_spec_changes("owner/repo", include_inactive=True)
 
     assert change["state"] == "closed"
@@ -528,7 +813,7 @@ async def test_progress_keeps_the_reference_of_each_issue_naming_a_spec_change(
 
     progress = await read_spec_progress("owner/repo")
 
-    assert progress.references == {1: SpecReference(20, "milestones", "Review")}
+    assert progress.references == {1: SpecReference(20, ("milestones",), "Review")}
 
 
 async def test_every_page_of_issues_is_read(httpx_mock: HTTPXMock) -> None:
@@ -539,7 +824,7 @@ async def test_every_page_of_issues_is_read(httpx_mock: HTTPXMock) -> None:
     progress = await read_spec_progress("owner/repo")
 
     assert progress.spec_gaps == {"backlog": 1}
-    pages = [request.url.params["page"] for request in httpx_mock.get_requests()]
+    pages = [request.url.params["page"] for request in httpx_mock.get_requests(url=_ISSUES_URL)]
     assert pages == ["1", "2"]
 
 
@@ -611,9 +896,32 @@ async def test_get_dashboard_offers_spec_changes_for_landing(
         result = await get_dashboard()
 
     assert [c["spec_change"] for c in result["repos"][0]["spec_changes"]] == [20]
+    assert result["repos"][0]["scenario_results"]["capabilities"] == {
+        "backlog": {"passed": ["Ordered"], "xfail": [], "failed": [], "untested": []}
+    }
     repo, candidates = notify_landed.await_args.args
     assert repo == "owner/specs"
     assert [c.entry["spec_change"] for c in candidates] == [20]
+
+
+@pytest.mark.parametrize("scenario_results", [None])
+async def test_the_dashboard_says_when_no_scenario_results_are_published(
+    httpx_mock: HTTPXMock, signed_in: None
+) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
+    ):
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(json=[])  # no issues or spec changes
+        _mock_waiting(httpx_mock)
+
+        result = await get_dashboard()
+
+    view = result["repos"][0]["scenario_results"]
+    assert view["published"] is False
+    assert "scenario-results" in view["message"]
 
 
 async def test_list_spec_changes_is_refused_without_specs(httpx_mock: HTTPXMock) -> None:

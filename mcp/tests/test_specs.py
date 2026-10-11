@@ -12,6 +12,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 import main
+from spec_reference import SpecReference, parse_reference
 from tools.requirements import (
     create_requirement,
     get_initial_instructions,
@@ -522,6 +523,16 @@ def _mock_open_pull_request(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(url=_API, json={"allow_auto_merge": False})
 
 
+def _mock_acceptance_tests_issue(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", url=f"{_API}/labels", status_code=201, json={})
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{_API}/issues",
+        status_code=201,
+        json={"number": 13, "id": 1013, "title": "T", "html_url": "u", "node_id": "I_13"},
+    )
+
+
 def _mock_open_spec_change(
     httpx_mock: HTTPXMock,
     *,
@@ -567,6 +578,7 @@ async def test_proposing_a_change_to_two_capabilities(httpx_mock: HTTPXMock) -> 
     _mock_branch_file(httpx_mock, _ISSUES_PATH, None)
     _mock_put(httpx_mock, _ISSUES_PATH, status_code=201)
     httpx_mock.add_response(method="POST", url=f"{_API}/issues/12/labels", json=[])
+    _mock_acceptance_tests_issue(httpx_mock)
 
     result = await propose_spec_change(
         _REPO,
@@ -575,7 +587,7 @@ async def test_proposing_a_change_to_two_capabilities(httpx_mock: HTTPXMock) -> 
         {"backlog": _BACKLOG_SPEC, "issues": _ISSUES_SPEC},
     )
 
-    assert result == {"repo": _REPO, "number": 12, "url": _PR_URL}
+    assert result == {"repo": _REPO, "number": 12, "url": _PR_URL, "acceptance_tests_issue": 13}
     [pull] = [r for r in _requests(httpx_mock, "POST") if r.url.path.endswith("/pulls")]
     assert json.loads(pull.content)["body"] == "Some issues must wait."
     branch = json.loads(pull.content)["head"]
@@ -584,8 +596,16 @@ async def test_proposing_a_change_to_two_capabilities(httpx_mock: HTTPXMock) -> 
         {"path": _BACKLOG_PATH, "content": _BACKLOG_SPEC, "sha": "old", "branch": branch},
         {"path": _ISSUES_PATH, "content": _ISSUES_SPEC, "sha": None, "branch": branch},
     ]
-    [label] = [r for r in _requests(httpx_mock, "POST") if r.url.path.endswith("/labels")]
+    [label] = [r for r in _requests(httpx_mock, "POST") if r.url.path.endswith("/12/labels")]
     assert json.loads(label.content) == {"labels": ["spec-change"]}
+    [tests_issue] = [r for r in _requests(httpx_mock, "POST") if r.url.path.endswith("/issues")]
+    tests_issue_body = json.loads(tests_issue.content)
+    assert tests_issue_body["labels"] == ["acceptance-tests"]
+    assert f"`{branch}`" in tests_issue_body["body"]
+    assert tests_issue_body["body"].endswith(
+        "---\nSpec change: #12\nCapability: backlog\nCapability: issues"
+    )
+    assert parse_reference(tests_issue_body["body"]) == SpecReference(12, ("backlog", "issues"))
 
 
 async def test_requirement_without_a_scenario(httpx_mock: HTTPXMock) -> None:
@@ -636,11 +656,50 @@ async def test_propose_spec_change_removes_a_capability_mapped_to_null(
     _mock_branch_file(httpx_mock, _ISSUES_PATH, _ISSUES_SPEC, sha="i1")
     httpx_mock.add_response(method="DELETE", url=f"{_API}/contents/{_ISSUES_PATH}", json={})
     httpx_mock.add_response(method="POST", url=f"{_API}/issues/12/labels", json=[])
+    _mock_acceptance_tests_issue(httpx_mock)
 
     await propose_spec_change(_REPO, "Drop issues", "Why", {"issues": None})
 
     [delete] = _requests(httpx_mock, "DELETE")
     assert json.loads(delete.content)["sha"] == "i1"
+
+
+async def test_propose_spec_change_explains_a_failed_acceptance_tests_issue(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_repo(httpx_mock)
+    _mock_open_pull_request(httpx_mock)
+    _mock_branch_file(httpx_mock, _BACKLOG_PATH, None)
+    _mock_put(httpx_mock, _BACKLOG_PATH, status_code=201)
+    httpx_mock.add_response(method="POST", url=f"{_API}/issues/12/labels", json=[])
+    httpx_mock.add_response(method="POST", url=f"{_API}/labels", status_code=403)
+    httpx_mock.add_response(method="POST", url=f"{_API}/issues", status_code=403)
+
+    with pytest.raises(
+        RuntimeError, match=r"Opened spec change #12 but could not open its acceptance-tests"
+    ):
+        await propose_spec_change(_REPO, "T", "Why", {"backlog": _BACKLOG_SPEC})
+
+
+async def test_propose_spec_change_opens_the_tests_issue_when_its_label_cannot_be_ensured(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_spec_repo(httpx_mock)
+    _mock_open_pull_request(httpx_mock)
+    _mock_branch_file(httpx_mock, _BACKLOG_PATH, None)
+    _mock_put(httpx_mock, _BACKLOG_PATH, status_code=201)
+    httpx_mock.add_response(method="POST", url=f"{_API}/issues/12/labels", json=[])
+    httpx_mock.add_response(method="POST", url=f"{_API}/labels", status_code=403)
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{_API}/issues",
+        status_code=201,
+        json={"number": 13, "id": 1013, "title": "T", "html_url": "u", "node_id": "I_13"},
+    )
+
+    result = await propose_spec_change(_REPO, "T", "Why", {"backlog": _BACKLOG_SPEC})
+
+    assert result["acceptance_tests_issue"] == 13
 
 
 async def test_propose_spec_change_explains_a_failed_label(httpx_mock: HTTPXMock) -> None:
@@ -666,12 +725,13 @@ async def test_propose_spec_change_labels_the_authors_request(
     _mock_branch_file(httpx_mock, _BACKLOG_PATH, None)
     _mock_put(httpx_mock, _BACKLOG_PATH, status_code=201)
     httpx_mock.add_response(method="POST", url=f"{_API}/issues/12/labels", json=[])
+    _mock_acceptance_tests_issue(httpx_mock)
 
     await propose_spec_change(
         _REPO, "T", "Why", {"backlog": _BACKLOG_SPEC}, author_request=author_request
     )
 
-    [labelled] = [r for r in _requests(httpx_mock, "POST") if r.url.path.endswith("/labels")]
+    [labelled] = [r for r in _requests(httpx_mock, "POST") if r.url.path.endswith("/12/labels")]
     assert json.loads(labelled.content)["labels"] == labels
 
 
@@ -681,6 +741,7 @@ async def test_work_lands(httpx_mock: HTTPXMock) -> None:
     _mock_branch_file(httpx_mock, _BACKLOG_PATH, None)
     _mock_put(httpx_mock, _BACKLOG_PATH, status_code=201)
     httpx_mock.add_response(method="POST", url=f"{_API}/issues/12/labels", json=[])
+    _mock_acceptance_tests_issue(httpx_mock)
 
     await propose_spec_change(_REPO, "Park issues #42", "Closes #42", {"backlog": _BACKLOG_SPEC})
 
@@ -892,6 +953,12 @@ async def test_sprint_review_guidance(httpx_mock: HTTPXMock, specs: bool | None)
     assert "ask_question\n  with kind improvement" in review
     assert "create_github_issues for that work" in review
     assert review.index("search_answered_questions") < review.index("ask_question")
+    assert "judge_experiment" in review
+    assert "stop_the_line" in review
+    assert "whatever else you choose" in review
+    assert "make its change standard" in review
+    assert "choose one or two improvements" in review
+    assert "record_experiment" in review
 
 
 async def test_briefing_reads_fuel_and_the_dashboard_first() -> None:
@@ -971,6 +1038,7 @@ _GUIDANCE_FIELDS = {
     "first_report",
     "spec_change",
     "spec_gap",
+    "stop_the_line",
     "uses_specs",
     "wait_days",
     "waiting_on_author",

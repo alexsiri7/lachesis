@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
@@ -311,7 +312,7 @@ def test_record_event_refuses_an_unknown_kind() -> None:
     """A mistyped kind would otherwise become a permanent row no kind filter matches."""
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
-        db.record_event("uid", "owner/repo", "question_answerd", "q1")  # type: ignore[arg-type]
+        db.record_event("uid", "owner/repo", "question_answerd", "q1")
 
     mock.begin.assert_not_called()
 
@@ -398,7 +399,7 @@ def test_record_question_stores_the_question_and_its_event_in_one_transaction() 
 def test_record_question_refuses_an_unknown_kind() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
-        db.record_question("uid", "owner/repo", "A or B?", "clarifcation", "archon")  # type: ignore[arg-type]
+        db.record_question("uid", "owner/repo", "A or B?", "clarifcation", "archon")
 
     mock.begin.assert_not_called()
 
@@ -456,7 +457,7 @@ def test_answer_question_refuses_a_question_that_is_not_open() -> None:
 def test_answer_question_refuses_an_unknown_outcome() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="outcome"):
-        db.answer_question("uid", "owner/repo", 7, "A.", "alex", "rule")  # type: ignore[arg-type]
+        db.answer_question("uid", "owner/repo", 7, "A.", "alex", "rule")
 
     mock.begin.assert_not_called()
 
@@ -559,7 +560,7 @@ def test_record_note_refuses_anything_but_exactly_one_subject(subject: dict) -> 
 def test_record_note_refuses_an_unknown_type() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="type"):
-        db.record_note("uid", "owner/repo", "implementer", "handof", "x", issue=1)  # type: ignore[arg-type]
+        db.record_note("uid", "owner/repo", "implementer", "handof", "x", issue=1)
 
     mock.begin.assert_not_called()
 
@@ -649,7 +650,7 @@ def test_record_usage_report_stores_the_report_and_its_event_in_one_transaction(
 def test_record_usage_report_refuses_an_unknown_kind() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
-        db.record_usage_report("uid", "owner/repo", 1, "m", "coding", 1, 1, None)  # type: ignore[arg-type]
+        db.record_usage_report("uid", "owner/repo", 1, "m", "coding", 1, 1, None)
 
     mock.begin.assert_not_called()
 
@@ -670,9 +671,9 @@ def test_usage_by_issue_sums_tokens_per_issue_and_kind() -> None:
     from decimal import Decimal
 
     rows = [
-        {"issue": 1, "kind": "tests", "tokens": Decimal(5)},
-        {"issue": 1, "kind": "triage", "tokens": 2},
-        {"issue": 2, "kind": "implementation", "tokens": Decimal(40)},
+        {"issue": 1, "key": "tests", "tokens": Decimal(5)},
+        {"issue": 1, "key": "triage", "tokens": 2},
+        {"issue": 2, "key": "implementation", "tokens": Decimal(40)},
     ]
     mock = _mock_engine(rows)
     with patch("db._engine", return_value=mock):
@@ -683,6 +684,16 @@ def test_usage_by_issue_sums_tokens_per_issue_and_kind() -> None:
     sql, params = mock.connect.return_value.execute.call_args[0]
     assert "GROUP BY issue, kind" in str(sql)
     assert params == {"user_id": "uid", "repo_name": "owner/repo"}
+
+
+def test_usage_by_issue_by_model_sums_tokens_per_issue_and_model() -> None:
+    mock = _mock_engine([{"issue": 1, "key": "claude", "tokens": 7}])
+    with patch("db._engine", return_value=mock):
+        result = db.usage_by_issue("uid", "owner/repo", by="model")
+
+    assert result == {1: {"claude": 7}}
+    sql, _ = mock.connect.return_value.execute.call_args[0]
+    assert "GROUP BY issue, model" in str(sql)
 
 
 def test_record_run_outcome_stores_it_against_the_latest_run_with_its_event() -> None:
@@ -728,7 +739,7 @@ def test_record_run_outcome_refuses_when_no_run_of_the_kind_is_on_the_issue() ->
 def test_record_run_outcome_refuses_an_unknown_kind_or_outcome(kind: str, outcome: str) -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="must be one of"):
-        db.record_run_outcome("uid", "owner/repo", 1, kind, outcome)  # type: ignore[arg-type]
+        db.record_run_outcome("uid", "owner/repo", 1, kind, outcome)
 
     mock.begin.assert_not_called()
 
@@ -785,7 +796,7 @@ def test_set_estimate_replaces_the_issues_estimate() -> None:
     mock = _mock_engine([row])
     with patch("db._engine", return_value=mock):
         result = db.set_estimate(
-            "uid", "owner/repo", 230, "implementation", "sprints", 4600, "normal", "capability", 8
+            "uid", "owner/repo", 230, "implementation", "sprints", 4600, "normal", "kind", 8
         )
 
     assert result == row
@@ -800,7 +811,7 @@ def test_set_estimate_replaces_the_issues_estimate() -> None:
         "capability": "sprints",
         "tokens": 4600,
         "confidence": "normal",
-        "basis": "capability",
+        "basis": "kind",
         "samples": 8,
     }
 
@@ -808,7 +819,7 @@ def test_set_estimate_replaces_the_issues_estimate() -> None:
 def test_set_estimate_refuses_an_unknown_kind() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock), pytest.raises(ValueError, match="kind"):
-        db.set_estimate("uid", "owner/repo", 1, "coding", None, None, "low", "none", 0)  # type: ignore[arg-type]
+        db.set_estimate("uid", "owner/repo", 1, "coding", None, None, "low", "none", 0)
 
     mock.begin.assert_not_called()
 
@@ -817,13 +828,15 @@ def test_estimates_migration_allows_exactly_the_typed_values_and_one_estimate_pe
     from pathlib import Path
     from typing import get_args
 
-    migration = (Path(db.__file__).parent / "alembic/versions/016_estimates.py").read_text()
-    for column, values in (
-        ("kind", db.UsageKind),
-        ("confidence", db.EstimateConfidence),
-        ("basis", db.EstimateBasis),
+    versions = Path(db.__file__).parent / "alembic/versions"
+    migration = (versions / "016_estimates.py").read_text()
+    bases = (versions / "028_point_prices.py").read_text().split("def downgrade")[0]
+    for source, column, values in (
+        (migration, "kind", db.UsageKind),
+        (migration, "confidence", db.EstimateConfidence),
+        (bases, "basis", db.EstimateBasis),
     ):
-        check = re.search(rf"\"{column} IN \((.*?)\)\"", migration)
+        check = re.search(rf"\"{column} IN \((.*?)\)\"", source)
         assert check is not None
         assert re.findall(r"'([^']+)'", check.group(1)) == list(get_args(values))
     assert 'sa.UniqueConstraint("user_id", "repo_name", "issue"' in migration
@@ -1085,8 +1098,8 @@ def test_milestones_done_between_reads_done_state_changes_in_the_window() -> Non
 
     sql, params = mock.connect.return_value.execute.call_args[0]
     assert "kind = 'milestone_state_changed'" in str(sql)
-    assert "':done'" in str(sql)
-    assert params == {"user_id": "uid", "start": start, "end": end}
+    assert "m.id::text || :done_suffix" in str(sql)
+    assert params == {"user_id": "uid", "start": start, "end": end, "done_suffix": ":done"}
 
 
 def test_claim_sprint_report_stores_the_report_once() -> None:
@@ -1135,3 +1148,57 @@ def test_overflow_migration_moves_the_primary_accounts_figures() -> None:
     assert "WHERE a.is_primary" in migration
     assert 'op.drop_column("lachesis_fuel", "overflow_cap_usd")' in migration
     assert 'down_revision: str | None = "020"' in migration
+
+
+def test_judge_experiment_refuses_an_unknown_verdict() -> None:
+    with patch("db._engine") as engine, pytest.raises(ValueError, match="verdict must be one of"):
+        db.judge_experiment("uid", 1, 6, "abandoned", "Why.", datetime(2026, 10, 10, tzinfo=UTC))
+
+    engine.assert_not_called()
+
+
+def test_list_open_experiments_leaves_out_judged_experiments() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        assert db.list_open_experiments("uid") == []
+
+    sql = " ".join(str(mock.connect.return_value.execute.call_args[0][0]).split())
+    assert "WHERE user_id = :user_id AND state = 'open'" in sql
+    assert mock.connect.return_value.execute.call_args[0][1] == {"user_id": "uid"}
+
+
+@pytest.mark.parametrize(
+    ("verdict", "state"), [("kept", "kept"), ("reverted", "reverted"), ("extended", "open")]
+)
+def test_judge_experiment_appends_the_result_to_an_open_experiment(
+    verdict: str, state: str
+) -> None:
+    row = {"id": 1, "state": state}
+    mock = _mock_engine([row])
+    judged_at = datetime(2026, 10, 10, tzinfo=UTC)
+    with patch("db._engine", return_value=mock):
+        assert db.judge_experiment("uid", 1, 6, verdict, "Why.", judged_at) == row
+
+    sql, params = mock.begin.return_value.__enter__.return_value.execute.call_args[0]
+    assert "state = 'open'" in str(sql)
+    assert params["state"] == state
+    assert json.loads(params["result"]) == [
+        {"value": 6, "verdict": verdict, "reason": "Why.", "judged_at": str(judged_at)}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("found", "message"),
+    [
+        (None, "Experiment 1 not found"),
+        ({"state": "reverted"}, "Experiment 1 is already reverted"),
+        ({"state": "open"}, "already given one more sprint"),
+    ],
+)
+def test_judge_experiment_says_why_it_judged_nothing(found: dict | None, message: str) -> None:
+    conn = MagicMock()
+    conn.execute.return_value.mappings.return_value.first.side_effect = [None, found]
+    engine = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    with patch("db._engine", return_value=engine), pytest.raises(ValueError, match=message):
+        db.judge_experiment("uid", 1, 6, "extended", "Why.", datetime(2026, 10, 10, tzinfo=UTC))

@@ -598,9 +598,9 @@ async def test_requirement_without_work(requirements: AsyncMock) -> None:
         ("milestones", "Req B", "changed"),
     ]
     references = {
-        231: SpecReference(170, "milestones", "  req   B "),
-        232: SpecReference(170, "milestones"),
-        233: SpecReference(171, "milestones", "Req A"),
+        231: SpecReference(170, ("milestones",), "  req   B "),
+        232: SpecReference(170, ("milestones",)),
+        233: SpecReference(171, ("milestones",), "Req A"),
     }
 
     review = await _review(_IN_PROGRESS, references=references)
@@ -681,7 +681,10 @@ async def test_open_questions_blocking_the_work(questions: AsyncMock) -> None:
 
     review = await _review(
         _IN_PROGRESS,
-        references={232: SpecReference(170, "milestones"), 999: SpecReference(171, "milestones")},
+        references={
+            232: SpecReference(170, ("milestones",)),
+            999: SpecReference(171, ("milestones",)),
+        },
     )
 
     assert [q["id"] for q in review["gaps"]["open_questions"]] == [1, 2, 3]

@@ -55,6 +55,13 @@ def test_spec_scenarios_are_read_per_capability(tmp_path: Path) -> None:
     assert spec_scenarios(tmp_path) == SCENARIOS
 
 
+def test_a_scenario_heading_without_a_title_names_no_scenario(tmp_path: Path) -> None:
+    spec = tmp_path / "backlog" / "spec.md"
+    spec.parent.mkdir()
+    spec.write_text("#### Scenario:\n- GIVEN x\n\n#### Scenario: \t\n- GIVEN y\n")
+    assert spec_scenarios(tmp_path) == {"backlog": []}
+
+
 def test_claims_are_read_from_markers_outside_the_harness(tmp_path: Path) -> None:
     acceptance = tmp_path / "tests" / "acceptance"
     (acceptance / "backlog").mkdir(parents=True)
