@@ -137,6 +137,50 @@ test('the guard file is read from the config dir', async ($, on) => {
   expect(paths).toContain('/factory-main/budget-guard.json')
 })
 
+function stepped(on: any, now: string, sevenDay: number) {
+  on('clock.now', () => ({ value: Date.parse(now) }))
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({
+    value: JSON.stringify({ enabled: true, fiveHourCapPercent: 60, weeklySteps: [[0, 65], [90, 90], [95, 100]], mode: 'stop' }),
+  }))
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { window: 200000 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 5 },
+        { kind: 'seven_day', percentUsed: sevenDay, resetsAt: '2026-10-10T15:00:00Z' },
+      ],
+    },
+  }))
+  on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }))
+}
+
+// Week resets 2026-10-10T15:00Z. 90% elapsed = 16.8h left; 95% = 8.4h left.
+test('stepped guard: early in the week the first step holds', async ($, on) => {
+  stepped(on, '2026-10-06T15:00:00Z', 66)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny ?? r.text).toContain('7-day window at 66% (cap 65%)')
+})
+
+test('stepped guard: past 90% of the week the cap rises to 90%', async ($, on) => {
+  stepped(on, '2026-10-09T23:00:00Z', 85)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny).toBeUndefined()
+})
+
+test('stepped guard: past 95% of the week the cap is 100%', async ($, on) => {
+  stepped(on, '2026-10-10T08:00:00Z', 95)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny).toBeUndefined()
+})
+
+test('stepped guard: the usage tool names the step in force', async ($, on) => {
+  stepped(on, '2026-10-09T23:00:00Z', 10)
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('7-day cap 90% now (stepped by week elapsed: 65% from 0%, 90% from 90%, 100% from 95%)')
+})
+
 test('the wrap-up note says to finish, not to start', async () => {
   const note = wrapUpNote(['5-hour window at 61% (cap 60%)'])
   expect(note).toContain('5-hour window at 61%')
