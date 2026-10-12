@@ -61,6 +61,14 @@ class FakeGitHub:
         with self._lock:
             return [r for r in self.requests if r.method == method.upper() and r.path == path]
 
+    def automerge_requests(self) -> list[Any]:
+        """The bodies of the GraphQL requests that enable automerge on a pull request."""
+        return [
+            request.body
+            for request in self.requests_to("POST", "/graphql")
+            if "enablePullRequestAutoMerge" in (request.body or {}).get("query", "")
+        ]
+
     def reset(self) -> None:
         with self._lock:
             self._responses.clear()

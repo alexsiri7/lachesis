@@ -7,8 +7,6 @@ proposing the spec change is all that is left to Lachesis.
 
 from __future__ import annotations
 
-from typing import Any
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -88,14 +86,6 @@ def _github_for_a_spec_change(lachesis: Lachesis) -> None:
     )
 
 
-def _automerge_requests(lachesis: Lachesis) -> list[dict[str, Any]]:
-    return [
-        request.body
-        for request in lachesis.github.requests_to("POST", "/graphql")
-        if "enablePullRequestAutoMerge" in (request.body or {}).get("query", "")
-    ]
-
-
 @scenario("spec-changes", "Spec change with its tests merges by itself")
 async def test_spec_change_with_its_tests_merges_by_itself(lachesis: Lachesis) -> None:
     await lachesis.call_tool("register_repo", {"repo": REPO})
@@ -113,7 +103,7 @@ async def test_spec_change_with_its_tests_merges_by_itself(lachesis: Lachesis) -
 
     assert not result.is_error, result.text
     assert result.json()["number"] == PULL
-    [automerge] = _automerge_requests(lachesis)
+    [automerge] = lachesis.github.automerge_requests()
     assert automerge["variables"]["pullRequestId"] == NODE_ID
     assert not lachesis.github.requests_to(
         "POST", f"/repos/{REPO}/pulls/{PULL}/requested_reviewers"

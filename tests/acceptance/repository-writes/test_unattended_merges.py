@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from harness import Lachesis, scenario
+from harness import Lachesis, find_matching, scenario
 
 REPO = "owner/widgets"
 REQUIREMENTS = f"/repos/{REPO}/contents/requirements"
@@ -54,22 +53,6 @@ async def _ok(lachesis: Lachesis, tool: str, arguments: dict[str, Any]) -> Any:
     return result.json()
 
 
-def _find(value: Any, predicate: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
-    """Every dict nested anywhere in *value* that satisfies *predicate*."""
-    found: list[dict[str, Any]] = []
-    if isinstance(value, dict):
-        if predicate(value):
-            found.append(value)
-        children = list(value.values())
-    elif isinstance(value, list):
-        children = value
-    else:
-        return found
-    for child in children:
-        found += _find(child, predicate)
-    return found
-
-
 def _names_the_pull(entry: dict[str, Any]) -> bool:
     return entry.get("number") == PULL or entry.get("url") == PULL_URL
 
@@ -104,7 +87,10 @@ def _github_holds(lachesis: Lachesis, *names: str) -> None:
 
 
 def _main_is_protected(lachesis: Lachesis, name: str) -> None:
-    """Main refuses each of the three attempts an update makes there; its branch takes it."""
+    """Main refuses each of the three attempts an update makes there; its branch takes it.
+
+    Three is `_MAX_WRITE_ATTEMPTS`, which a unit test in mcp/tests/test_requirements.py pins.
+    """
     lachesis.github.on_sequence(
         "PUT",
         f"{REQUIREMENTS}/{name}",
@@ -138,14 +124,6 @@ def _github_opens_pull_requests(lachesis: Lachesis) -> None:
     )
 
 
-def _automerge_requests(lachesis: Lachesis) -> list[dict[str, Any]]:
-    return [
-        request.body
-        for request in lachesis.github.requests_to("POST", "/graphql")
-        if "enablePullRequestAutoMerge" in (request.body or {}).get("query", "")
-    ]
-
-
 @pytest.mark.xfail(strict=True, reason="spec change #251")
 @scenario("repository-writes", "Status update merges by itself")
 async def test_status_update_merges_by_itself(lachesis: Lachesis) -> None:
@@ -160,7 +138,7 @@ async def test_status_update_merges_by_itself(lachesis: Lachesis) -> None:
     )
 
     assert updated["pr"]["number"] == PULL
-    [automerge] = _automerge_requests(lachesis)
+    [automerge] = lachesis.github.automerge_requests()
     assert automerge["variables"]["pullRequestId"] == NODE_ID
     [opened] = lachesis.github.requests_to("POST", f"/repos/{REPO}/pulls")
     assert "review and merge" not in opened.body["body"].lower(), opened.body["body"]
@@ -204,7 +182,7 @@ async def test_automerge_refused(lachesis: Lachesis) -> None:
         ],
     )
     dashboard = await _ok(lachesis, "get_dashboard", {})
-    faults = _find(
+    faults = find_matching(
         dashboard,
         lambda d: (
             AUTOMERGE_REFUSAL.lower() in json.dumps(d).lower()
@@ -213,4 +191,4 @@ async def test_automerge_refused(lachesis: Lachesis) -> None:
         ),
     )
     assert faults, dashboard
-    assert not _find(dashboard["waiting_on_author"], _names_the_pull), dashboard
+    assert not find_matching(dashboard["waiting_on_author"], _names_the_pull), dashboard
