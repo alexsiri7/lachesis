@@ -75,6 +75,19 @@ def test_github_answers_in_turn_then_repeats_the_last() -> None:
     assert numbers == [1, 2, 2]
 
 
+def test_github_answers_each_in_turn_with_its_own_status() -> None:
+    github = FakeGitHub()
+    path = "/repos/owner/repo/contents/README.md"
+    github.on_sequence("PUT", path, (409, {"message": "protected"}), (200, {"content": {}}))
+
+    statuses = [
+        github.handle(httpx.Request("PUT", f"https://api.github.com{path}")).status_code
+        for _ in range(3)
+    ]
+
+    assert statuses == [409, 200, 200]
+
+
 def test_github_answers_graphql_by_repository_and_query() -> None:
     github = FakeGitHub()
     github.on("POST", "/graphql", json={"data": "by path"})
