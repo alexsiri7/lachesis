@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from harness import FakeGitHub, FakeNtfy, Lachesis, scenario
+from harness import FakeGitHub, FakeNtfy, Lachesis, find_matching, scenario
 from harness.github import NOT_FOUND
 
 
@@ -73,6 +73,43 @@ def test_github_answers_in_turn_then_repeats_the_last() -> None:
     ]
 
     assert numbers == [1, 2, 2]
+
+
+def test_github_answers_each_in_turn_with_its_own_status() -> None:
+    github = FakeGitHub()
+    path = "/repos/owner/repo/contents/README.md"
+    github.on_sequence("PUT", path, (409, {"message": "protected"}), (200, {"content": {}}))
+
+    statuses = [
+        github.handle(httpx.Request("PUT", f"https://api.github.com{path}")).status_code
+        for _ in range(3)
+    ]
+
+    assert statuses == [409, 200, 200]
+
+
+def test_github_picks_out_the_requests_enabling_automerge() -> None:
+    github = FakeGitHub()
+    for query in ("query { repository }", "mutation { enablePullRequestAutoMerge }"):
+        github.handle(
+            httpx.Request(
+                "POST",
+                "https://api.github.com/graphql",
+                json={"query": query, "variables": {"pullRequestId": "PR_1"}},
+            )
+        )
+
+    assert github.automerge_requests() == [
+        {"query": "mutation { enablePullRequestAutoMerge }", "variables": {"pullRequestId": "PR_1"}}
+    ]
+
+
+def test_find_matching_searches_every_nested_dict() -> None:
+    answer = {"a": {"hit": 1, "b": [{"hit": 2}, {"miss": 3}]}, "c": [[{"hit": 4}]]}
+
+    found = find_matching(answer, lambda d: "hit" in d)
+
+    assert [d["hit"] for d in found] == [1, 2, 4]
 
 
 def test_github_answers_graphql_by_repository_and_query() -> None:

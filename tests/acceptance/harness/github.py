@@ -39,10 +39,14 @@ class FakeGitHub:
 
     def on_each(self, method: str, path: str, *, json: list[Any], status: int = 200) -> None:
         """Answer successive requests with each of *json* in turn, repeating the last."""
-        if not json:
-            raise ValueError("on_each needs at least one response")
+        self.on_sequence(method, path, *((status, body) for body in json))
+
+    def on_sequence(self, method: str, path: str, *responses: tuple[int, Any]) -> None:
+        """Answer successive requests with each ``(status, json)`` in turn, repeating the last."""
+        if not responses:
+            raise ValueError("on_sequence needs at least one response")
         with self._lock:
-            self._responses[(method.upper(), path)] = deque((status, body) for body in json)
+            self._responses[(method.upper(), path)] = deque(responses)
 
     def on_graphql(self, repo: str, containing: str, *, json: Any) -> None:
         """Answer GraphQL queries about *repo* whose text contains *containing* with *json*.
@@ -56,6 +60,14 @@ class FakeGitHub:
     def requests_to(self, method: str, path: str) -> list[RecordedRequest]:
         with self._lock:
             return [r for r in self.requests if r.method == method.upper() and r.path == path]
+
+    def automerge_requests(self) -> list[Any]:
+        """The bodies of the GraphQL requests that enable automerge on a pull request."""
+        return [
+            request.body
+            for request in self.requests_to("POST", "/graphql")
+            if "enablePullRequestAutoMerge" in (request.body or {}).get("query", "")
+        ]
 
     def reset(self) -> None:
         with self._lock:
