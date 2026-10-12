@@ -2690,6 +2690,15 @@ async def test_delete_requirement_refuses_a_status_that_turned_done_before_the_r
     assert [d["sha"] for d in deletes] == ["stalesha"]
 
 
+def test_a_write_tries_the_default_branch_three_times() -> None:
+    """The acceptance stub of a protected main refuses exactly this many writes.
+
+    Change ``_main_is_protected`` in tests/acceptance/repository-writes/test_unattended_merges.py
+    along with this number: it cannot import it.
+    """
+    assert _MAX_WRITE_ATTEMPTS == 3
+
+
 async def test_link_issues_stops_retrying_a_conflict_that_never_clears(
     httpx_mock: HTTPXMock,
 ) -> None:
