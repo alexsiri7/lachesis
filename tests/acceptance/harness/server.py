@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +51,7 @@ class RunningApp:
     github: FakeGitHub
     ntfy: FakeNtfy
     database: Database
+    restart: Callable[[], None]
 
 
 class Database:
@@ -95,6 +96,33 @@ def _migrate(env: dict[str, str]) -> None:
     )
 
 
+def _forget_app_modules() -> None:
+    """Drop every module loaded from the app, so the next import runs it from scratch."""
+    for name, module in list(sys.modules.items()):
+        if Path(getattr(module, "__file__", None) or "/").is_relative_to(APP_DIR):
+            del sys.modules[name]
+
+
+@contextmanager
+def _serve(sock: socket.socket) -> Iterator[None]:
+    """Run the app's ASGI server on *sock* until the block exits."""
+    main = importlib.import_module("main")
+    server = uvicorn.Server(uvicorn.Config(main.app, log_level="warning"))
+    # The server closes the sockets it is given on shutdown; a restart listens on sock again.
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock.dup()]}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started:
+            if not thread.is_alive() or time.monotonic() > deadline:
+                raise RuntimeError("the Lachesis app did not start")
+            time.sleep(0.01)
+        yield
+    finally:
+        server.should_exit = True
+        thread.join(10)
+
+
 @contextmanager
 def run_app() -> Iterator[RunningApp]:
     url = _database_url()
@@ -105,7 +133,6 @@ def run_app() -> Iterator[RunningApp]:
         _migrate(env)
         os.environ.update(env)
         sys.path.insert(0, str(APP_DIR))
-        main = importlib.import_module("main")
         db = importlib.import_module("db")
         oauth = importlib.import_module("oauth")
 
@@ -121,16 +148,13 @@ def run_app() -> Iterator[RunningApp]:
             router.route(host="127.0.0.1").pass_through()
             router.route(host="api.github.com").mock(side_effect=github.handle)
             router.route(host="ntfy.sh").mock(side_effect=ntfy.handle)
+            serving = stack.enter_context(ExitStack())
+            serving.enter_context(_serve(sock))
 
-            server = uvicorn.Server(uvicorn.Config(main.app, log_level="warning"))
-            thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-            thread.start()
-            stack.callback(thread.join, 10)
-            stack.callback(setattr, server, "should_exit", True)
-            deadline = time.monotonic() + 10
-            while not server.started:
-                if not thread.is_alive() or time.monotonic() > deadline:
-                    raise RuntimeError("the Lachesis app did not start")
-                time.sleep(0.01)
+            def restart() -> None:
+                """Stop the app and start a fresh process's worth of it on the same address."""
+                serving.close()
+                _forget_app_modules()
+                serving.enter_context(_serve(sock))
 
-            yield RunningApp(base_url, token, github, ntfy, database)
+            yield RunningApp(base_url, token, github, ntfy, database, restart)

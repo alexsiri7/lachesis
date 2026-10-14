@@ -27,7 +27,7 @@ def lachesis(_app: RunningApp) -> Lachesis:
     _app.github.reset()
     _app.ntfy.reset()
     _app.database.reset()
-    return Lachesis(_app.base_url, _app.token, _app.github, _app.ntfy)
+    return Lachesis(_app.base_url, _app.token, _app.github, _app.ntfy, _app.restart)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

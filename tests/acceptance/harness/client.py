@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,11 +27,25 @@ class ToolResult:
 
 
 class Lachesis:
-    def __init__(self, base_url: str, token: str, github: FakeGitHub, ntfy: FakeNtfy) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        github: FakeGitHub,
+        ntfy: FakeNtfy,
+        restart: Callable[[], None] | None = None,
+    ) -> None:
         self.base_url = base_url
         self.github = github
         self.ntfy = ntfy
         self._token = token
+        self._restart = restart
+
+    async def restart(self) -> None:
+        """Restart the server: nothing the app held in memory survives, the database does."""
+        if self._restart is None:
+            raise RuntimeError("this client was not given the running app to restart")
+        await asyncio.to_thread(self._restart)
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> ToolResult:
         headers = {"Authorization": f"Bearer {self._token}"}
