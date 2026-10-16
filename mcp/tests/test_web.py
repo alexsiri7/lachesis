@@ -15,7 +15,7 @@ from jose import jwt as jose_jwt
 # Ensure mcp/ is on the path so we can import web directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from web import _COOKIE_NAME, _extract_section, _get_web_user_status
+from web import _COOKIE_NAME, _extract_section, _get_web_user_status, _render
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -231,3 +231,58 @@ def test_crlf_line_endings_are_normalized():
 def test_crlf_last_section():
     body = "## Why\r\nFirst reason.\r\n## What\r\nThe deliverable."
     assert _extract_section(body, "What") == "The deliverable."
+
+
+# ---------------------------------------------------------------------------
+# Dashboard audits section
+# ---------------------------------------------------------------------------
+
+
+def _dashboard(audits: dict) -> str:
+    response = _render(
+        "dashboard.html",
+        user_email=_TEST_EMAIL,
+        open_questions=[],
+        waiting_on_author=[],
+        waiting_on_author_unreadable=[],
+        repos=[],
+        fuel={"error": "unused"},
+        backlog={"next": {"issue": None, "explanation": "unused"}, "backlogs": []},
+        milestones={"started": [], "counts": {}, "unreadable": []},
+        audits=audits,
+    )
+    return bytes(response.body).decode()
+
+
+def test_dashboard_shows_each_audit_kind_and_capability() -> None:
+    audit = {"kind": "security", "due": False, "open_findings": [40]}
+    run = {"finished_at": "2026-10-13T09:30:00+00:00", "outcome": "findings"}
+    html = _dashboard(
+        {
+            "repos": [
+                {
+                    "repo": "owner/filmduel",
+                    "audits": [
+                        {**audit, "last_run": run},
+                        {"kind": "tests", "due": True, "open_findings": [], "last_run": None},
+                    ],
+                    "capabilities": [{"capability": "backlog", "last_audited": None}],
+                }
+            ],
+            "unreadable": ["owner/gone"],
+        }
+    )
+
+    assert 'data-kind="security"' in html
+    assert 'data-last-run="2026-10-13T09:30:00+00:00"' in html
+    assert 'data-open-findings="40"' in html
+    assert "findings" in html
+    assert 'data-capability="backlog" data-last-audited=""' in html
+    assert "never audited" in html
+    assert "Could not read the audits of owner/gone." in html
+
+
+def test_dashboard_says_when_the_audit_history_cannot_be_read() -> None:
+    html = _dashboard({"error": "could not read the audit history"})
+
+    assert "Audit history could not be read." in html

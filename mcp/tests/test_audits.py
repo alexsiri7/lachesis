@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from tools.audits import _due, _merged_since, _next_capability
+from tools.audits import _due, _last_audited, _merged_since, _next_capability, _open_findings
 
 NOW = datetime(2026, 10, 9, tzinfo=UTC)
 
@@ -69,3 +69,21 @@ def test_next_capability_prefers_never_audited_then_least_recent() -> None:
     assert _next_capability(["backlog", "fuel", "sprints"], runs) == "backlog"
     assert _next_capability(["fuel", "sprints"], runs) == "sprints"
     assert _next_capability([], runs) is None
+
+
+def test_open_findings_are_the_last_runs_issues_still_open() -> None:
+    listing = [{"number": 40, "state": "open"}, {"number": 41, "state": "closed"}]
+
+    assert _open_findings(_run(3, issues=[40, 41, 42]), listing) == [40]
+    assert _open_findings(None, listing) == []
+
+
+def test_last_audited_is_the_last_successful_run_of_the_capability() -> None:
+    runs = [
+        _run(9, capability="fuel"),
+        _run(4, capability="fuel"),
+        _run(1, capability="fuel", outcome="failed"),
+    ]
+
+    assert _last_audited("fuel", runs) == (NOW - timedelta(days=4)).isoformat()
+    assert _last_audited("backlog", runs) is None

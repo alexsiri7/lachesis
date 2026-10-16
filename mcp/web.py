@@ -29,6 +29,7 @@ from tools import fuel as fuel_tools
 from tools import milestones as milestone_tools
 from tools import questions as question_tools
 from tools import requirements as requirement_tools
+from tools.audits import audit_history
 from tools.fuel import accounts_status
 from tools.repos import normalize_repo
 from tools.requirements import waiting_on_author
@@ -76,9 +77,10 @@ _STARTED_MILESTONES = ("active", "verifying")
 
 
 async def _factory_sections(lachesis_uid: str, repos: list[str]) -> dict[str, Any]:
-    """Return fuel and the sprint, each repository's backlog and what is next, and the
-    started milestones, read through the same tool functions the MCP tools are, so the
-    page and the tools agree. A section that cannot be read carries its error instead."""
+    """Return fuel and the sprint, each repository's backlog and what is next, the
+    started milestones and the audit history, read through the same tool functions the
+    MCP tools are, so the page and the tools agree. A section that cannot be read carries
+    its error instead."""
     token = current_db_user_id.set(lachesis_uid)
     try:
         sections: dict[str, Any] = {}
@@ -131,6 +133,12 @@ async def _factory_sections(lachesis_uid: str, repos: list[str]) -> dict[str, An
                     logger.warning("web: could not review milestone %s: %r", milestone["id"], exc)
                     started.append({**milestone, "error": "could not be reviewed"})
         sections["milestones"] = {"started": started, "counts": counts, "unreadable": unreadable}
+
+        try:
+            sections["audits"] = await audit_history(lachesis_uid)
+        except Exception as exc:
+            logger.warning("web: could not read the audit history: %r", exc)
+            sections["audits"] = {"error": "could not read the audit history"}
         return sections
     finally:
         current_db_user_id.reset(token)

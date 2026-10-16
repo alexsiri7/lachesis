@@ -207,8 +207,18 @@ def _next_capability(capabilities: list[str], runs: list[dict[str, Any]]) -> str
     return min(capabilities, key=lambda name: (last.get(name, epoch), name))
 
 
-def _audited(capability: str, runs: list[dict[str, Any]]) -> bool:
-    return any(run["capability"] == capability and run["outcome"] != "failed" for run in runs)
+def _last_audited(capability: str, runs: list[dict[str, Any]]) -> str | None:
+    """When *capability* was last audited successfully by these *runs*, ``None`` if never."""
+    audited = [r for r in runs if r["capability"] == capability and r["outcome"] != "failed"]
+    return audited[-1]["finished_at"].isoformat() if audited else None
+
+
+def _open_findings(run: dict[str, Any] | None, listing: list[github.IssueSummary]) -> list[int]:
+    """The issues *run* filed that are still open in *listing*."""
+    if run is None:
+        return []
+    still_open = {int(item["number"]) for item in listing if item["state"] == "open"}
+    return [number for number in run["issues"] if number in still_open]
 
 
 def _run_view(run: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -225,9 +235,10 @@ def _run_view(run: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 async def audit_history(user_id: str) -> dict[str, Any]:
-    """Every registered repository's audits, each kind's last run and whether it is due,
-    and the due audits in order: most pull requests merged since their last run first,
-    then the oldest last run."""
+    """Every registered repository's audits, each kind's last run, the findings it filed
+    that are still open and whether it is due, and in a repository that uses specs when
+    each capability was last audited; then the due audits in order: most pull requests
+    merged since their last run first, then the oldest last run."""
     now = datetime.now(UTC)
     model = (await route_run("audit"))["model"]
     runs = db.list_audit_runs(user_id)
@@ -244,12 +255,13 @@ async def audit_history(user_id: str) -> dict[str, Any]:
             unreadable.append(repo)
             continue
         has_north_star = await _north_star(repo) is not None
+        repo_runs = [r for r in runs if normalize_repo(r["repo_name"]) == repo]
         audits = []
         for kind in get_args(db.AuditKind):
-            mine = [r for r in runs if normalize_repo(r["repo_name"]) == repo and r["kind"] == kind]
+            mine = [r for r in repo_runs if r["kind"] == kind]
             is_due, merged = _due(kind, mine, listing, model, now)
             capability = _next_capability(capabilities, mine) if kind in _PER_CAPABILITY else None
-            if capability is not None and not _audited(capability, mine):
+            if capability is not None and _last_audited(capability, mine) is None:
                 is_due = True
             if kind == "north-star" and not has_north_star:
                 is_due = False
@@ -258,6 +270,7 @@ async def audit_history(user_id: str) -> dict[str, Any]:
                 {
                     "kind": kind,
                     "last_run": _run_view(last),
+                    "open_findings": _open_findings(last, listing),
                     "due": is_due,
                     "merged_since": merged,
                     "capability": capability,
@@ -271,7 +284,16 @@ async def audit_history(user_id: str) -> dict[str, Any]:
                         {"repo": repo, "kind": kind, "capability": capability},
                     )
                 )
-        listings.append({"repo": repo, "audits": audits})
+        listings.append(
+            {
+                "repo": repo,
+                "audits": audits,
+                "capabilities": [
+                    {"capability": name, "last_audited": _last_audited(name, repo_runs)}
+                    for name in capabilities
+                ],
+            }
+        )
     due.sort(key=lambda entry: entry[0])
     return {
         "model": model,

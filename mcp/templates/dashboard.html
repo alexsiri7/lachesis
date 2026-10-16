@@ -157,6 +157,54 @@
   {% endif %}
 </section>
 
+<section id="audits" class="mb-8 bg-white rounded-lg border border-gray-200 p-5">
+  <h2 class="font-semibold text-base mb-4">Audits</h2>
+  {% if audits.error %}
+  <p class="text-sm text-red-700">Audit history could not be read.</p>
+  {% else %}
+  {% for r in audits.repos %}
+  <details class="mb-2" data-audit-repo="{{ r.repo }}">
+    <summary class="text-sm font-mono cursor-pointer">{{ r.repo }}
+      {%- set due = r.audits | selectattr("due") | list %}
+      {%- if due %} <span class="text-xs text-orange-700">{{ due | length }} due</span>{% endif %}</summary>
+    <table class="w-full text-sm mt-2 mb-2">
+      <thead class="text-left text-xs text-gray-500">
+        <tr><th>Kind</th><th>Last run</th><th>Outcome</th><th>Open findings</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for a in r.audits %}
+        <tr data-repo="{{ r.repo }}" data-kind="{{ a.kind }}"
+            data-last-run="{{ a.last_run.finished_at if a.last_run else '' }}"
+            data-open-findings="{{ a.open_findings | join(',') }}">
+          <td class="font-mono">{{ a.kind }}</td>
+          <td class="text-xs text-gray-500">{{ a.last_run.finished_at[:16] | replace("T", " ") ~ " UTC" if a.last_run else "never" }}</td>
+          <td>{{ a.last_run.outcome if a.last_run else "–" }}</td>
+          <td>
+            {%- for n in a.open_findings %}<a href="https://github.com/{{ r.repo }}/issues/{{ n }}" target="_blank"
+               class="font-mono text-gray-500 hover:underline">#{{ n }}</a>{% if not loop.last %} {% endif %}{% else %}–{% endfor -%}
+          </td>
+          <td>{% if a.due %}<span class="text-xs text-orange-700">due</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if r.capabilities %}
+    <ul class="ml-4 text-sm">
+      {% for c in r.capabilities %}
+      <li data-repo="{{ r.repo }}" data-capability="{{ c.capability }}" data-last-audited="{{ c.last_audited or '' }}">
+        {{ c.capability }}: <span class="text-xs text-gray-500">{{ "last audited " ~ c.last_audited[:16] | replace("T", " ") ~ " UTC" if c.last_audited else "never audited" }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </details>
+  {% endfor %}
+  {% if audits.unreadable %}
+  <p class="text-xs text-red-700">Could not read the audits of {{ audits.unreadable | join(", ") }}.</p>
+  {% endif %}
+  {% endif %}
+</section>
+
 {% if not repos %}
   <p class="text-gray-500">No repos registered yet.</p>
 {% endif %}
