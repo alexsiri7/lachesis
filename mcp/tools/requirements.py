@@ -2069,6 +2069,14 @@ async def get_dashboard(
     while ``summary.total`` keeps counting the whole corpus, requirement files and
     spec changes both, as it always has.
 
+    Every listed repository carries its audit history as
+    :func:`tools.audits.read_audit_history` reports it: ``audits``, each kind's
+    ``last_run`` (``None`` when it never ran), the ``open_findings`` that run filed
+    and that are still open, and whether it is ``due``; and ``capabilities``, each
+    capability of a repository that uses specs with when it was ``last_audited``
+    (``None`` when never).  Both are ``None`` when the repository's audit history
+    could not be read.
+
     ``waiting_on_author`` lists every open issue labelled ``needs-author`` in the
     repos that were listed, oldest first, apart from ``groups`` because these are
     issues rather than units of work.  Each carries ``repo``, ``number``, ``title``,
@@ -2129,7 +2137,8 @@ async def get_dashboard(
             "This may indicate a database connectivity issue (check server logs) "
             "or a token that predates the lachesis_uid claim."
         )
-    # questions imports this module, so it cannot be imported at the top.
+    # audits and questions import this module, so they cannot be imported at the top.
+    from .audits import audit_history
     from .questions import settle_expired_defaults
 
     await settle_expired_defaults(user_id)
@@ -2141,10 +2150,19 @@ async def get_dashboard(
         async with limit:
             return await _read_dashboard_repo(repo_name, status, include_inactive)
 
+    async def read_audits() -> dict[str, dict[str, Any]]:
+        try:
+            history = await audit_history(user_id)
+        except Exception as exc:
+            logger.warning("get_dashboard: could not read the audit history error=%r", exc)
+            return {}
+        return {entry["repo"]: entry for entry in history["repos"]}
+
     # Repositories are read concurrently, since read one after another a dozen of
     # them outlast a client's timeout, and merged in registration order below.
-    reads = await asyncio.gather(
-        *(read_one(normalize_repo(repo_row["repo_name"])) for repo_row in repos)
+    reads, audits = await asyncio.gather(
+        asyncio.gather(*(read_one(normalize_repo(repo_row["repo_name"])) for repo_row in repos)),
+        read_audits(),
     )
     aggregated: list[dict[str, Any]] = []
     all_candidates: list[groups.Candidate] = []
@@ -2159,6 +2177,9 @@ async def get_dashboard(
         spec_change_counts.update(read.spec_change_counts)
         all_candidates.extend(read.candidates)
         if read.entry is not None:
+            audited = audits.get(read.repo)
+            read.entry["audits"] = audited["audits"] if audited else None
+            read.entry["capabilities"] = audited["capabilities"] if audited else None
             aggregated.append(read.entry)
         if read.spec_gaps is not None:
             spec_gaps[read.repo] = read.spec_gaps

@@ -481,7 +481,6 @@ def _find(value: Any, predicate: Any) -> list[dict[str, Any]]:
     return found
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "History on the dashboard")
 async def test_history_on_the_dashboard(lachesis: Lachesis) -> None:
     repo = "owner/filmduel"
@@ -509,7 +508,6 @@ async def test_history_on_the_dashboard(lachesis: Lachesis) -> None:
     assert security["open_findings"] == [40]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Capability never audited")
 async def test_capability_never_audited(lachesis: Lachesis) -> None:
     repo = "owner/lachesis"
