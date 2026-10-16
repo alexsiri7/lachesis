@@ -424,7 +424,8 @@ async def find_open_pr(repo: str, head_prefix: str) -> dict[str, Any] | None:
 async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
     """Return all open PRs whose head branch starts with 'lachesis/'.
 
-    Returns list of {"branch": str, "pr_number": int, "pr_url": str, "created_at": str | None}.
+    Returns list of {"branch": str, "pr_number": int, "pr_url": str, "created_at": str | None,
+    "automerge_enabled": bool}.
 
     ``created_at`` is read leniently: a payload that omits it still reports its PR,
     since the surrounding ``except KeyError`` would otherwise discard every PR in the
@@ -443,6 +444,7 @@ async def list_lachesis_prs(repo: str) -> list[dict[str, Any]]:
                         "pr_url": pr["html_url"],
                         "pr_number": pr["number"],
                         "created_at": pr.get("created_at"),
+                        "automerge_enabled": pr.get("auto_merge") is not None,
                     }
                 )
     except (KeyError, TypeError) as exc:
@@ -1048,7 +1050,8 @@ async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> Non
 
     Raises :class:`httpx.HTTPStatusError` on HTTP-level failure (non-2xx response).
     Raises :class:`RuntimeError` on GraphQL-level errors (HTTP 200 but
-    ``data["errors"]`` is present, e.g. insufficient permissions or ineligible PR).
+    ``data["errors"]`` is present, e.g. insufficient permissions or ineligible PR),
+    its message GitHub's own messages joined.
     """
     query = """
     mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
@@ -1086,7 +1089,8 @@ async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> Non
     data = resp.json()
     if "errors" in data:
         logger.warning("github.enable_automerge graphql errors: %s", data["errors"])
-        raise RuntimeError(f"GraphQL errors enabling automerge: {data['errors']}")
+        messages = "; ".join(str(error.get("message", error)) for error in data["errors"])
+        raise RuntimeError(f"GraphQL errors enabling automerge: {messages}")
 
 
 _ISSUE_ACTIVITY_CHUNK = 25

@@ -937,9 +937,9 @@ async def test_enable_automerge_raises_on_http_error(httpx_mock: HTTPXMock) -> N
 
 
 async def test_enable_automerge_raises_on_graphql_errors(httpx_mock: HTTPXMock) -> None:
-    """GraphQL errors in a 200 response must raise RuntimeError."""
-    httpx_mock.add_response(json={"errors": [{"message": "Not allowed"}]})
-    with pytest.raises(RuntimeError, match="GraphQL errors enabling automerge"):
+    """GraphQL errors in a 200 response must raise RuntimeError carrying GitHub's messages."""
+    httpx_mock.add_response(json={"errors": [{"message": "Not allowed"}, {"message": "Nope"}]})
+    with pytest.raises(RuntimeError, match="GraphQL errors enabling automerge: Not allowed; Nope$"):
         await enable_automerge("PR_abc123")
 
 
@@ -973,6 +973,26 @@ async def test_list_lachesis_prs_returns_branch_url_and_number(httpx_mock: HTTPX
     assert result[0]["pr_number"] == 7
     assert isinstance(result[0]["pr_number"], int)
     assert result[0]["created_at"] == "2026-09-01T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("auto_merge", "enabled"), [(None, False), ({"merge_method": "squash"}, True)]
+)
+async def test_list_lachesis_prs_says_whether_automerge_is_enabled(
+    httpx_mock: HTTPXMock, auto_merge: dict | None, enabled: bool
+) -> None:
+    httpx_mock.add_response(
+        json=[
+            {
+                "head": {"ref": "lachesis/req-007-auth"},
+                "html_url": "https://github.com/owner/repo/pull/7",
+                "number": 7,
+                "auto_merge": auto_merge,
+            }
+        ]
+    )
+    [pr] = await list_lachesis_prs("owner/repo")
+    assert pr["automerge_enabled"] is enabled
 
 
 async def test_list_lachesis_prs_reports_no_created_at_without_dropping_the_pr(

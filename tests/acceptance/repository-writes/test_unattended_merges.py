@@ -11,8 +11,6 @@ import base64
 import json
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, find_matching, scenario
 
 REPO = "owner/widgets"
@@ -124,7 +122,6 @@ def _github_opens_pull_requests(lachesis: Lachesis) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #251")
 @scenario("repository-writes", "Status update merges by itself")
 async def test_status_update_merges_by_itself(lachesis: Lachesis) -> None:
     await _ok(lachesis, "register_repo", {"repo": REPO})
@@ -148,7 +145,6 @@ async def test_status_update_merges_by_itself(lachesis: Lachesis) -> None:
     assert not lachesis.ntfy.notifications
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #251")
 @scenario("repository-writes", "Automerge refused")
 async def test_automerge_refused(lachesis: Lachesis) -> None:
     await _ok(lachesis, "register_repo", {"repo": REPO})

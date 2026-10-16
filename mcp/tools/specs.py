@@ -458,7 +458,8 @@ async def propose_spec_change(
     acceptance tests to be written on its branch.
 
     Returns ``{"repo", "number", "url"}`` of the pull request, and
-    ``"acceptance_tests_issue"``, the number of that issue.
+    ``"acceptance_tests_issue"``, the number of that issue, with ``"fault"`` when
+    automerge could not be enabled on the pull request, saying why.
     """
     if not capabilities:
         raise ValueError("A spec change must add, edit or remove at least one capability")
@@ -493,6 +494,7 @@ async def propose_spec_change(
         "number": pr["number"],
         "url": pr["url"],
         "acceptance_tests_issue": tests_issue,
+        **({"fault": pr["fault"]} if "fault" in pr else {}),
     }
 
 
