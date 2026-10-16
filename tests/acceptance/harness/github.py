@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,17 +22,22 @@ class RecordedRequest:
     body: Any
 
 
+Handler = Callable[[RecordedRequest], tuple[int, Any]]
+
+
 class FakeGitHub:
     """Answers each request with the latest responses registered for its method and path.
 
     The query string plays no part in matching. Anything unregistered gets GitHub's 404.
-    A GraphQL request answered by :meth:`on_graphql` is not matched by its path.
+    A GraphQL request answered by :meth:`on_graphql`, or a request a :meth:`serve` handler
+    answers, is not matched by its path.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._responses: dict[tuple[str, str], deque[tuple[int, Any]]] = {}
         self._graphql: list[tuple[str, str, Any]] = []
+        self._handlers: list[tuple[str, Handler]] = []
         self.requests: list[RecordedRequest] = []
 
     def on(self, method: str, path: str, *, json: Any = None, status: int = 200) -> None:
@@ -57,6 +63,15 @@ class FakeGitHub:
         with self._lock:
             self._graphql.append((repo, containing, json))
 
+    def serve(self, prefix: str, handler: Handler) -> None:
+        """Answer every request whose path starts with *prefix* with ``handler(request)``.
+
+        For a test that needs GitHub to keep state between requests, such as the files on
+        each branch. The handler returns ``(status, json)``; the latest matching one wins.
+        """
+        with self._lock:
+            self._handlers.append((prefix, handler))
+
     def requests_to(self, method: str, path: str) -> list[RecordedRequest]:
         with self._lock:
             return [r for r in self.requests if r.method == method.upper() and r.path == path]
@@ -73,15 +88,19 @@ class FakeGitHub:
         with self._lock:
             self._responses.clear()
             self._graphql.clear()
+            self._handlers.clear()
             self.requests.clear()
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
         path = request.url.path
         with self._lock:
-            self.requests.append(
-                RecordedRequest(request.method, path, dict(request.url.params), body)
-            )
+            recorded = RecordedRequest(request.method, path, dict(request.url.params), body)
+            self.requests.append(recorded)
+            handler = next((h for p, h in reversed(self._handlers) if path.startswith(p)), None)
+            if handler is not None:
+                status, payload = handler(recorded)
+                return httpx.Response(status, json=payload)
             graphql = self._graphql_answer(request.method, path, body)
             if graphql is not None:
                 return httpx.Response(200, json=graphql)

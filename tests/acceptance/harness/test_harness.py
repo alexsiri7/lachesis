@@ -42,6 +42,15 @@ async def test_github_is_the_stub(lachesis: Lachesis) -> None:
     assert lachesis.github.requests_to("GET", "/repos/owner/repo/contents/README.md")
 
 
+async def test_a_restarted_app_answers_and_keeps_its_database(lachesis: Lachesis) -> None:
+    await lachesis.call_tool("register_repo", {"repo": "owner/repo"})
+
+    await lachesis.restart()
+
+    listed = await lachesis.call_tool("list_repos")
+    assert [r["repo_name"] for r in listed.json()] == ["owner/repo"]
+
+
 async def test_unauthenticated_calls_are_refused(lachesis: Lachesis) -> None:
     async with httpx.AsyncClient() as http:
         response = await http.post(f"{lachesis.base_url}/mcp", json={})
@@ -102,6 +111,19 @@ def test_github_picks_out_the_requests_enabling_automerge() -> None:
     assert github.automerge_requests() == [
         {"query": "mutation { enablePullRequestAutoMerge }", "variables": {"pullRequestId": "PR_1"}}
     ]
+
+
+def test_github_hands_requests_under_a_served_prefix_to_its_handler() -> None:
+    github = FakeGitHub()
+    github.on("GET", "/repos/owner/repo/contents/README.md", json={"by": "path"})
+    github.serve("/repos/owner/repo/contents", lambda r: (201, {"ref": r.params.get("ref")}))
+
+    def answer(path: str) -> httpx.Response:
+        return github.handle(httpx.Request("GET", f"https://api.github.com{path}?ref=b"))
+
+    served = answer("/repos/owner/repo/contents/README.md")
+    assert (served.status_code, served.json()) == (201, {"ref": "b"})
+    assert answer("/repos/owner/repo/pulls").status_code == 404
 
 
 def test_find_matching_searches_every_nested_dict() -> None:

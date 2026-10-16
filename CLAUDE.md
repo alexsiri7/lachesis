@@ -111,7 +111,8 @@ Every `#### Scenario:` in `openspec/specs/` gets exactly one test under
 `harness`. A test the code does not yet satisfy carries
 `@pytest.mark.xfail(strict=True, reason="spec change #N")`; once it passes, the marker must go.
 Tests use only `harness` (the `lachesis` fixture calls MCP tools; `lachesis.github` stubs
-GitHub; `lachesis.ntfy` records push notifications) and never import from `mcp/`.
+GitHub; `lachesis.ntfy` records push notifications; `lachesis.restart()` restarts the app) and
+never import from `mcp/`.
 Implementation pull requests may only remove xfail markers from these tests; spec changes and
 `acceptance-tests` issues may change them.
 
