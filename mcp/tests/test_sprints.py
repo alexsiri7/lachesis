@@ -41,6 +41,19 @@ def _no_accounts_overflow_or_experiments():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_audits():
+    """Audits in the plan and the review are covered by their own tests below."""
+    with (
+        patch(
+            "tools.sprints.audit_history",
+            AsyncMock(return_value={"model": "claude", "repos": [], "due": [], "unreadable": []}),
+        ),
+        patch("db.list_audit_runs", return_value=[]),
+    ):
+        yield
+
+
 _RESETS_AT = datetime(2026, 10, 11, 9, tzinfo=UTC)
 _NOW = _RESETS_AT - timedelta(days=2)
 
@@ -294,6 +307,68 @@ def test_improvement_work_is_planned_first_within_its_share() -> None:
         (4, False),
     ]
     assert not_planned == 1
+
+
+def _due_audit(kind: str, estimate: int | None) -> dict[str, Any]:
+    return {
+        "repo": "owner/repo",
+        "kind": kind,
+        "capability": None,
+        "estimate_tokens": estimate,
+        "confidence": "normal",
+        "samples": 5,
+    }
+
+
+def test_due_audits_share_the_budget_after_improvement_work() -> None:
+    """Scenario: Audits share the budget — 40, 40 and an audit of 30 in 100."""
+    plan, not_planned = plan_with_improvement(
+        [_entry(1), _entry(2), _entry(3)],
+        {("owner/repo", 3)},
+        _estimates({1: 40, 2: 40, 3: 5}),
+        left_tokens=100,
+        improvement_tokens=10,
+        due_audits=[_due_audit("security", 30), _due_audit("tests", 90)],
+    )
+
+    assert [item.get("number") or item["audit"] for item in plan] == [3, "security", 1]
+    assert sum(item["estimate_tokens"] for item in plan) <= 100
+    assert not_planned == 2
+
+
+def test_an_audit_no_run_has_measured_is_not_planned() -> None:
+    plan, not_planned = plan_with_improvement(
+        [_entry(1)],
+        set(),
+        _estimates({1: 10}),
+        left_tokens=100,
+        improvement_tokens=10,
+        due_audits=[_due_audit("north-star", None)],
+    )
+
+    assert [item["number"] for item in plan] == [1]
+    assert not_planned == 0
+
+
+async def test_read_sprint_plans_the_due_audits_and_names_repos_it_could_not_audit(
+    set_user_id: str,
+) -> None:
+    history = {
+        "model": "claude",
+        "repos": [],
+        "due": [{**_due_audit("security", 30), "repo": "owner/b"}],
+        "unreadable": ["owner/c"],
+    }
+    with _two_repos(), patch("tools.sprints.audit_history", AsyncMock(return_value=history)):
+        result = await read_sprint()
+
+    assert [(item["repo"], item.get("audit") or item["number"]) for item in result["plan"]] == [
+        ("owner/b", "security"),
+        ("owner/a", 1),
+    ]
+    assert result["planned_tokens"] == 90
+    assert result["planned_points"] == 0
+    assert result["unreadable"] == ["owner/c"]
 
 
 def test_improvement_work_never_takes_more_than_is_left() -> None:
@@ -637,9 +712,52 @@ async def test_report_sprint_reports_the_sprint_that_ended(set_user_id: str) -> 
         "Delivered: 2 milestones, 2 issues.",
         "Spent: 330 Claude tokens (unnamed: 330); 110 overflow tokens, $0.25.",
         "Estimates: actual 4.64x estimated over 2 issues.",
+        "Audits: 0, filing 0 findings.",
         "Carried over: 3 issues.",
         "Findings: 2.",
     ]
+
+
+def _audit_run(finished_at: datetime, issues: list[int]) -> dict[str, Any]:
+    return {
+        "repo_name": "owner/repo",
+        "kind": "security",
+        "capability": None,
+        "finished_at": finished_at,
+        "outcome": "findings" if issues else "clean",
+        "model": "claude",
+        "issues": issues,
+        "tokens_in": 20,
+        "tokens_out": 10,
+    }
+
+
+async def test_report_sprint_lists_the_audits_that_ran_with_their_findings(
+    set_user_id: str,
+) -> None:
+    """Scenario: Audits in the review."""
+    inside = _START + timedelta(days=2)
+    runs = [
+        _audit_run(_START - timedelta(hours=1), [30]),
+        _audit_run(inside, [40, 41]),
+        _audit_run(_END, [50]),
+    ]
+    with _ended_sprint() as mocks, patch("db.list_audit_runs", return_value=runs):
+        result = await report_sprint()
+
+    assert result["audits"] == [
+        {
+            "repo": "owner/repo",
+            "kind": "security",
+            "capability": None,
+            "finished_at": inside.isoformat(),
+            "outcome": "findings",
+            "model": "claude",
+            "issues": [40, 41],
+            "tokens": 30,
+        }
+    ]
+    assert "Audits: 1, filing 2 findings." in mocks["notify"].await_args.kwargs["body"]
 
 
 async def test_report_sprint_lists_every_open_experiment(set_user_id: str) -> None:

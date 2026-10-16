@@ -13,6 +13,7 @@ import db
 import github
 from spec_reference import SpecReference, append_reference
 
+from .estimates import estimate_audit
 from .questions import _tell_author
 from .repos import _require_user_id, normalize_repo
 from .requirements import (
@@ -236,9 +237,10 @@ def _run_view(run: dict[str, Any] | None) -> dict[str, Any] | None:
 
 async def audit_history(user_id: str) -> dict[str, Any]:
     """Every registered repository's audits, each kind's last run, the findings it filed
-    that are still open and whether it is due, and in a repository that uses specs when
-    each capability was last audited; then the due audits in order: most pull requests
-    merged since their last run first, then the oldest last run."""
+    that are still open and whether it is due, its open audit issue, and in a repository
+    that uses specs when each capability was last audited; then the due audits in order,
+    each with its estimate: most pull requests merged since their last run first, then the
+    oldest last run."""
     now = datetime.now(UTC)
     model = (await route_run("audit"))["model"]
     runs = db.list_audit_runs(user_id)
@@ -281,13 +283,19 @@ async def audit_history(user_id: str) -> dict[str, Any]:
                 due.append(
                     (
                         (-merged, oldest, repo, kind),
-                        {"repo": repo, "kind": kind, "capability": capability},
+                        {
+                            "repo": repo,
+                            "kind": kind,
+                            "capability": capability,
+                            **estimate_audit(runs, kind),
+                        },
                     )
                 )
         listings.append(
             {
                 "repo": repo,
                 "audits": audits,
+                "open_audit": _open_audit(listing),
                 "capabilities": [
                     {"capability": name, "last_audited": _last_audited(name, repo_runs)}
                     for name in capabilities
@@ -306,6 +314,34 @@ async def audit_history(user_id: str) -> dict[str, Any]:
 async def read_audit_history() -> dict[str, Any]:
     """Return every registered repository's audit history and the due audits in order."""
     return await audit_history(_require_user_id())
+
+
+async def next_audit(
+    user_id: str, repo: str | None, budget: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The first due audit, in *repo* when one is named, that may start now, with the
+    model to run it on.
+
+    None in a repository whose audit issue is open. With a sprint *budget*, audits are
+    drawn as issues other than security work are: only within pace, and only when the
+    estimate fits the budget left.
+    """
+    # sprints imports this module, so it cannot be imported at the top.
+    from .sprints import fits
+
+    if budget is not None and budget["within_pace"] is False:
+        return None
+    history = await audit_history(user_id)
+    busy = {entry["repo"] for entry in history["repos"] if entry["open_audit"] is not None}
+    for audit in history["due"]:
+        if repo is not None and audit["repo"] != repo:
+            continue
+        if audit["repo"] in busy:
+            continue
+        if budget is not None and not fits(audit["estimate_tokens"], budget["left_tokens"]):
+            continue
+        return {**audit, "model": history["model"]}
+    return None
 
 
 def _open_audit(listing: list[github.IssueSummary]) -> int | None:

@@ -139,11 +139,13 @@ account in report_usage for every run on a Claude allowance.
 Sprints run from one weekly allowance reset to the next. read_sprint returns the sprint's
 dates, its budget in tokens — every account's share less its reserve, and the overflow cap — what is
 spent and left, its capacity in points at the price of a point, and the plan: the backlog
-in order, as far as estimates fit what is left. It is derived on every read, so a new
-focus re-plans it. next_issue offers work other than security work only while it fits
-the budget left and spending is within pace, and says
-when the sprint budget is spent. At each allowance reset, the scheduled sprint review calls
-report_sprint (see Sprint review).
+in order, together with the due audits, as far as estimates fit what is left. It is
+derived on every read, so a new focus re-plans it. next_issue offers work other than
+security work only while it fits the budget left and spending is within pace, and says
+when the sprint budget is spent. Alongside the issue it names, under audit, the next due
+audit to start with start_audit, never in a repository whose audit issue is still open.
+At each allowance reset, the scheduled sprint review calls report_sprint (see Sprint
+review).
 
 Agents do not message each other: they leave notes on the work. When you stop working on
 an issue, finished or not, call add_note on it with type handoff, saying what you did and
@@ -1741,6 +1743,9 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     still open, each naming its blockers. An unscoped call skips a repo it cannot read
     and says so in the explanation, rather than letting one unreachable repo cost the
     caller every other repo's backlog.
+
+    Whatever the issue, ``audit`` is the next due audit the factory may start alongside
+    it (see :func:`next_audit`), present only when there is one.
     """
     user_id = _require_user_id()
     if repo is not None:
@@ -1748,7 +1753,8 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     else:
         repos = [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]
 
-    # sprints and questions import this module, so they cannot be imported at the top.
+    # audits, sprints and questions import this module, so they cannot be imported at the top.
+    from .audits import next_audit
     from .fuel import accounts_status
     from .questions import settle_expired_defaults
     from .sprints import estimates_by_issue, sprint_budget
@@ -1790,6 +1796,14 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     for _, candidate in candidates:
         del candidate["sort_key"]
     caveat = f" Could not read the backlog of {', '.join(unreadable)}." if unreadable else ""
+    try:
+        audit = await next_audit(user_id, repos[0] if repo is not None else None, budget)
+    except Exception as exc:
+        # An audit is offered alongside the issue; failing to read the audit history must
+        # never cost the factory its next issue.
+        logger.warning("next_issue: could not read the due audits error=%r", exc)
+        audit = None
+    offer = {"audit": audit} if audit is not None else {}
 
     if candidates:
         chosen = candidates[0][1]
@@ -1805,6 +1819,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
             "reason": "selected",
             "explanation": explanation + caveat,
             "blocked": blocked,
+            **offer,
         }
         if repo is None and len(candidates) > 1:
             result["also_eligible"] = [
@@ -1859,6 +1874,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         "reason": reason,
         "explanation": explanation + caveat,
         "blocked": blocked,
+        **offer,
     }
 
 

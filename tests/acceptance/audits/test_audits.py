@@ -286,7 +286,6 @@ def _planned_audits(sprint: dict[str, Any], repo: str, kind: str) -> list[dict[s
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("audits", "Audit in the plan")
 async def test_audit_in_the_plan(lachesis: Lachesis) -> None:
     model = await _auditor_model(lachesis)

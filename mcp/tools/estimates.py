@@ -134,6 +134,28 @@ def estimate_tokens(size: int | None, price: Price) -> int | None:
     return round(size * price["tokens_per_point"])
 
 
+class AuditEstimate(TypedDict):
+    estimate_tokens: int | None
+    confidence: db.EstimateConfidence
+    samples: int
+
+
+def estimate_audit(runs: list[dict[str, Any]], kind: str) -> AuditEstimate:
+    """Return an audit of *kind* in tokens: the mean of the past *runs* of that kind that
+    reported tokens, at low confidence from fewer than ``NORMAL_CONFIDENCE_SAMPLES``.
+    With none there is no estimate."""
+    measured = [
+        run["tokens_in"] + run["tokens_out"]
+        for run in runs
+        if run["kind"] == kind and run["tokens_in"] + run["tokens_out"] > 0
+    ]
+    return {
+        "estimate_tokens": round(sum(measured) / len(measured)) if measured else None,
+        "confidence": "normal" if len(measured) >= NORMAL_CONFIDENCE_SAMPLES else "low",
+        "samples": len(measured),
+    }
+
+
 async def estimate_issue(
     repo: str, issue: int, kind: db.UsageKind, model: str | None = None
 ) -> dict[str, Any]:
