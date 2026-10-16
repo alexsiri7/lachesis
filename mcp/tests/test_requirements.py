@@ -471,6 +471,16 @@ def _no_notes():
 
 
 @pytest.fixture(autouse=True)
+def _no_automerge_refusals():
+    """No automerge refusal is on record unless a test says otherwise."""
+    with (
+        patch("tools.requirements.db.automerge_refusals", return_value={}) as refusals,
+        patch("tools.requirements.db.record_automerge_refusal") as record,
+    ):
+        yield refusals, record
+
+
+@pytest.fixture(autouse=True)
 def _nobody_waiting_on_the_author():
     """Questions waiting on the author are covered in test_progress_reporting.py."""
     with patch("tools.requirements.github.list_waiting_issues", AsyncMock(return_value=[])):
@@ -1013,6 +1023,39 @@ async def test_create_requirement_automerge_exception_falls_back_to_pr_url(
 
     # PR was already created — url must be returned despite the automerge failure
     assert result["pr_url"] == "https://github.com/o/r/pull/5"
+    assert "automerge could not be enabled" in result["fault"]
+
+
+async def test_create_requirement_tells_the_caller_why_automerge_was_refused(
+    httpx_mock: HTTPXMock,
+    set_db_user_id: None,
+    _no_automerge_refusals: tuple[MagicMock, MagicMock],
+) -> None:
+    """GitHub's refusal reaches the caller and is recorded for the dashboard."""
+    _, record = _no_automerge_refusals
+    httpx_mock.add_response(json=[])  # list_files
+    httpx_mock.add_response(json=[])  # list_lachesis_prs → no open PRs
+    httpx_mock.add_response(status_code=409, json={"message": "Protected"})
+    httpx_mock.add_response(json={"object": {"sha": "abc"}})  # get_branch_sha
+    httpx_mock.add_response(status_code=201, json={})  # create_branch
+    httpx_mock.add_response(json={"content": {}, "commit": {}})  # create_file on branch
+    httpx_mock.add_response(
+        status_code=201,
+        json={"number": 5, "html_url": "https://github.com/o/r/pull/5", "node_id": "PR_abc"},
+    )  # create_pull_request
+    httpx_mock.add_response(
+        json={"allow_auto_merge": True, "allow_squash_merge": True, "delete_branch_on_merge": True}
+    )  # get_repo_settings
+    httpx_mock.add_response(
+        json={"data": None, "errors": [{"message": "Pull request is in clean status"}]}
+    )  # GraphQL refuses
+
+    result = await create_requirement("owner/repo", "My Feature", "Why", "What")
+
+    assert "Pull request is in clean status" in result["fault"]
+    record.assert_called_once()
+    assert record.call_args.args[:3] == ("test-uid", "owner/repo", 5)
+    assert "Pull request is in clean status" in record.call_args.args[3]
 
 
 async def test_create_requirement_automerge_uses_merge_when_squash_disabled(
@@ -4963,6 +5006,60 @@ async def test_get_dashboard_groups_a_pr_branch_requirement_as_awaiting_merge(
     assert result["summary"]["awaiting_merge_count"] == 1
     assert result["summary"]["groups"]["awaiting_merge"] == 1
     assert result["summary"]["incomplete_repos"] == []
+
+
+async def _dashboard_with_one_lachesis_pr(httpx_mock: HTTPXMock, pr: dict) -> dict:
+    with patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]):
+        httpx_mock.add_response(json=[])  # list_files on main
+        httpx_mock.add_response(
+            json=[{"head": {"ref": "lachesis/req-002-x"}, "html_url": "https://x/pull/7", **pr}]
+        )
+        httpx_mock.add_response(json=[])  # list_files on the PR branch
+        return await get_dashboard()
+
+
+async def test_get_dashboard_reports_a_lachesis_pr_without_automerge_as_a_fault(
+    httpx_mock: HTTPXMock,
+    set_db_user_id: None,
+    _no_automerge_refusals: tuple[MagicMock, MagicMock],
+) -> None:
+    """The recorded refusal names why the PR will not merge by itself."""
+    refusals, _ = _no_automerge_refusals
+    refusals.return_value = {7: "Auto merge is not allowed for this repository"}
+
+    result = await _dashboard_with_one_lachesis_pr(httpx_mock, {"number": 7, "auto_merge": None})
+
+    [fault] = result["lachesis_faults"]
+    assert fault["repo"] == "owner/repo"
+    assert fault["pr"]["number"] == 7
+    assert "Auto merge is not allowed for this repository" in fault["fault"]
+    assert result["summary"]["lachesis_fault_count"] == 1
+    assert result["waiting_on_author"] == []
+
+
+async def test_get_dashboard_reports_a_lachesis_pr_without_automerge_even_with_no_record(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    result = await _dashboard_with_one_lachesis_pr(httpx_mock, {"number": 7, "auto_merge": None})
+
+    [fault] = result["lachesis_faults"]
+    assert "automerge is not enabled on it" in fault["fault"]
+
+
+async def test_get_dashboard_reports_no_fault_for_a_lachesis_pr_with_automerge(
+    httpx_mock: HTTPXMock,
+    set_db_user_id: None,
+    _no_automerge_refusals: tuple[MagicMock, MagicMock],
+) -> None:
+    refusals, _ = _no_automerge_refusals
+
+    result = await _dashboard_with_one_lachesis_pr(
+        httpx_mock, {"number": 7, "auto_merge": {"merge_method": "squash"}}
+    )
+
+    assert result["lachesis_faults"] == []
+    assert result["summary"]["lachesis_fault_count"] == 0
+    refusals.assert_not_called()
 
 
 async def test_get_dashboard_groups_a_pending_edit_of_a_landed_requirement_as_awaiting_merge(

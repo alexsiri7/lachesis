@@ -6,6 +6,7 @@ import base64
 import json
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -80,6 +81,13 @@ The system SHALL create issues.
 - WHEN issues are created
 - THEN they exist
 """
+
+
+@pytest.fixture(autouse=True)
+def _automerge_refusals_go_unrecorded():
+    """Recording a refusal is covered in test_requirements.py."""
+    with patch("tools.requirements.db.record_automerge_refusal"):
+        yield
 
 
 def _dir(name: str) -> dict:
@@ -587,7 +595,14 @@ async def test_proposing_a_change_to_two_capabilities(httpx_mock: HTTPXMock) -> 
         {"backlog": _BACKLOG_SPEC, "issues": _ISSUES_SPEC},
     )
 
-    assert result == {"repo": _REPO, "number": 12, "url": _PR_URL, "acceptance_tests_issue": 13}
+    assert result == {
+        "repo": _REPO,
+        "number": 12,
+        "url": _PR_URL,
+        "acceptance_tests_issue": 13,
+        "fault": result["fault"],
+    }
+    assert "does not allow auto-merge" in result["fault"]
     [pull] = [r for r in _requests(httpx_mock, "POST") if r.url.path.endswith("/pulls")]
     assert json.loads(pull.content)["body"] == "Some issues must wait."
     branch = json.loads(pull.content)["head"]
@@ -993,7 +1008,7 @@ async def test_the_items_are_at_most_three() -> None:
 
 
 # Dashboard and backlog fields the morning briefing names alongside the tools.
-_BRIEFING_FIELDS = {"landed_at", "last_activity", "manual_review"}
+_BRIEFING_FIELDS = {"landed_at", "last_activity", "lachesis_faults", "manual_review"}
 
 # The only tools the morning pass may write with: its listed fixes, filing worker problems
 # and Lachesis faults, the weekly focus question, and the sprint review once a week.

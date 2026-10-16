@@ -29,6 +29,8 @@ Tables (all namespaced lachesis_):
                             finished, outcome, issues filed and tokens
   lachesis_experiments    — improvements to how the factory works: the change, its
                             measure, baseline and target, its issues, state and results
+  lachesis_automerge_refusals — why automerge could not be enabled on a Lachesis pull
+                            request
 
 Uses a direct Postgres connection via SQLAlchemy Core + psycopg2-binary.
 The Postgres instance is still Supabase — only the client changes.
@@ -517,6 +519,40 @@ def claim_notification(user_id: str, repo_name: str, requirement_id: str) -> boo
     with _engine().begin() as conn:
         result = conn.execute(sql, params)
         return result.mappings().first() is not None
+
+
+# ---------------------------------------------------------------------------
+# lachesis_automerge_refusals
+# ---------------------------------------------------------------------------
+
+
+def record_automerge_refusal(user_id: str, repo_name: str, pr_number: int, reason: str) -> None:
+    """Store why automerge could not be enabled on pull request *pr_number*."""
+    sql = text(
+        """
+        INSERT INTO lachesis_automerge_refusals (user_id, repo_name, pr_number, reason)
+        VALUES (:user_id, :repo_name, :pr_number, :reason)
+        ON CONFLICT (user_id, repo_name, pr_number)
+        DO UPDATE SET reason = EXCLUDED.reason, created_at = now()
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "pr_number": pr_number, "reason": reason}
+    with _engine().begin() as conn:
+        conn.execute(sql, params)
+
+
+def automerge_refusals(user_id: str, repo_name: str) -> dict[int, str]:
+    """Return the recorded automerge refusal reason of each of the repo's pull requests."""
+    sql = text(
+        """
+        SELECT pr_number, reason
+        FROM lachesis_automerge_refusals
+        WHERE user_id = :user_id AND repo_name = :repo_name
+        """
+    )
+    with _engine().connect() as conn:
+        result = conn.execute(sql, {"user_id": user_id, "repo_name": repo_name})
+        return {row["pr_number"]: row["reason"] for row in result.mappings().all()}
 
 
 # ---------------------------------------------------------------------------
