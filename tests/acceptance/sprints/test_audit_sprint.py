@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 NOW = datetime.now(UTC)
@@ -84,7 +82,6 @@ async def _fuel(lachesis: Lachesis, resets_at: datetime) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("sprints", "Audits share the budget")
 async def test_audits_share_the_budget(lachesis: Lachesis) -> None:
     await _repo(lachesis, [_issue(1), _issue(2), _issue(9, state="closed", pull=True)])
@@ -101,7 +98,6 @@ async def test_audits_share_the_budget(lachesis: Lachesis) -> None:
     assert sprint["planned_tokens"] == sum(estimates)
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #297")
 @scenario("sprints", "Audits in the review")
 async def test_audits_in_the_review(lachesis: Lachesis) -> None:
     await _repo(lachesis, [_issue(40), _issue(41)])

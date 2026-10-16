@@ -13,6 +13,7 @@ import github
 import notify
 from settings import settings
 
+from .audits import audit_history
 from .estimates import Price, _capability, factory_history, price_per_point
 from .experiments import experiment_view
 from .fuel import RESERVE_PERCENT, accounts_status, fuel_status
@@ -181,6 +182,39 @@ def plan_sprint(
     return planned, not_planned
 
 
+def plan_audits(due: list[dict[str, Any]], left_tokens: int) -> tuple[list[dict[str, Any]], int]:
+    """Walk the *due* audits in order, planning each whose estimate fits what is left, as
+    :func:`plan_sprint` does issues. A planned audit names its ``audit`` kind.
+
+    Unlike an issue, an audit with no estimate is not eligible: no run of its kind has
+    measured what it costs. next_issue still offers it, so that its first run can.
+    """
+    planned: list[dict[str, Any]] = []
+    not_planned = 0
+    for audit in due:
+        estimate = audit["estimate_tokens"]
+        if estimate is None:
+            continue
+        if not fits(estimate, left_tokens):
+            not_planned += 1
+            continue
+        left_tokens -= estimate
+        planned.append(
+            {
+                "repo": audit["repo"],
+                "audit": audit["kind"],
+                "capability": audit["capability"],
+                "estimate_tokens": estimate,
+                "confidence": audit["confidence"],
+            }
+        )
+    return planned, not_planned
+
+
+def _planned_tokens(plan: list[dict[str, Any]]) -> int:
+    return sum(item["estimate_tokens"] or 0 for item in plan)
+
+
 def plan_with_improvement(
     entries: list[dict[str, Any]],
     improvement_issues: set[tuple[str, int]],
@@ -188,9 +222,12 @@ def plan_with_improvement(
     left_tokens: int,
     improvement_tokens: int,
     sizes: dict[tuple[str, int], int] | None = None,
+    due_audits: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Plan the *improvement_issues* among *entries* first, within *improvement_tokens*
-    of what is left, marked ``improvement``, then the ordinary backlog in what remains.
+    of what is left, marked ``improvement``; then the *due_audits*, which the factory
+    draws alongside issues rather than after them; then the ordinary backlog in what
+    remains.
 
     An improvement issue that does not fit its share waits for the next sprint rather
     than joining the ordinary backlog. Returns the plan and how many eligible entries
@@ -202,22 +239,24 @@ def plan_with_improvement(
         min(improvement_tokens, left_tokens),
         sizes,
     )
+    left_tokens -= _planned_tokens(improvement)
+    audits, audits_not_planned = plan_audits(due_audits or [], left_tokens)
     ordinary, ordinary_not_planned = plan_sprint(
         [e for e in entries if (e["repo"], e["number"]) not in improvement_issues],
         estimates,
-        left_tokens - sum(item["estimate_tokens"] or 0 for item in improvement),
+        left_tokens - _planned_tokens(audits),
         sizes,
     )
     return (
-        [{**item, "improvement": True} for item in improvement] + ordinary,
-        improvement_not_planned + ordinary_not_planned,
+        [{**item, "improvement": True} for item in improvement] + audits + ordinary,
+        improvement_not_planned + audits_not_planned + ordinary_not_planned,
     )
 
 
 async def read_sprint() -> dict[str, Any]:
     """Return the current sprint: its dates, budget and the share of it kept for
     improvement work, spending, the price of a point and the capacity in points it gives,
-    and the plan."""
+    and the plan of issues and due audits."""
     user_id = _require_user_id()
     now = datetime.now(UTC)
     budget = sprint_budget(
@@ -253,6 +292,7 @@ async def read_sprint() -> dict[str, Any]:
         for (repo, issue), size in db.sizes_by_issue(user_id).items()
     }
     improvement_tokens = budget["budget_tokens"] * settings.improvement_share_percent // 100
+    audits = await audit_history(user_id)
     plan, not_planned = plan_with_improvement(
         [entry for _, _, entry in entries],
         {
@@ -264,6 +304,7 @@ async def read_sprint() -> dict[str, Any]:
         budget["left_tokens"],
         improvement_tokens,
         sizes,
+        audits["due"],
     )
     history, unlisted = await factory_history(user_id)
     price = price_per_point(history)
@@ -275,10 +316,10 @@ async def read_sprint() -> dict[str, Any]:
         "price_confidence": price["confidence"],
         "capacity_points": capacity_points(budget["budget_tokens"], price),
         "plan": plan,
-        "planned_tokens": sum(item["estimate_tokens"] or 0 for item in plan),
-        "planned_points": sum(item["size"] or 0 for item in plan if not item.get("split")),
+        "planned_tokens": _planned_tokens(plan),
+        "planned_points": sum(item.get("size") or 0 for item in plan if not item.get("split")),
         "not_planned": not_planned,
-        "unreadable": unreadable + [repo for repo in unlisted if repo not in unreadable],
+        "unreadable": list(dict.fromkeys([*unreadable, *unlisted, *audits["unreadable"]])),
     }
 
 
@@ -516,10 +557,33 @@ def _push_body(report: dict[str, Any]) -> str:
             + "".join(f" ({a['name']}: {a['tokens']})" for a in claude.get("accounts", []))
             + f"; {overflow['tokens']} overflow tokens, ${overflow['cost_usd']:.2f}.",
             estimates,
+            f"Audits: {len(report['audits'])}, filing "
+            f"{sum(len(audit['issues']) for audit in report['audits'])} findings.",
             f"Carried over: {len(report['carryover'])} issues.",
             f"Findings: {len(report['findings'])}.",
         ]
     )
+
+
+def sprint_audits(
+    runs: list[dict[str, Any]], start: datetime, end: datetime
+) -> list[dict[str, Any]]:
+    """Return the audit *runs* that finished during the sprint, oldest first, each with
+    its outcome and the issues it filed."""
+    return [
+        {
+            "repo": normalize_repo(run["repo_name"]),
+            "kind": run["kind"],
+            "capability": run["capability"],
+            "finished_at": run["finished_at"].isoformat(),
+            "outcome": run["outcome"],
+            "model": run["model"],
+            "issues": run["issues"],
+            "tokens": _tokens(run),
+        }
+        for run in runs
+        if start <= run["finished_at"] < end
+    ]
 
 
 def _in_sprint(stamp: str | None, start: datetime, end: datetime) -> bool:
@@ -603,6 +667,7 @@ async def report_sprint() -> dict[str, Any]:
         "spending": sprint_spending(runs, fuel, end),
         "estimates": accuracy,
         "carryover": carryover,
+        "audits": sprint_audits(db.list_audit_runs(user_id), start, end),
         "findings": sprint_findings(start, end, accuracy["issues"], runs),
         "stop_the_line": stop_the_line,
         "experiments": [experiment_view(row) for row in db.list_open_experiments(user_id)],

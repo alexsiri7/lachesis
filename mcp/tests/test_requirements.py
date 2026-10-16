@@ -481,6 +481,13 @@ def _no_automerge_refusals():
 
 
 @pytest.fixture(autouse=True)
+def _no_audit_to_offer():
+    """Audits offered with the next issue are covered in test_audits.py."""
+    with patch("tools.audits.next_audit", AsyncMock(return_value=None)):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _nobody_waiting_on_the_author():
     """Questions waiting on the author are covered in test_progress_reporting.py."""
     with patch("tools.requirements.github.list_waiting_issues", AsyncMock(return_value=[])):
@@ -3949,6 +3956,25 @@ async def test_next_issue_returns_the_top_ready_unblocked_issue(
     assert result["issue"]["number"] == 2
     assert result["issue"]["repo"] == "owner/repo"
     assert result["blocked"] == []
+
+
+async def test_next_issue_still_offers_the_issue_when_the_audits_cannot_be_read(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """A failure reading the due audits costs the offer its audit, never its issue."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_blocked_by(httpx_mock, 1, [])
+    fake = _FakeBacklog([])
+
+    with (
+        _patch_backlog(fake),
+        patch("tools.audits.next_audit", AsyncMock(side_effect=RuntimeError("down"))),
+    ):
+        result = await next_issue("owner/repo")
+
+    assert result["reason"] == "selected"
+    assert result["issue"]["number"] == 1
+    assert "audit" not in result
 
 
 async def test_next_issue_returns_the_offered_issues_notes_oldest_first(

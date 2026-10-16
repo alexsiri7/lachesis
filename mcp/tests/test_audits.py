@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
-from tools.audits import _due, _last_audited, _merged_since, _next_capability, _open_findings
+from tools.audits import (
+    _due,
+    _last_audited,
+    _merged_since,
+    _next_capability,
+    _open_findings,
+    next_audit,
+)
 
 NOW = datetime(2026, 10, 9, tzinfo=UTC)
 
@@ -87,3 +95,71 @@ def test_last_audited_is_the_last_successful_run_of_the_capability() -> None:
 
     assert _last_audited("fuel", runs) == (NOW - timedelta(days=4)).isoformat()
     assert _last_audited("backlog", runs) is None
+
+
+def _due_audit(repo: str, kind: str, estimate: int | None = None) -> dict:
+    return {
+        "repo": repo,
+        "kind": kind,
+        "capability": None,
+        "estimate_tokens": estimate,
+        "confidence": "low",
+        "samples": 0,
+    }
+
+
+def _history(due: list[dict], open_audits: dict[str, int | None]) -> dict:
+    return {
+        "model": "claude",
+        "repos": [{"repo": repo, "audits": [], "open_audit": n} for repo, n in open_audits.items()],
+        "due": due,
+        "unreadable": [],
+    }
+
+
+def _budget(left_tokens: int, *, within_pace: bool | None = True) -> dict:
+    return {"left_tokens": left_tokens, "within_pace": within_pace}
+
+
+async def _next(history: dict, repo: str | None, budget: dict | None) -> dict | None:
+    with patch("tools.audits.audit_history", AsyncMock(return_value=history)):
+        return await next_audit("test-uid", repo, budget)
+
+
+async def test_next_audit_skips_a_repository_whose_audit_issue_is_open() -> None:
+    history = _history(
+        [_due_audit("owner/a", "security"), _due_audit("owner/b", "tests")],
+        {"owner/a": 50, "owner/b": None},
+    )
+
+    assert await _next(history, None, None) == {**_due_audit("owner/b", "tests"), "model": "claude"}
+    assert await _next(history, "owner/a", None) is None
+
+
+async def test_next_audit_offers_only_the_named_repository() -> None:
+    history = _history(
+        [_due_audit("owner/a", "security"), _due_audit("owner/b", "tests")],
+        {"owner/a": None, "owner/b": None},
+    )
+
+    offered = await _next(history, "owner/b", None)
+
+    assert offered is not None and (offered["repo"], offered["kind"]) == ("owner/b", "tests")
+
+
+async def test_next_audit_passes_over_an_audit_too_big_for_the_budget_left() -> None:
+    history = _history(
+        [_due_audit("owner/a", "security", 80), _due_audit("owner/a", "tests", 20)],
+        {"owner/a": None},
+    )
+
+    offered = await _next(history, None, _budget(50))
+
+    assert offered is not None and offered["kind"] == "tests"
+    assert await _next(history, None, _budget(0)) is None
+
+
+async def test_next_audit_waits_while_spending_is_ahead_of_pace() -> None:
+    history = _history([_due_audit("owner/a", "security", 10)], {"owner/a": None})
+
+    assert await _next(history, None, _budget(100, within_pace=False)) is None

@@ -12,6 +12,7 @@ from github import IssueSummary
 from spec_reference import SpecReference, append_reference
 from tools.estimates import (
     PastIssue,
+    estimate_audit,
     estimate_issue,
     estimate_tokens,
     issue_kind,
@@ -117,6 +118,33 @@ def test_with_no_history_there_is_no_price_or_estimate() -> None:
 @pytest.mark.parametrize("size", [None, 21])
 def test_an_unsized_issue_or_one_too_big_to_plan_has_no_estimate(size: int | None) -> None:
     assert estimate_tokens(size, price_per_point([_past(1, 4, 1)])) is None
+
+
+def _audit_run(kind: str, tokens: int) -> dict:
+    return {"kind": kind, "tokens_in": tokens, "tokens_out": 0}
+
+
+def test_an_audit_is_estimated_from_past_runs_of_its_kind() -> None:
+    runs = [*(_audit_run("security", tokens) for tokens in (20, 30, 40, 30, 30))]
+    runs += [_audit_run("tests", 500), _audit_run("security", 0)]
+
+    assert estimate_audit(runs, "security") == {
+        "estimate_tokens": 30,
+        "confidence": "normal",
+        "samples": 5,
+    }
+
+
+def test_an_audit_estimated_from_fewer_than_five_runs_is_low_confidence() -> None:
+    estimate = estimate_audit([_audit_run("tests", 10), _audit_run("tests", 21)], "tests")
+
+    assert estimate == {"estimate_tokens": 16, "confidence": "low", "samples": 2}
+
+
+def test_an_audit_kind_that_never_measured_a_run_has_no_estimate() -> None:
+    estimate = estimate_audit([_audit_run("security", 0)], "security")
+
+    assert estimate == {"estimate_tokens": None, "confidence": "low", "samples": 0}
 
 
 def test_past_issues_are_closed_sized_issues_with_usage_by_their_main_kind_and_model() -> None:
