@@ -3,6 +3,7 @@ auditor changes, started one at a time per repository, findings filed and never 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, get_args
@@ -242,21 +243,20 @@ async def audit_history(user_id: str) -> dict[str, Any]:
     each with its estimate: most pull requests merged since their last run first, then the
     oldest last run."""
     now = datetime.now(UTC)
-    model = (await route_run("audit"))["model"]
     runs = db.list_audit_runs(user_id)
     repos = [normalize_repo(row["repo_name"]) for row in db.list_repos(user_id)]
+    # Every repository is read from GitHub at once, and alongside the route: one after
+    # another they cost next_issue more than a minute.
+    route, *reads = await asyncio.gather(route_run("audit"), *(_read_repo(repo) for repo in repos))
+    model = route["model"]
     listings: list[dict[str, Any]] = []
     due: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     unreadable: list[str] = []
-    for repo in repos:
-        try:
-            listing = await github.list_all_issues(repo)
-            capabilities = await _capabilities(repo)
-        except Exception as exc:
-            logger.warning("audit_history: could not read %s error=%r", repo, exc)
+    for repo, read in zip(repos, reads, strict=True):
+        if read is None:
             unreadable.append(repo)
             continue
-        has_north_star = await _north_star(repo) is not None
+        listing, capabilities, has_north_star = read
         repo_runs = [r for r in runs if normalize_repo(r["repo_name"]) == repo]
         audits = []
         for kind in get_args(db.AuditKind):
@@ -309,6 +309,30 @@ async def audit_history(user_id: str) -> dict[str, Any]:
         "due": [entry for _, entry in due],
         "unreadable": unreadable,
     }
+
+
+async def _read_repo(repo: str) -> tuple[list[github.IssueSummary], list[str], bool] | None:
+    """What audit_history reads of *repo* from GitHub: its whole listing, its capabilities
+    and whether it has a north star; ``None`` when the listing or the capabilities cannot
+    be read."""
+    # The north star is read alongside, though it is only used once the rest is read.
+    listing, capabilities, north_star = await asyncio.gather(
+        github.list_all_issues(repo),
+        _capabilities(repo),
+        _north_star(repo),
+        return_exceptions=True,
+    )
+    failure = next((r for r in (listing, capabilities) if isinstance(r, Exception)), None)
+    if failure is not None:
+        logger.warning("audit_history: could not read %s error=%r", repo, failure)
+        return None
+    if isinstance(listing, BaseException):
+        raise listing
+    if isinstance(capabilities, BaseException):
+        raise capabilities
+    if isinstance(north_star, BaseException):
+        raise north_star
+    return listing, capabilities, north_star is not None
 
 
 async def read_audit_history() -> dict[str, Any]:

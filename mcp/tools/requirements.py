@@ -1772,18 +1772,37 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     )
     estimates = estimates_by_issue(user_id) if budget is not None else {}
     cache: dict[tuple[str, int], dict[str, Any] | None] = {}
+
+    async def offer_audit() -> dict[str, Any] | None:
+        try:
+            return await next_audit(user_id, repos[0] if repo is not None else None, budget)
+        except Exception as exc:
+            # An audit is offered alongside the issue; failing to read the audit history
+            # must never cost the factory its next issue.
+            logger.warning("next_issue: could not read the due audits error=%r", exc)
+            return None
+
+    # The backlogs and the due audits are read from GitHub at once: one repo after
+    # another, they cost the factory's call more than its minute.
+    audit, *results = await asyncio.gather(
+        offer_audit(),
+        *(_scan_repo(name, user_id, now, cache, budget, estimates) for name in repos),
+        return_exceptions=True,
+    )
+    if isinstance(audit, BaseException):
+        raise audit
     scans: list[_RepoScan] = []
     unreadable: list[str] = []
-    for repo_name in repos:
-        try:
-            scans.append(await _scan_repo(repo_name, user_id, now, cache, budget, estimates))
-        except Exception:
-            # A scoped call named this repo, so its failure is the answer. Unscoped, one
-            # repo gone from the PAT's reach must not cost the worker every other backlog.
-            if repo is not None:
-                raise
-            logger.warning("next_issue: could not read the backlog of %s", repo_name)
-            unreadable.append(repo_name)
+    for repo_name, result in zip(repos, results, strict=True):
+        if not isinstance(result, BaseException):
+            scans.append(result)
+            continue
+        # A scoped call named this repo, so its failure is the answer. Unscoped, one
+        # repo gone from the PAT's reach must not cost the worker every other backlog.
+        if repo is not None or not isinstance(result, Exception):
+            raise result
+        logger.warning("next_issue: could not read the backlog of %s", repo_name)
+        unreadable.append(repo_name)
 
     blocked = [entry for scan in scans for entry in scan.blocked]
 
@@ -1796,13 +1815,6 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     for _, candidate in candidates:
         del candidate["sort_key"]
     caveat = f" Could not read the backlog of {', '.join(unreadable)}." if unreadable else ""
-    try:
-        audit = await next_audit(user_id, repos[0] if repo is not None else None, budget)
-    except Exception as exc:
-        # An audit is offered alongside the issue; failing to read the audit history must
-        # never cost the factory its next issue.
-        logger.warning("next_issue: could not read the due audits error=%r", exc)
-        audit = None
     offer = {"audit": audit} if audit is not None else {}
 
     if candidates:
