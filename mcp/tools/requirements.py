@@ -161,6 +161,16 @@ issue in get_dashboard's waiting_on_author list that none of those questions blo
 was labelled needs-author with no question recorded.
 """
 
+_SECRETS = """\
+Secrets. Every secret lives in Doppler: in the project for its app, or in the shared
+project when several apps use it. Generate a new secret with a tool and pipe it straight
+into Doppler; never type it on a command line or echo it. Never print a secret value, and
+never write one to a repository, issue, pull request, comment, note or log. Production gets
+secrets only through Doppler's sync, never by copying values by hand. A secret only the
+author can obtain, such as a key from a third-party account, is an author task: ask for it
+with ask_question, naming the Doppler project and the variable it belongs in.
+"""
+
 _MILESTONE_OWNER = """\
 Milestone owner, for an unattended agent run on a schedule in repositories that use specs.
 On each run, call list_repos, then list_milestones for each repository, and call
@@ -281,8 +291,8 @@ async def get_initial_instructions(repo: str | None = None) -> str:
 
     With *repo*, only the workflow that applies there; without, both and how to
     tell which applies. Wherever the spec workflow applies, so does the milestone
-    owner's. Sprints span the account, so the sprint review always applies, and so
-    does the pointer to the morning briefing.
+    owner's. The secrets rules apply everywhere. Sprints span the account, so the
+    sprint review always applies, and so does the pointer to the morning briefing.
     """
     # specs imports this module, so it cannot be imported at the top.
     from .specs import uses_specs
@@ -294,12 +304,12 @@ async def get_initial_instructions(repo: str | None = None) -> str:
     else:
         workflows = [_REQUIREMENT_WORKFLOW]
     owner = [_MILESTONE_OWNER] if _SPEC_WORKFLOW in workflows else []
-    return "\n".join([*workflows, _BACKLOG, *owner, _SPRINT_REVIEW, _MORNING_POINTER])
+    return "\n".join([*workflows, _BACKLOG, _SECRETS, *owner, _SPRINT_REVIEW, _MORNING_POINTER])
 
 
 async def get_morning_briefing() -> str:
     """Return the instructions for the unattended scheduled morning pass."""
-    return _MORNING_BRIEFING
+    return "\n".join([_MORNING_BRIEFING, _SECRETS])
 
 
 async def _resolve_repo(repo: str, *, require_registered: bool = False) -> str:
