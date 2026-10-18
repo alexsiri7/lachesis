@@ -11,6 +11,7 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
+import github
 from derive import derive
 from github import (
     _headers,
@@ -1183,95 +1184,160 @@ async def test_get_merge_base_raises_on_http_error(httpx_mock: HTTPXMock) -> Non
 _ALL_ISSUES = "https://api.github.com/repos/owner/repo/issues?state=all&per_page=100"
 
 
-def _page_of(first: int, count: int) -> list[dict]:
+def _page(numbers: range | list[int]) -> list[dict]:
     return [
-        {"number": n, "title": f"Issue {n}", "html_url": f"u/{n}", "state": "open"}
-        for n in range(first, first + count)
+        {"number": n, "title": f"Issue {n}", "html_url": f"u/{n}", "state": "open"} for n in numbers
     ]
 
 
-def _last_link(last: int) -> dict[str, str]:
-    return {"Link": f'<{_ALL_ISSUES}&page=2>; rel="next", <{_ALL_ISSUES}&page={last}>; rel="last"'}
+def _newest_first(total: int, page: int) -> list[dict]:
+    """Page *page* of a repository numbered 1..*total*, newest first as GitHub lists it."""
+    top = total - 100 * (page - 1)
+    return _page(range(top, max(top - 100, 0), -1))
 
 
-async def test_list_all_issues_reads_the_pages_the_link_header_names_in_page_order(
-    httpx_mock: HTTPXMock,
-) -> None:
-    """The pages up to the last one are fetched together and joined in page order."""
-    httpx_mock.add_response(
-        url=f"{_ALL_ISSUES}&page=1", json=_page_of(1, 100), headers=_last_link(3)
-    )
-    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", json=_page_of(101, 100))
-    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=3", json=_page_of(201, 7))
+# GitHub pages this listing by cursor: the Link header names the next page, never the last.
+_NEXT_ONLY = {
+    "Link": "<https://api.github.com/repositories/1/issues?state=all&per_page=100&page=2"
+    '&after=Y3Vyc29y>; rel="next"'
+}
+
+
+def _serve(total: int, *, fail: set[int] = frozenset()):
+    """A callback serving every page of a repository of *total* items; *fail* pages 502."""
+    requested: list[int] = []
+
+    async def page(request: httpx.Request) -> httpx.Response:
+        number = int(request.url.params["page"])
+        requested.append(number)
+        await asyncio.sleep(0.01)
+        if number in fail:
+            return httpx.Response(502, json={})
+        return httpx.Response(200, json=_newest_first(total, number), headers=_NEXT_ONLY)
+
+    return page, requested
+
+
+async def test_list_all_issues_reads_every_page_in_order(httpx_mock: HTTPXMock) -> None:
+    page, requested = _serve(207)
+    httpx_mock.add_callback(page, is_reusable=True)
 
     items = await list_all_issues("owner/repo")
 
-    assert [item["number"] for item in items] == list(range(1, 208))
-    assert len(httpx_mock.get_requests()) == 3
+    assert [item["number"] for item in items] == list(range(207, 0, -1))
+    assert sorted(requested) == [1, 2, 3]
 
 
-async def test_list_all_issues_fetches_the_pages_after_the_first_at_once(
+async def test_list_all_issues_fetches_the_pages_the_newest_number_bounds_at_once(
     httpx_mock: HTTPXMock,
 ) -> None:
-    """Every page after the first is requested before any of them answers."""
+    """The Link header never names the last page, so the newest number bounds them, and
+    every page after the first is requested before any of them answers."""
     in_flight = 0
     most = 0
+    serve, _ = _serve(401)
 
     async def page(request: httpx.Request) -> httpx.Response:
         nonlocal in_flight, most
-        number = int(request.url.params["page"])
-        if number == 1:
-            return httpx.Response(200, json=_page_of(1, 100), headers=_last_link(4))
+        if request.url.params["page"] == "1":
+            return await serve(request)
         in_flight += 1
         most = max(most, in_flight)
-        await asyncio.sleep(0.01)
-        in_flight -= 1
-        size = 100 if number < 4 else 1
-        return httpx.Response(200, json=_page_of(1 + 100 * (number - 1), size))
+        try:
+            return await serve(request)
+        finally:
+            in_flight -= 1
 
     httpx_mock.add_callback(page, is_reusable=True)
 
     items = await list_all_issues("owner/repo")
 
-    assert len(items) == 301
-    assert most == 3
+    assert len(items) == 401
+    assert most == 4
 
 
-async def test_list_all_issues_follows_pages_one_by_one_without_a_link_header(
+async def test_list_all_issues_stops_at_the_first_short_page_when_numbers_overshoot(
     httpx_mock: HTTPXMock,
 ) -> None:
-    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=1", json=_page_of(1, 100))
-    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", json=_page_of(101, 2))
+    """Deleted issues leave gaps: the bound overshoots, and a page past the first short
+    one counts for nothing, not even its failure, as a walk would never have asked."""
+    numbers = list(range(300, 150, -1))  # 150 items, the newest numbered 300
+
+    async def page(request: httpx.Request) -> httpx.Response:
+        n = int(request.url.params["page"])
+        if n == 3:
+            return httpx.Response(502, json={})
+        return httpx.Response(200, json=_page(numbers[100 * (n - 1) : 100 * n]))
+
+    httpx_mock.add_callback(page, is_reusable=True)
 
     items = await list_all_issues("owner/repo")
 
-    assert [item["number"] for item in items] == list(range(1, 103))
+    assert [item["number"] for item in items] == numbers
 
 
-async def test_list_all_issues_reads_a_page_beyond_the_last_one_named(
+async def test_list_all_issues_follows_pages_past_a_bound_that_falls_short(
     httpx_mock: HTTPXMock,
 ) -> None:
-    """A repository that grew a page while it was being read is still read to the end."""
-    httpx_mock.add_response(
-        url=f"{_ALL_ISSUES}&page=1", json=_page_of(1, 100), headers=_last_link(2)
-    )
-    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", json=_page_of(101, 100))
-    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=3", json=[])
+    """An issue transferred in can sit below the first page; the walk goes on regardless."""
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=1", json=_page(range(100, 0, -1)))
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", json=_page([500, 501]))
 
     items = await list_all_issues("owner/repo")
 
-    assert len(items) == 200
+    assert [item["number"] for item in items][-2:] == [500, 501]
+    assert len(items) == 102
 
 
-async def test_list_all_issues_raises_when_a_later_page_fails(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(
-        url=f"{_ALL_ISSUES}&page=1", json=_page_of(1, 100), headers=_last_link(3)
-    )
-    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", status_code=502)
-    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=3", json=_page_of(201, 1))
+async def test_list_all_issues_raises_when_a_page_it_needs_fails(httpx_mock: HTTPXMock) -> None:
+    page, _ = _serve(250, fail={2})
+    httpx_mock.add_callback(page, is_reusable=True)
 
     with pytest.raises(httpx.HTTPStatusError):
         await list_all_issues("owner/repo")
+
+
+async def test_list_all_issues_keeps_a_cap_on_requests_in_flight(httpx_mock: HTTPXMock) -> None:
+    in_flight = 0
+    most = 0
+    serve, _ = _serve(4000)
+
+    async def page(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, most
+        in_flight += 1
+        most = max(most, in_flight)
+        try:
+            return await serve(request)
+        finally:
+            in_flight -= 1
+
+    httpx_mock.add_callback(page, is_reusable=True)
+
+    listings = await asyncio.gather(*(list_all_issues("owner/repo") for _ in range(3)))
+
+    assert [len(listing) for listing in listings] == [4000, 4000, 4000]
+    assert most == github._ISSUES_REQUESTS_IN_FLIGHT
+
+
+async def test_list_all_issues_lists_a_repository_once_while_sharing(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Inside sharing_listings, callers asking for one repository share one listing, each
+    with a copy of its own; outside it, each call lists the repository again."""
+    page, requested = _serve(150)
+    httpx_mock.add_callback(page, is_reusable=True)
+
+    with github.sharing_listings():
+        first, second = await asyncio.gather(
+            list_all_issues("owner/repo"), list_all_issues("Owner/Repo")
+        )
+    assert sorted(requested) == [1, 2]
+    assert first == second and first is not second
+    first[0]["labels"].append("mine")
+    assert second[0]["labels"] == []
+
+    await list_all_issues("owner/repo")
+    assert sorted(requested) == [1, 1, 2, 2]
 
 
 # ---------------------------------------------------------------------------

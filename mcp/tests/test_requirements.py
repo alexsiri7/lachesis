@@ -4350,6 +4350,33 @@ async def test_next_issue_reads_every_backlog_and_the_due_audits_at_once(
     assert [other["repo"] for other in result["also_eligible"]] == ["owner/r1", "owner/r2"]
 
 
+async def test_next_issue_lists_each_repository_once_for_the_route_and_the_audits(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """The audits' route and their merges both read whole listings; one call lists a
+    repository once for both."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_blocked_by(httpx_mock, 1, [])
+    listed = AsyncMock(return_value=[])
+
+    async def audit(*args):
+        import github
+
+        await asyncio.gather(
+            github.list_all_issues("owner/repo"), github.list_all_issues("owner/repo")
+        )
+
+    with (
+        _patch_backlog(_FakeBacklog([])),
+        patch("github._list_all_issues", listed),
+        patch("tools.audits.next_audit", audit),
+    ):
+        result = await next_issue("owner/repo")
+
+    assert result["issue"]["number"] == 1
+    listed.assert_awaited_once_with("owner/repo")
+
+
 async def test_next_issue_skips_a_repo_it_cannot_read(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:

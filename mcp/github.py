@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import contextvars
 import json
 import logging
 import re
-from collections.abc import Callable
+import weakref
+from collections.abc import Callable, Iterator
 from typing import Any, Literal, TypedDict
 from urllib.parse import quote
 
@@ -351,41 +354,95 @@ class IssueSummary(TypedDict):
 
 _ISSUES_PAGE_SIZE = 100
 
-# Pages of one listing fetched at once. A repository's whole history runs to tens of
-# pages, and fetched one after another each costs a round trip: listing every registered
-# repository that way took next_issue past a minute.
-_ISSUES_PAGE_CONCURRENCY = 8
+# A repository's whole history runs to tens of pages, and fetched one after another each
+# costs a round trip: listing every registered repository that way took next_issue past a
+# minute. GitHub pages this listing by cursor, so its Link header never names the last
+# page; the newest item's number bounds how many there are, as issues and pull requests
+# share one sequence. At most this many listing requests are in flight at once, across
+# every listing, well inside GitHub's limit on concurrent requests.
+_ISSUES_REQUESTS_IN_FLIGHT = 16
+# A bound past this many pages is not trusted; the rest are followed one by one.
+_ISSUES_MAX_SPECULATIVE_PAGES = 50
+
+_listing_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
 
 
-def _last_page(resp: httpx.Response) -> int | None:
-    """The page number GitHub's ``Link`` header names as ``last``, or ``None``."""
-    url = resp.links.get("last", {}).get("url")
-    if not url:
-        return None
-    page = httpx.URL(url).params.get("page")
-    return int(page) if page and page.isdigit() else None
+def _listing_gate() -> asyncio.Semaphore:
+    """The running loop's cap on listing requests in flight."""
+    loop = asyncio.get_running_loop()
+    gate = _listing_gates.get(loop)
+    if gate is None:
+        gate = _listing_gates[loop] = asyncio.Semaphore(_ISSUES_REQUESTS_IN_FLIGHT)
+    return gate
+
+
+def _page_bound(batch: list[dict[str, Any]]) -> int:
+    """How many pages the listing whose first page is *batch* can run to: the highest
+    number on it, a page per hundred. It only overshoots, by the numbers of deleted issues
+    and discussions; an issue transferred in can make it short, which the caller follows."""
+    highest = max((int(item.get("number") or 0) for item in batch), default=0)
+    return min(-(-highest // _ISSUES_PAGE_SIZE), _ISSUES_MAX_SPECULATIVE_PAGES)
+
+
+_shared_listings: contextvars.ContextVar[dict[str, asyncio.Task[list[IssueSummary]]] | None] = (
+    contextvars.ContextVar("_shared_listings", default=None)
+)
+
+
+@contextlib.contextmanager
+def sharing_listings() -> Iterator[None]:
+    """Within the block, and the tasks it starts, list each repository once.
+
+    A tool that reads several things derived from whole listings (next_issue reads the
+    route's closed issues and the audits' merges) otherwise lists every repository more
+    than once in one call. Each caller still gets a copy of its own.
+    """
+    token = _shared_listings.set({})
+    try:
+        yield
+    finally:
+        _shared_listings.reset(token)
 
 
 async def list_all_issues(repo: str) -> list[IssueSummary]:
     """Return every issue and pull request in *repo*, open or closed, following every page.
 
+    Inside :func:`sharing_listings`, one listing serves every caller asking for *repo*.
+    """
+    shared = _shared_listings.get()
+    if shared is None:
+        return await _list_all_issues(repo)
+    task = shared.get(repo.lower())
+    if task is None:
+        task = shared[repo.lower()] = asyncio.ensure_future(_list_all_issues(repo))
+    listing = await asyncio.shield(task)
+    return [{**item, "labels": list(item["labels"])} for item in listing]
+
+
+async def _list_all_issues(repo: str) -> list[IssueSummary]:
+    """Return every issue and pull request in *repo*, open or closed, following every page.
+
     One listing answers questions about a whole repository that would otherwise cost a
     request per issue.  ``merged`` is only ever true for a pull request.
 
-    The first page's ``Link`` header names the last page, so the pages up to it are
-    fetched together, a few at a time, and joined in page order; any page beyond it (the
-    repository grew meanwhile), or every page when there is no such header, is followed
-    one by one until a short page.
+    After the first page, the pages up to the bound its newest number gives are fetched
+    together and read in page order up to the first short one, as a walk page by page
+    would read them; when the last of them is still full, the rest are followed one by
+    one until a short page.
     """
     items: list[dict[str, Any]] = []
+    gate = _listing_gate()
     async with httpx.AsyncClient(timeout=10.0) as http:
 
-        async def fetch(page: int) -> tuple[httpx.Response, list[dict[str, Any]]]:
-            resp = await http.get(
-                f"{_BASE_URL}/repos/{repo}/issues",
-                headers=_headers(),
-                params={"state": "all", "per_page": _ISSUES_PAGE_SIZE, "page": page},
-            )
+        async def fetch(page: int) -> list[dict[str, Any]]:
+            async with gate:
+                resp = await http.get(
+                    f"{_BASE_URL}/repos/{repo}/issues",
+                    headers=_headers(),
+                    params={"state": "all", "per_page": _ISSUES_PAGE_SIZE, "page": page},
+                )
             if not resp.is_success:
                 logger.warning(
                     "github.list_all_issues failed repo=%s page=%s status=%s",
@@ -394,31 +451,30 @@ async def list_all_issues(repo: str) -> list[IssueSummary]:
                     resp.status_code,
                 )
                 resp.raise_for_status()
-            return resp, resp.json()
+            batch: list[dict[str, Any]] = resp.json()
+            return batch
 
-        first, batch = await fetch(1)
+        batch = await fetch(1)
         items.extend(batch)
         page = 1
-        last = _last_page(first) if len(batch) >= _ISSUES_PAGE_SIZE else None
-        if last is not None and last > 1:
-            gate = asyncio.Semaphore(_ISSUES_PAGE_CONCURRENCY)
-
-            async def gated(number: int) -> list[dict[str, Any]]:
-                async with gate:
-                    return (await fetch(number))[1]
-
-            # Every page settles before the client closes; the first failure is raised.
+        bound = _page_bound(batch) if len(batch) >= _ISSUES_PAGE_SIZE else 1
+        if bound > 1:
+            # Every page settles before the client closes. They are read as a walk would
+            # read them: a failure raises, and nothing past the first short page counts.
             pages = await asyncio.gather(
-                *(gated(n) for n in range(2, last + 1)), return_exceptions=True
+                *(fetch(n) for n in range(2, bound + 1)), return_exceptions=True
             )
-            for batch in pages:
-                if isinstance(batch, BaseException):
-                    raise batch
+            for result in pages:
+                if isinstance(result, BaseException):
+                    raise result
+                page += 1
+                batch = result
                 items.extend(batch)
-            page = last
+                if len(batch) < _ISSUES_PAGE_SIZE:
+                    break
         while len(batch) >= _ISSUES_PAGE_SIZE:
             page += 1
-            _, batch = await fetch(page)
+            batch = await fetch(page)
             items.extend(batch)
     return [
         {
