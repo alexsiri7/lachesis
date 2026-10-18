@@ -62,7 +62,7 @@ The system SHALL keep the latest overflow report, the money spent through Reques
 
 ### Requirement: A reserve is kept for emergencies
 
-The system SHALL hold back 10 percent of each account's factory share as a reserve, usable only for security work and production incidents, until 24 hours before that account's weekly allowance resets. From then until the reset, whatever is left of the reserve SHALL be usable for any work, so the factory can use its whole share and no allowance is lost at the reset. Outside that last day, work of any other kind SHALL NOT draw on the reserve. Nothing, emergencies included, SHALL use an account beyond its factory share.
+The system SHALL hold back 10 percent of each account's factory share as a reserve, usable only for security work and production incidents, until 24 hours before that account's weekly allowance resets. Outside that last day, work of any other kind SHALL NOT draw on the reserve.
 
 #### Scenario: Only emergencies use the reserve
 - GIVEN only the reserve remains on every account
@@ -70,11 +70,19 @@ The system SHALL hold back 10 percent of each account's factory share as a reser
 - WHEN the next issue is requested
 - THEN only security or incident work is offered
 
+### Requirement: Unused reserve is released before the reset
+
+From 24 hours before an account's weekly allowance resets until the reset, whatever is left of the reserve SHALL be usable for any work, so the factory can use its whole share and no allowance is lost at the reset.
+
 #### Scenario: Unused reserve released before the reset
 - GIVEN only the reserve remains on the factory account
 - AND its weekly allowance resets in 20 hours
 - WHEN the next issue is requested
 - THEN work of any kind may be offered on the factory account
+
+### Requirement: No account is used beyond its factory share
+
+Nothing, emergencies included, SHALL use an account beyond its factory share.
 
 #### Scenario: The share is never exceeded
 - GIVEN the account main has a 65 percent share and has reported 65 percent used

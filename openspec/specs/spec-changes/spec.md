@@ -28,7 +28,7 @@ The system SHALL list a repository's capabilities with each one's name, purpose 
 
 ### Requirement: A spec change is a pull request
 
-The system SHALL create a spec change from a title, a why, and the complete new content of every capability it adds, edits or removes. It SHALL open one pull request for the change through repository-writes, put the why in the pull request description, and label it `spec-change`. A spec change proposed because the author asked for it in conversation SHALL be marked as the author's request, and SHALL be labelled `author-request`; one proposed by an agent or an audit SHALL NOT. The pull request number SHALL identify the spec change everywhere.
+The system SHALL create a spec change from a title, a why, and the complete new content of every capability it adds, edits or removes. It SHALL open one pull request for the change through repository-writes, put the why in the pull request description, and label it `spec-change`. The pull request number SHALL identify the spec change everywhere.
 
 #### Scenario: Proposing a change to two capabilities
 - GIVEN a repository that uses specs
@@ -36,6 +36,10 @@ The system SHALL create a spec change from a title, a why, and the complete new 
 - THEN one pull request is opened containing both edits
 - AND its description holds the why
 - AND the caller receives its number
+
+### Requirement: The author's requests are labelled
+
+A spec change proposed because the author asked for it in conversation SHALL be marked as the author's request, and SHALL be labelled `author-request`; one proposed by an agent or an audit SHALL NOT.
 
 #### Scenario: The author asks in conversation
 - GIVEN the author agrees a new feature with Claude in a conversation

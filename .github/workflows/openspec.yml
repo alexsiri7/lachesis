@@ -16,4 +16,4 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: openspec validate
-        run: npx -y @fission-ai/openspec@1.14.0 validate --specs --strict
+        run: npx -y @fission-ai/openspec@latest validate --specs --strict

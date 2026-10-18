@@ -48,22 +48,30 @@ When a run is routed to Claude, the system SHALL name the account to use: among 
 
 ### Requirement: Trust is earned and lost
 
-A model SHALL become trusted for a kind of work at a size after five consecutive runs of that kind at that size or larger that merged without rework and drew no audit finding; trust at a size covers every smaller size. It SHALL lose trust at a size after two failures in its last five runs of that kind at that size, where a failure is rework, a retry or an audit finding. New models SHALL trial on triage and summarising before any other kind, SHALL trial on a kind only once trusted on a lower-risk one, and SHALL trial on 1-point work of a kind before larger sizes, stepping up one size at a time.
+A model SHALL become trusted for a kind of work at a size after five consecutive runs of that kind at that size or larger that merged without rework and drew no audit finding; trust at a size covers every smaller size.
 
 #### Scenario: Earning trust
 - GIVEN a model with four clean triage runs in a row
 - WHEN its fifth triage run merges cleanly with no audit finding
 - THEN it is trusted for triage
 
-#### Scenario: Stepping up a size
-- GIVEN a model trusted for implementation up to 2 points
-- WHEN it is next trialled on implementation
-- THEN the trial is a 3-point issue
+### Requirement: Trust is lost on repeated failure
+
+A model SHALL lose trust at a size after two failures in its last five runs of that kind at that size, where a failure is rework, a retry or an audit finding.
 
 #### Scenario: Losing trust
 - GIVEN a model trusted for tests
 - WHEN two of its last five test runs needed rework
 - THEN it is no longer trusted for tests
+
+### Requirement: New models trial from the lowest risk up
+
+New models SHALL trial on triage and summarising before any other kind, SHALL trial on a kind only once trusted on a lower-risk one, and SHALL trial on 1-point work of a kind before larger sizes, stepping up one size at a time.
+
+#### Scenario: Stepping up a size
+- GIVEN a model trusted for implementation up to 2 points
+- WHEN it is next trialled on implementation
+- THEN the trial is a 3-point issue
 
 ### Requirement: Trials are budgeted
 
