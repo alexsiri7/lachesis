@@ -1896,7 +1896,8 @@ async def test_get_issue_activity_keeps_the_chunks_that_worked(httpx_mock: HTTPX
 
 
 async def test_get_issue_activity_reads_every_batch_at_once(httpx_mock: HTTPXMock) -> None:
-    """A repo linking dozens of issues costs one round trip, not one per batch in turn."""
+    """A repo linking hundreds of issues costs a round trip or two, not one per batch in
+    turn, and its batches share the cap on requests in flight."""
     in_flight = 0
     most = 0
 
@@ -1912,10 +1913,10 @@ async def test_get_issue_activity_reads_every_batch_at_once(httpx_mock: HTTPXMoc
 
     httpx_mock.add_callback(respond, method="POST", url=_GRAPHQL_URL, is_reusable=True)
 
-    await get_issue_activity("owner/repo", list(range(1, 80)))
+    await get_issue_activity("owner/repo", list(range(1, 451)))
 
-    assert len(httpx_mock.get_requests()) == 4
-    assert most == 4
+    assert len(httpx_mock.get_requests()) == 18
+    assert most == github._ISSUES_REQUESTS_IN_FLIGHT
 
 
 async def test_get_issue_activity_normalizes_landing_and_blocker_facts(
