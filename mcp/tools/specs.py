@@ -591,7 +591,8 @@ class SpecProgress(NamedTuple):
     reference block of every issue naming a spec change, by issue number, and
     ``facts`` the facts read for those issues, partial or empty when the read failed.
     ``scenario_results`` are those published for the default branch, ``None`` when
-    there are none.
+    there are none or, with ``scenario_results_failure`` naming the cause, when they
+    could not be read.
     """
 
     spec_gaps: dict[str, int]
@@ -599,6 +600,7 @@ class SpecProgress(NamedTuple):
     references: dict[int, SpecReference]
     facts: dict[int, IssueFacts]
     scenario_results: github.ScenarioResults | None = None
+    scenario_results_failure: ActivityFailure | None = None
 
 
 class PendingScenario(TypedDict):
@@ -660,13 +662,26 @@ async def _hold_until_scenarios_pass(
         hold_in_progress(entry["derived"])
 
 
-def scenario_view(results: github.ScenarioResults | None) -> dict[str, Any]:
+def scenario_view(
+    results: github.ScenarioResults | None, failure: ActivityFailure | None = None
+) -> dict[str, Any]:
     """Every scenario's result by capability, or why there are none.
 
     Returns ``{"published": True, "commit", "capabilities": {capability: {result:
     [scenario, ...]}}}`` with every result from ``passed``, ``xfail``, ``failed`` and
-    ``untested`` present, or ``{"published": False, "message"}``.
+    ``untested`` present, or ``{"published": False, "message"}``, which also carries
+    ``unavailable_cause`` when the results could not be read.
     """
+    if failure is not None:
+        return {
+            "published": False,
+            "unavailable_cause": failure,
+            "message": (
+                f"The {github.SCENARIO_RESULTS_CHECK!r} check run for the latest commit on "
+                f"the default branch could not be read ({failure}), so no scenario has a "
+                "result here."
+            ),
+        }
     if results is None:
         return {
             "published": False,
@@ -751,7 +766,9 @@ async def read_spec_progress(repo: str) -> SpecProgress:
     it adds or modifies does not pass in the scenario results published for the
     default branch, or no results are published; its ``pending_scenarios`` name
     each.  A spec change is only diffed when some scenario does not pass, and one
-    GitHub will not diff is unreadable.
+    GitHub will not diff is unreadable.  When the scenario results themselves
+    cannot be read, every spec change whose issues are all done is unreadable:
+    the rest are derived and counted all the same.
     """
     items = await github.list_all_issues(repo)
     naming: dict[int, list[int]] = {}
@@ -794,7 +811,23 @@ async def read_spec_progress(repo: str) -> SpecProgress:
         )
         for pull in pulls
     ]
-    results = await github.get_scenario_results(repo)
+    try:
+        results = await github.get_scenario_results(repo)
+    except Exception as exc:
+        # A token without the Checks permission is refused this read on a private
+        # repository alone; that must not cost the spec changes it does not decide.
+        logger.warning(
+            "failed to read the scenario results repo=%s error=%r; built spec changes unreadable",
+            repo,
+            exc,
+        )
+        cause = github.failure_from_exception(exc)
+        for candidate in candidates:
+            if candidate.entry["derived"]["status"] == "done":
+                mark_unreadable(candidate.entry["derived"], cause)
+        return SpecProgress(
+            dict(sorted(spec_gaps.items())), candidates, references, facts, None, cause
+        )
     if not _all_pass(results):
         await asyncio.gather(
             *(
