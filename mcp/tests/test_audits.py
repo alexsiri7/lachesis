@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -12,6 +13,7 @@ from tools.audits import (
     _merged_since,
     _next_capability,
     _open_findings,
+    audit_history,
     next_audit,
 )
 
@@ -163,3 +165,36 @@ async def test_next_audit_waits_while_spending_is_ahead_of_pace() -> None:
     history = _history([_due_audit("owner/a", "security", 10)], {"owner/a": None})
 
     assert await _next(history, None, _budget(100, within_pace=False)) is None
+
+
+async def test_audit_history_reads_every_repository_at_once() -> None:
+    """One repository after another, the listings took next_issue past the factory's
+    minute. Each starts before any ends; the history keeps registration order, and a
+    repository that cannot be read is named, in order, without costing the others."""
+    in_flight = 0
+    most = 0
+
+    async def list_all_issues(repo: str) -> list[dict]:
+        nonlocal in_flight, most
+        in_flight += 1
+        most = max(most, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        if repo == "owner/b":
+            raise RuntimeError("gone")
+        return []
+
+    registered = [{"repo_name": f"owner/{name}"} for name in "abcd"]
+    with (
+        patch("tools.audits.route_run", AsyncMock(return_value={"model": "claude"})),
+        patch("tools.audits.db.list_audit_runs", return_value=[]),
+        patch("tools.audits.db.list_repos", return_value=registered),
+        patch("tools.audits.github.list_all_issues", list_all_issues),
+        patch("tools.audits._capabilities", AsyncMock(return_value=[])),
+        patch("tools.audits._north_star", AsyncMock(return_value=None)),
+    ):
+        history = await audit_history("test-uid")
+
+    assert most == 4
+    assert [entry["repo"] for entry in history["repos"]] == ["owner/a", "owner/c", "owner/d"]
+    assert history["unreadable"] == ["owner/b"]

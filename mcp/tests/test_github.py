@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -36,6 +37,7 @@ from github import (
     get_pull_request_files,
     get_repo_settings,
     get_scenario_results,
+    list_all_issues,
     list_blocked_by_numbers,
     list_blockers,
     list_files,
@@ -1172,6 +1174,104 @@ async def test_get_merge_base_raises_on_http_error(httpx_mock: HTTPXMock) -> Non
 
     with pytest.raises(httpx.HTTPStatusError):
         await get_merge_base("owner/repo", 7)
+
+
+# ---------------------------------------------------------------------------
+# list_all_issues
+# ---------------------------------------------------------------------------
+
+_ALL_ISSUES = "https://api.github.com/repos/owner/repo/issues?state=all&per_page=100"
+
+
+def _page_of(first: int, count: int) -> list[dict]:
+    return [
+        {"number": n, "title": f"Issue {n}", "html_url": f"u/{n}", "state": "open"}
+        for n in range(first, first + count)
+    ]
+
+
+def _last_link(last: int) -> dict[str, str]:
+    return {"Link": f'<{_ALL_ISSUES}&page=2>; rel="next", <{_ALL_ISSUES}&page={last}>; rel="last"'}
+
+
+async def test_list_all_issues_reads_the_pages_the_link_header_names_in_page_order(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """The pages up to the last one are fetched together and joined in page order."""
+    httpx_mock.add_response(
+        url=f"{_ALL_ISSUES}&page=1", json=_page_of(1, 100), headers=_last_link(3)
+    )
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", json=_page_of(101, 100))
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=3", json=_page_of(201, 7))
+
+    items = await list_all_issues("owner/repo")
+
+    assert [item["number"] for item in items] == list(range(1, 208))
+    assert len(httpx_mock.get_requests()) == 3
+
+
+async def test_list_all_issues_fetches_the_pages_after_the_first_at_once(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Every page after the first is requested before any of them answers."""
+    in_flight = 0
+    most = 0
+
+    async def page(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, most
+        number = int(request.url.params["page"])
+        if number == 1:
+            return httpx.Response(200, json=_page_of(1, 100), headers=_last_link(4))
+        in_flight += 1
+        most = max(most, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        size = 100 if number < 4 else 1
+        return httpx.Response(200, json=_page_of(1 + 100 * (number - 1), size))
+
+    httpx_mock.add_callback(page, is_reusable=True)
+
+    items = await list_all_issues("owner/repo")
+
+    assert len(items) == 301
+    assert most == 3
+
+
+async def test_list_all_issues_follows_pages_one_by_one_without_a_link_header(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=1", json=_page_of(1, 100))
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", json=_page_of(101, 2))
+
+    items = await list_all_issues("owner/repo")
+
+    assert [item["number"] for item in items] == list(range(1, 103))
+
+
+async def test_list_all_issues_reads_a_page_beyond_the_last_one_named(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A repository that grew a page while it was being read is still read to the end."""
+    httpx_mock.add_response(
+        url=f"{_ALL_ISSUES}&page=1", json=_page_of(1, 100), headers=_last_link(2)
+    )
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", json=_page_of(101, 100))
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=3", json=[])
+
+    items = await list_all_issues("owner/repo")
+
+    assert len(items) == 200
+
+
+async def test_list_all_issues_raises_when_a_later_page_fails(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{_ALL_ISSUES}&page=1", json=_page_of(1, 100), headers=_last_link(3)
+    )
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=2", status_code=502)
+    httpx_mock.add_response(url=f"{_ALL_ISSUES}&page=3", json=_page_of(201, 1))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await list_all_issues("owner/repo")
 
 
 # ---------------------------------------------------------------------------

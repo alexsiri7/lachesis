@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -4300,6 +4301,53 @@ async def test_next_issue_with_no_registered_repos(set_user_id: str) -> None:
     assert result["issue"] is None
     assert result["reason"] == "empty"
     assert "registered" in result["explanation"]
+
+
+async def test_next_issue_reads_every_backlog_and_the_due_audits_at_once(
+    set_user_id: str,
+) -> None:
+    """Read one repo after another, the backlogs and the due audits took the factory's
+    call past its minute, and issue pickup stopped. Each read starts before any ends."""
+    from tools.requirements import _RepoScan
+
+    in_flight = 0
+    most = 0
+
+    async def overlapping(value):
+        nonlocal in_flight, most
+        in_flight += 1
+        most = max(most, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return value
+
+    async def scan(repo, *args):
+        candidate = {
+            "repo": repo,
+            "number": 1,
+            "title": "One",
+            "position": 0,
+            "tier": "other",
+            "interrupt": False,
+            "sort_key": (repo,),
+        }
+        return await overlapping(_RepoScan(candidate, [], True, False, False, False, False))
+
+    async def audit(*args):
+        return await overlapping(None)
+
+    registered = [{"repo_name": f"owner/r{n}"} for n in range(3)]
+    with (
+        _patch_backlog(_FakeBacklog()),
+        patch("tools.requirements.db.list_repos", return_value=registered),
+        patch("tools.requirements._scan_repo", scan),
+        patch("tools.audits.next_audit", audit),
+    ):
+        result = await next_issue()
+
+    assert most == 4
+    assert result["issue"]["repo"] == "owner/r0"
+    assert [other["repo"] for other in result["also_eligible"]] == ["owner/r1", "owner/r2"]
 
 
 async def test_next_issue_skips_a_repo_it_cannot_read(
