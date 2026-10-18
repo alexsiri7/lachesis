@@ -225,18 +225,27 @@ _CHECK_RUNS_URL = re.compile(
 
 
 @pytest.fixture()
-def scenario_results() -> dict[str, dict[str, str]] | None:
-    """The scenario results CI published for the default branch: none fail unless a test says."""
+def scenario_results() -> dict[str, dict[str, str]] | int | None:
+    """The scenario results CI published for the default branch: none fail unless a test
+    says.  A status code is GitHub refusing the read."""
     return {"backlog": {"Ordered": "passed"}}
 
 
 @pytest.fixture(autouse=True)
 def _published(
-    request: pytest.FixtureRequest, scenario_results: dict[str, dict[str, str]] | None
+    request: pytest.FixtureRequest, scenario_results: dict[str, dict[str, str]] | int | None
 ) -> None:
     if "httpx_mock" not in request.fixturenames:
         return
     httpx_mock: HTTPXMock = request.getfixturevalue("httpx_mock")
+    if isinstance(scenario_results, int):
+        httpx_mock.add_response(
+            url=_CHECK_RUNS_URL,
+            status_code=scenario_results,
+            json={"message": "Resource not accessible by personal access token"},
+            is_optional=True,
+        )
+        return
     if scenario_results is None:
         httpx_mock.add_response(
             url=_CHECK_RUNS_URL, json={"total_count": 0, "check_runs": []}, is_optional=True
@@ -930,6 +939,44 @@ async def test_the_dashboard_says_when_no_scenario_results_are_published(
     view = result["repos"][0]["scenario_results"]
     assert view["published"] is False
     assert "scenario-results" in view["message"]
+
+
+@pytest.mark.parametrize("scenario_results", [403])
+async def test_unreadable_scenario_results_cost_only_the_built_spec_changes(
+    httpx_mock: HTTPXMock, signed_in: None
+) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
+        patch("tools.requirements.landing.notify_landed", new_callable=AsyncMock),
+    ):
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        httpx_mock.add_response(
+            json=[
+                _issue_item(23, body=_reference(22)),
+                _spec_change_item(22, merged_at=_stamp(2), repo="owner/specs"),
+                _issue_item(21, body=_reference(20)),
+                _spec_change_item(20, merged_at=_stamp(3), repo="owner/specs"),
+            ]
+        )
+        _mock_issue_activity(
+            httpx_mock, _issue_node(21, state="CLOSED", merged_pr=31), _issue_node(23)
+        )
+        _mock_waiting(httpx_mock)
+
+        result = await get_dashboard()
+
+    summary = result["summary"]
+    assert summary["incomplete_repos"] == []
+    assert summary["lower_bound"] is False
+    assert summary["spec_changes_by_status"] == {"unreadable": 1, "idea": 1}
+    assert summary["unavailable_repos"] == [
+        {"repo": "owner/specs", "count": 1, "causes": ["inaccessible"]}
+    ]
+    view = result["repos"][0]["scenario_results"]
+    assert view["published"] is False
+    assert view["unavailable_cause"] == "inaccessible"
 
 
 async def test_list_spec_changes_is_refused_without_specs(httpx_mock: HTTPXMock) -> None:
