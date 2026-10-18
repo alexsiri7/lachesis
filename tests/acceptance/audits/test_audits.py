@@ -376,16 +376,18 @@ async def test_audit_issue_content(lachesis: Lachesis) -> None:
     assert "more than one reading" in text
 
 
-@scenario("audits", "Clean code audit content")
-async def test_clean_code_audit_content(lachesis: Lachesis) -> None:
+async def _clean_code_audit_text(lachesis: Lachesis) -> str:
     repo = "owner/kith"
     await _repo(lachesis, repo)
     lachesis.github.on("POST", f"/repos/{repo}/issues", json=_issue(repo, 70), status=201)
-
     await _ok(lachesis, "start_audit", {"repo": repo, "kind": "clean-code"})
-
     [opened] = _opened_issues(lachesis, repo)
-    text = " ".join(f"{opened['title']}\n{opened.get('body', '')}".lower().split())
+    return " ".join(f"{opened['title']}\n{opened.get('body', '')}".lower().split())
+
+
+@scenario("audits", "Clean code audit content")
+async def test_clean_code_audit_content(lachesis: Lachesis) -> None:
+    text = await _clean_code_audit_text(lachesis)
     for standard in (
         "names that reveal intent",
         "do one thing",
@@ -393,12 +395,31 @@ async def test_clean_code_audit_content(lachesis: Lachesis) -> None:
         "side effects",
         "duplication",
         "comments",
-        "single responsibility",
-        "dependencies",
-        "tests",
     ):
         assert standard in text, standard
     assert "name the standard" in text
+
+
+@scenario("audits", "Design and test standards listed")
+async def test_design_and_test_standards_listed(lachesis: Lachesis) -> None:
+    text = await _clean_code_audit_text(lachesis)
+    for standard in (
+        "single responsibility",
+        "dependencies",
+        "fast",
+        "independent",
+        "repeatable",
+        "self-validating",
+        "as clean as the code",
+    ):
+        assert standard in text, standard
+
+
+@scenario("audits", "Finding names its standard")
+async def test_finding_names_its_standard(lachesis: Lachesis) -> None:
+    text = await _clean_code_audit_text(lachesis)
+    assert "name the standard" in text
+    assert "where" in text
 
 
 # --- Findings are filed, not fixed; decisions go to the author ------------------------

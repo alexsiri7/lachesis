@@ -318,3 +318,44 @@ async def test_same_failure_three_times(lachesis: Lachesis) -> None:
     assert sorted(repeat["issues"]) == [1, 2, 3]
     [fix] = [entry for entry in review["experiments"] if set(entry["issues"]) >= {1, 2, 3}]
     assert fix["state"] == "open"
+
+
+@scenario("sprints", "Open experiments listed")
+async def test_open_experiments_listed(lachesis: Lachesis) -> None:
+    repo = await Repo(lachesis).register()
+    await _new_sprint(lachesis, first=True)
+    repo.open(50, 51)
+    rework = await _experiment(lachesis, [50], baseline=40, target=10)
+    retries = await _experiment(lachesis, [51], measure="retry_rate", baseline=30, target=15)
+    await _new_sprint(lachesis)
+
+    review = await _ok(lachesis, "report_sprint", {})
+
+    assert {
+        (entry["measure"], entry["baseline"], entry["target"], tuple(entry["results"]))
+        for entry in (_listed(review, rework), _listed(review, retries))
+    } == {("rework_rate", 40, 10, ()), ("retry_rate", 30, 15, ())}
+
+
+@scenario("sprints", "Improvement made without the author")
+async def test_improvement_made_without_the_author(lachesis: Lachesis) -> None:
+    repo = await Repo(lachesis).register()
+    await _new_sprint(lachesis, first=True)
+    repo.open(50)
+    experiment = await _experiment(lachesis, [50], baseline=40, target=10)
+    await _new_sprint(lachesis)
+    await _ok(lachesis, "report_sprint", {})
+
+    judged = await _ok(
+        lachesis,
+        "judge_experiment",
+        {
+            "id": experiment["id"],
+            "value": 6,
+            "verdict": "kept",
+            "reason": "Rework fell to 6 percent; the self-review is now standard guidance.",
+        },
+    )
+
+    assert judged["state"] == "kept"
+    assert await _ok(lachesis, "list_open_questions", {}) == []

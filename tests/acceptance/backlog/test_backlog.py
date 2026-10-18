@@ -170,6 +170,15 @@ async def test_starving_work_rises(lachesis: Lachesis) -> None:
     assert backlog[1]["tier"] == "milestone"
 
 
+@scenario("backlog", "No tool sets a rank")
+async def test_no_tool_sets_a_rank(lachesis: Lachesis) -> None:
+    tools = await lachesis.list_tools()
+    assert tools
+    for name, schema in tools.items():
+        assert "rank" not in name, name
+        assert not any("rank" in argument for argument in schema.get("properties", {})), name
+
+
 @scenario("backlog", "Focusing a milestone")
 async def test_focusing_a_milestone(lachesis: Lachesis) -> None:
     _uses_specs(lachesis)
