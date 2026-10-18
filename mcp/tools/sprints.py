@@ -257,6 +257,12 @@ async def read_sprint() -> dict[str, Any]:
     """Return the current sprint: its dates, budget and the share of it kept for
     improvement work, spending, the price of a point and the capacity in points it gives,
     and the plan of issues and due audits."""
+    # The backlogs, the audits and the factory history read the same whole listings.
+    with github.sharing_listings():
+        return await _read_sprint()
+
+
+async def _read_sprint() -> dict[str, Any]:
     user_id = _require_user_id()
     now = datetime.now(UTC)
     budget = sprint_budget(

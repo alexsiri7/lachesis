@@ -1783,12 +1783,14 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
             return None
 
     # The backlogs and the due audits are read from GitHub at once: one repo after
-    # another, they cost the factory's call more than its minute.
-    audit, *results = await asyncio.gather(
-        offer_audit(),
-        *(_scan_repo(name, user_id, now, cache, budget, estimates) for name in repos),
-        return_exceptions=True,
-    )
+    # another, they cost the factory's call more than its minute. The audits' route and
+    # merges read the same whole listings, so each repository is listed once.
+    with github.sharing_listings():
+        audit, *results = await asyncio.gather(
+            offer_audit(),
+            *(_scan_repo(name, user_id, now, cache, budget, estimates) for name in repos),
+            return_exceptions=True,
+        )
     if isinstance(audit, BaseException):
         raise audit
     scans: list[_RepoScan] = []

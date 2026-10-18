@@ -817,15 +817,23 @@ async def test_progress_keeps_the_reference_of_each_issue_naming_a_spec_change(
 
 
 async def test_every_page_of_issues_is_read(httpx_mock: HTTPXMock) -> None:
-    first_page = [_issue_item(n, body="No reference.") for n in range(1000, 1100)]
-    httpx_mock.add_response(json=first_page)
-    httpx_mock.add_response(json=[_issue_item(7, body=_reference(None), labels=("spec-gap",))])
+    first_page = [_issue_item(n, body="No reference.") for n in range(1099, 999, -1)]
+    second_page = [_issue_item(7, body=_reference(None), labels=("spec-gap",))]
+
+    def page(request: httpx.Request) -> httpx.Response:
+        # The newest number bounds the pages fetched at once; those past the end are empty.
+        number = request.url.params["page"]
+        return httpx.Response(
+            200, json=first_page if number == "1" else second_page if number == "2" else []
+        )
+
+    httpx_mock.add_callback(page, url=_ISSUES_URL, is_reusable=True)
 
     progress = await read_spec_progress("owner/repo")
 
     assert progress.spec_gaps == {"backlog": 1}
-    pages = [request.url.params["page"] for request in httpx_mock.get_requests(url=_ISSUES_URL)]
-    assert pages == ["1", "2"]
+    pages = {request.url.params["page"] for request in httpx_mock.get_requests(url=_ISSUES_URL)}
+    assert {"1", "2"} <= pages
 
 
 async def test_a_spec_change_whose_issues_cannot_be_read_is_unreadable(
