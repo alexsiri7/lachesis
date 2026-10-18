@@ -155,8 +155,8 @@ def _frontmatter(content: str) -> dict[str, Any]:
     return yaml.safe_load(content.split("---\n")[1])
 
 
-def _issues_section(content: str) -> str:
-    return content.split("## Issues", 1)[1]
+def _section(content: str, heading: str) -> str:
+    return content.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0].strip()
 
 
 async def _listed(lachesis: Lachesis, repo: str = REPO, **arguments: Any) -> dict[str, Any]:
@@ -172,8 +172,11 @@ async def test_creating_a_requirement(lachesis: Lachesis) -> None:
 
     [stored] = repo.files.values()
     assert stored == await _content(lachesis, id)
+    assert _frontmatter(stored)["title"] == "Widgets are counted"
     assert _frontmatter(stored)["status"] == "draft"
-    assert "#" not in _issues_section(stored), stored
+    assert _section(stored, "Why") == "Nobody knows."
+    assert _section(stored, "What") == "Count."
+    assert "#" not in _section(stored, "Issues"), stored
     assert (await _listed(lachesis))[id]["status"] == "draft"
 
 
@@ -186,7 +189,7 @@ async def test_first_link(lachesis: Lachesis) -> None:
 
     content = await _content(lachesis, id)
     assert _frontmatter(content)["status"] == "idea"
-    issues = _issues_section(content)
+    issues = _section(content, "Issues")
     for issue in (ISSUE_12, ISSUE_13):
         line = next(line for line in issues.splitlines() if f"#{issue['number']}" in line)
         assert issue["title"] in line, issues
@@ -200,7 +203,7 @@ async def test_link_the_same_issue_twice(lachesis: Lachesis) -> None:
 
     await _link(lachesis, id, ISSUE_12, ISSUE_13)
 
-    issues = _issues_section(await _content(lachesis, id))
+    issues = _section(await _content(lachesis, id), "Issues")
     assert issues.count("#12") == 1, issues
     assert issues.count("#13") == 1, issues
 
@@ -217,7 +220,7 @@ async def test_extending_the_what_after_linking(lachesis: Lachesis) -> None:
 
     content = await _content(lachesis, id)
     assert "Count them, and show the count." in content, content
-    issues = _issues_section(content)
+    issues = _section(content, "Issues")
     assert "#12" in issues, issues
     assert "#13" in issues, issues
 
