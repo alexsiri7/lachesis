@@ -645,31 +645,46 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Return the scorecard of every model with runs, for each kind of work in risk order "
-        "(triage, summarising, audit, tests, implementation, spec work): runs, merged "
-        "without rework, retries, audit findings, tokens in and out, and cost in dollars. A "
-        "run is merged once its issue is closed. `trusted` is true after 5 consecutive clean "
-        "runs of the kind — merged with no rework, retry or audit finding — and lost after 2 "
-        "failures in the last 5; runs on open issues with no failure are not yet judged. "
-        "`may_trial` is true for triage and summarising, and for any other kind once the "
-        "model is trusted for it or for a lower-risk kind. Derived on every read."
+        "Return the scorecard of every model with runs, Claude models each on their own, for "
+        "each kind of work in risk order (triage, summarising, audit, tests, implementation, "
+        "spec work): runs, merged without rework, retries, audit findings, tokens in and out, "
+        "cost in dollars, and `tokens_per_point` and `cost_per_point` over the sized runs: "
+        "their tokens and cost per point of their issues that merged (null while none did). "
+        "A run is merged once its issue is closed. `sizes` lists each issue size the kind "
+        "ran at with runs, merged without rework, retries, audit findings, tokens, cost, "
+        "tokens and cost per point, and `trusted`. A model is trusted at a size after 5 "
+        "consecutive clean runs of the kind at that size or larger — merged with no rework, "
+        "retry or audit finding — and loses it after 2 failures in the last 5; trust at a "
+        "size covers every smaller size, and `trusted_up_to` is the largest such size (null "
+        "for none). Runs on open issues with no failure are not yet judged. `trusted` for "
+        "the kind is true when the model is trusted at some size or by its runs of every "
+        "size together. `may_trial` is true for triage and summarising, and for any other "
+        "kind once the model is trusted for it or for a lower-risk kind. Derived on every "
+        "read."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(scorecard_tools.read_scorecard)
 
 mcp.tool(
     description=(
-        f"Return the model for a run of `kind`, one of {', '.join(get_args(_db.UsageKind))}. "
-        "Set `emergency` true only for security work or a production incident, which alone "
-        "may draw on the 20 percent reserve. The model is "
-        "the cheapest one trusted for the kind that costs less than Claude, while overflow "
-        "is under the Requesty cap; otherwise Claude on the allowance; otherwise, once the "
-        "allowance outside the reserve is spent or a shorter limit is in force, the cheapest "
-        "trusted overflow model under the cap; otherwise none, with the `reason`. Claude is "
-        "trusted for every kind by default. `via` is `allowance` for Claude and `requesty` "
-        "for any other model. Prices are per million tokens, observed from the costs runs "
-        "reported, against the configured Claude price; a model that never reported a cost "
-        "is not a candidate. Derived on every read."
+        f"Return the model for a run of `kind`, one of {', '.join(get_args(_db.UsageKind))}, "
+        "on an issue of `size` points as size_issue gave it. Set `emergency` true only for "
+        "security work or a production incident, which alone may draw on the 20 percent "
+        "reserve. The candidates are `claude`, trusted for every kind and size by default, "
+        "and each other model trusted for the kind at that size or larger; a model trusted "
+        "up to the size just below, or at no size of a kind it may trial when `size` is 1, "
+        "is a candidate on trial (`trial` true). With no `size`, trust for the kind at any "
+        "size counts and nothing is trialled. They are ranked by cost per point — tokens per "
+        "point delivered on the kind times the price per token — when every candidate has "
+        "delivered points of the kind, else by price per token; ties go to trusted models, "
+        "then Claude. The model is the cheapest overflow model when it beats every Claude "
+        "model and overflow is under the Requesty cap; otherwise the cheapest Claude model "
+        "on the allowance; otherwise, once the allowance outside the reserve is spent or a "
+        "shorter limit is in force, the cheapest overflow model under the cap; otherwise "
+        "none, with the `reason`. `via` is `allowance` for a Claude model and `requesty` "
+        "for any other. Overflow prices are per million tokens, observed from the costs "
+        "runs reported; Claude models cost the configured Claude price; an overflow model "
+        "that never reported a cost is not a candidate. Derived on every read."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(routing_tools.route_run)
