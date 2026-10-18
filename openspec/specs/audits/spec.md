@@ -30,22 +30,30 @@ The system SHALL record every audit run with its repository, its audit kind (arc
 
 ### Requirement: Audits fall due when the code or the auditor changes
 
-An audit kind SHALL be due for a repository when it has never run there, when its last run there failed, when pull requests have merged into the repository's default branch since its last successful run there, or when the model the factory would now use for that audit kind differs from the model of that last successful run, since a different model may find what the previous one missed. A security audit SHALL also be due once 60 days have passed since its last successful run, changes or not, because dependencies age while the code stands still. Otherwise an audit SHALL NOT be due. Due audits SHALL be ordered by the number of pull requests merged since their last run, most first, then by the oldest last run.
+An audit kind SHALL be due for a repository when it has never run there, when its last run there failed, when pull requests have merged into the repository's default branch since its last successful run there, or when the model the factory would now use for that audit kind differs from the model of that last successful run, since a different model may find what the previous one missed. Otherwise, and apart from the 60-day security audit, an audit SHALL NOT be due.
 
 #### Scenario: Quiet project skipped
 - GIVEN kith's last tests audit finished after its most recent merge, on the model still used for tests audits
 - WHEN due audits are computed
 - THEN no tests audit of kith is due
 
+#### Scenario: New auditor model
+- GIVEN every repository's last architecture audit ran on one model and no repository has changed since
+- WHEN the model used for architecture audits changes
+- THEN an architecture audit is due for every repository
+
+### Requirement: Due audits are ordered by merges
+
+Due audits SHALL be ordered by the number of pull requests merged since their last run, most first, then by the oldest last run.
+
 #### Scenario: Busiest project first
 - GIVEN twelve pull requests merged into reli and two into filmduel since each one's last tests audit
 - WHEN due audits are computed
 - THEN reli's tests audit comes before filmduel's
 
-#### Scenario: New auditor model
-- GIVEN every repository's last architecture audit ran on one model and no repository has changed since
-- WHEN the model used for architecture audits changes
-- THEN an architecture audit is due for every repository
+### Requirement: A security audit falls due every 60 days
+
+A security audit SHALL also be due once 60 days have passed since its last successful run, changes or not, because dependencies age while the code stands still.
 
 #### Scenario: Security audit of a quiet project
 - GIVEN kith has had no merges since its last security audit, which finished 61 days ago
@@ -87,13 +95,31 @@ A tests or requirements audit issue in a repository that uses specs SHALL direct
 
 ### Requirement: A clean code audit applies Robert C. Martin's standards
 
-A clean code audit issue SHALL direct its auditor to check the code against Robert C. Martin's clean code standards: names that reveal intent; small functions that do one thing at one level of abstraction; few arguments and no flag arguments; no side effects hidden behind a name; no duplication; comments that explain why rather than restate what; classes and modules with a single responsibility; dependencies that point inward, so policy never depends on detail; and tests that are fast, independent, repeatable, self-validating and as clean as the code. Each finding SHALL name the standard it breaks and where.
+A clean code audit issue SHALL direct its auditor to check the code against Robert C. Martin's clean code standards: names that reveal intent; small functions that do one thing at one level of abstraction; few arguments and no flag arguments; no side effects hidden behind a name; no duplication; and comments that explain why rather than restate what.
 
 #### Scenario: Clean code audit content
 - GIVEN a clean code audit is started for a repository
 - WHEN its audit issue is read
 - THEN it lists those standards
 - AND it asks for each finding to name the standard broken and where
+
+### Requirement: A clean code audit checks design and tests
+
+A clean code audit issue SHALL also direct its auditor to check the code against these of Robert C. Martin's clean code standards: classes and modules with a single responsibility; dependencies that point inward, so policy never depends on detail; and tests that are fast, independent, repeatable, self-validating and as clean as the code.
+
+#### Scenario: Design and test standards listed
+- GIVEN a clean code audit is started for a repository
+- WHEN its audit issue is read
+- THEN it lists single-responsibility classes and modules, dependencies that point inward, and tests that are fast, independent, repeatable, self-validating and as clean as the code
+
+### Requirement: Clean code findings name the standard broken
+
+Each finding of a clean code audit SHALL name the standard it breaks and where.
+
+#### Scenario: Finding names its standard
+- GIVEN a clean code audit is started for a repository
+- WHEN its audit issue is read
+- THEN it asks for each finding to name the standard it breaks and where
 
 ### Requirement: A north-star audit holds the specs to the north star
 

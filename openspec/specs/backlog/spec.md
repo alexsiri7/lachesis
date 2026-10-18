@@ -18,7 +18,7 @@ The open issues of a repository SHALL form a single ordered backlog. Reading it 
 
 ### Requirement: Order is computed
 
-The system SHALL order the backlog by tier, highest first: interrupt; security (spec gaps found by a security audit or a security incident); in the author's focus; work implementing a spec change the author asked for, for two sprints after it merges; work implementing an active milestone, nearest-done milestone first; everything else. Within a tier, older issues SHALL come first. An issue that has been ready and unblocked for two whole sprints without being picked up SHALL move up one tier, so no work starves. The system SHALL NOT offer a way to set an issue's rank by hand.
+The system SHALL order the backlog by tier, highest first: interrupt; security (spec gaps found by a security audit or a security incident); in the author's focus; work implementing a spec change the author asked for, for two sprints after it merges; work implementing an active milestone, nearest-done milestone first; everything else. Within a tier, older issues SHALL come first.
 
 #### Scenario: Security before milestone work
 - GIVEN a ready milestone issue created yesterday and a ready security spec gap created today
@@ -31,10 +31,22 @@ The system SHALL order the backlog by tier, highest first: interrupt; security (
 - WHEN the backlog is read
 - THEN the issues implementing the author's spec change come before the older issue
 
+### Requirement: Starving work rises a tier
+
+An issue that has been ready and unblocked for two whole sprints without being picked up SHALL move up one tier, so no work starves.
+
 #### Scenario: Starving work rises
 - GIVEN a ready, unblocked issue in the last tier that has waited two whole sprints
 - WHEN the backlog is read
 - THEN the issue is in the tier above
+
+### Requirement: No rank is set by hand
+
+The system SHALL NOT offer a way to set an issue's rank by hand.
+
+#### Scenario: No tool sets a rank
+- WHEN the available tools are listed
+- THEN none sets an issue's rank by hand
 
 ### Requirement: The author steers with focus
 

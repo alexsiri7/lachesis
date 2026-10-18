@@ -42,17 +42,12 @@ The system SHALL measure, from the issues closed in past sprints, the tokens a p
 
 ### Requirement: The factory plans the sprint
 
-At the start of each sprint the factory SHALL plan it: take the computed backlog in order, together with the due audits, and include work until its estimates fill the sprint budget, which is the factory share of every registered account's weekly allowance less its reserve, plus the overflow cap. The sprint SHALL also state its capacity in points, the budget divided by the price of a point, and the points planned. The plan SHALL never wait on the author. When the author changes focus during a sprint, the plan SHALL be redone from the new order.
+At the start of each sprint the factory SHALL plan it: take the computed backlog in order, together with the due audits, and include work until its estimates fill the sprint budget, which is the factory share of every registered account's weekly allowance less its reserve, plus the overflow cap. The plan SHALL never wait on the author.
 
 #### Scenario: Plan fills the budget
 - GIVEN a sprint budget of 100 units and backlog estimates of 40, 40 and 30
 - WHEN the sprint is planned
 - THEN the first two issues are planned and the third is not
-
-#### Scenario: How far the budget goes
-- GIVEN a sprint budget of 100 units and a price of 4 units per point
-- WHEN the sprint is read
-- THEN its capacity is 25 points
 
 #### Scenario: Audits share the budget
 - GIVEN a sprint budget of 100 units, backlog estimates of 40 and 40, and a due audit estimated at 30
@@ -67,6 +62,19 @@ At the start of each sprint the factory SHALL plan it: take the computed backlog
 - WHEN the sprint budget is read
 - THEN it is 132 units
 
+### Requirement: The sprint states its capacity in points
+
+The sprint SHALL state its capacity in points, the budget divided by the price of a point, and the points planned.
+
+#### Scenario: How far the budget goes
+- GIVEN a sprint budget of 100 units and a price of 4 units per point
+- WHEN the sprint is read
+- THEN its capacity is 25 points
+
+### Requirement: A focus change redoes the plan
+
+When the author changes focus during a sprint, the plan SHALL be redone from the new order.
+
 #### Scenario: Focus changes mid-sprint
 - GIVEN a sprint in progress
 - WHEN the author sets a new focus
@@ -74,7 +82,7 @@ At the start of each sprint the factory SHALL plan it: take the computed backlog
 
 ### Requirement: The sprint is reviewed
 
-At the end of each sprint the author SHALL receive one push notification and a review saying what was delivered and is available; the points planned and the points delivered; for each size, how actual tokens compared with the estimate; the issues whose actual tokens were more than twice their estimate, as sizes misjudged; what was spent on each Claude account, each model and on overflow; which audits ran with what they found; the improvement experiments with their measures and results; and what carried over. The review SHALL keep the points delivered sprint by sprint, so the factory's velocity can be read over time, and the next sprint SHALL be priced from the updated history.
+At the end of each sprint the author SHALL receive one push notification and a review saying what was delivered and is available; the points planned and the points delivered; what was spent on each Claude account, each model and on overflow; which audits ran with what they found; the improvement experiments with their measures and results; and what carried over.
 
 #### Scenario: Sprint ends
 - GIVEN a sprint that delivered two milestones and carried over three issues
@@ -82,21 +90,29 @@ At the end of each sprint the author SHALL receive one push notification and a r
 - THEN exactly one push notification arrives
 - AND the review lists the delivered work, the spending per account, per model and on overflow, and the three carried-over issues
 
-#### Scenario: Points planned against delivered
-- GIVEN a sprint that planned 40 points and closed issues worth 31
+#### Scenario: Audits in the review
+- GIVEN a sprint in which a security audit of reli filed two findings
 - WHEN it ends
-- THEN the review shows 40 points planned and 31 delivered
-- AND 31 is added to the velocity history
+- THEN the review lists reli's security audit with its two findings
+
+### Requirement: The review compares tokens with estimates
+
+The sprint review SHALL also say, for each size, how actual tokens compared with the estimate, and list the issues whose actual tokens were more than twice their estimate, as sizes misjudged.
 
 #### Scenario: Size misjudged
 - GIVEN a 2-point issue estimated at 8 units that used 20
 - WHEN the sprint ends
 - THEN the review lists it as a size misjudged
 
-#### Scenario: Audits in the review
-- GIVEN a sprint in which a security audit of reli filed two findings
+### Requirement: Velocity is kept sprint by sprint
+
+The review SHALL keep the points delivered sprint by sprint, so the factory's velocity can be read over time, and the next sprint SHALL be priced from the updated history.
+
+#### Scenario: Points planned against delivered
+- GIVEN a sprint that planned 40 points and closed issues worth 31
 - WHEN it ends
-- THEN the review lists reli's security audit with its two findings
+- THEN the review shows 40 points planned and 31 delivered
+- AND 31 is added to the velocity history
 
 ### Requirement: The factory reviews itself
 
@@ -109,13 +125,17 @@ At the end of each sprint the factory SHALL review its own misses, such as sizes
 
 ### Requirement: The factory improves itself every sprint
 
-Each sprint review SHALL choose one or two improvements to how the factory works (its guidance, sizing, routing, scripts or checks, never what a project should be) from that sprint's misses, audit findings and north-star gaps. Each SHALL be recorded as an experiment: the change, the measure it should move (such as rework rate, tokens per point, time stuck or questions per issue), its value now and the target. The work an experiment needs SHALL be planned in the next sprint ahead of the ordinary backlog, within an improvement share of the sprint budget, 10 percent unless the author sets another. The next review SHALL judge each experiment against its measure: one that met its target SHALL be kept and made standard, by changing the guidance or proposing a spec change; one that did not SHALL be reverted or given one more sprint with a stated reason. The review SHALL list every open experiment with its measure and result. Changing how the factory works is the factory's to decide and SHALL NOT wait on the author.
+Each sprint review SHALL choose one or two improvements to how the factory works (its guidance, sizing, routing, scripts or checks, never what a project should be) from that sprint's misses, audit findings and north-star gaps. Each SHALL be recorded as an experiment: the change, the measure it should move (such as rework rate, tokens per point, time stuck or questions per issue), its value now and the target.
 
 #### Scenario: Experiment chosen
 - GIVEN a sprint in which four issues needed rework after review
 - WHEN the sprint is reviewed
 - THEN the review records an experiment naming a change, the rework rate as its measure, its current value and a target
 - AND the work it needs is planned first in the next sprint
+
+### Requirement: Experiments are judged at the next review
+
+The next review SHALL judge each experiment against its measure: one that met its target SHALL be kept and made standard, by changing the guidance or proposing a spec change; one that did not SHALL be reverted or given one more sprint with a stated reason. The review SHALL list every open experiment with its measure and result.
 
 #### Scenario: Experiment kept
 - GIVEN an experiment whose target was a rework rate under 10 percent
@@ -128,11 +148,29 @@ Each sprint review SHALL choose one or two improvements to how the factory works
 - WHEN the sprint is reviewed
 - THEN the experiment is marked reverted and its change undone
 
+#### Scenario: Open experiments listed
+- GIVEN two open experiments
+- WHEN the sprint is reviewed
+- THEN the review lists both with their measures and results
+
+### Requirement: Experiment work is planned first within the improvement share
+
+The work an experiment needs SHALL be planned in the next sprint ahead of the ordinary backlog, within an improvement share of the sprint budget, 10 percent unless the author sets another.
+
 #### Scenario: Improvement share respected
 - GIVEN a sprint budget of 100 units with the default improvement share
 - WHEN the sprint is planned
 - THEN no more than 10 units go to improvement work
 - AND that work is planned before the ordinary backlog
+
+### Requirement: Improving the factory does not wait on the author
+
+Changing how the factory works is the factory's to decide and SHALL NOT wait on the author.
+
+#### Scenario: Improvement made without the author
+- GIVEN an experiment that met its target
+- WHEN the sprint is reviewed
+- THEN its change is made standard without waiting on the author
 
 ### Requirement: The line stops for a repeated failure
 

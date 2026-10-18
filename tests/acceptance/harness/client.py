@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,7 +48,8 @@ class Lachesis:
             raise RuntimeError("this client was not given the running app to restart")
         await asyncio.to_thread(self._restart)
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> ToolResult:
+    @asynccontextmanager
+    async def _session(self) -> AsyncIterator[ClientSession]:
         headers = {"Authorization": f"Bearer {self._token}"}
         async with (
             httpx.AsyncClient(headers=headers, timeout=30) as http,
@@ -55,6 +57,16 @@ class Lachesis:
             ClientSession(read, write) as session,
         ):
             await session.initialize()
+            yield session
+
+    async def list_tools(self) -> dict[str, dict[str, Any]]:
+        """Each available tool's name, with the JSON schema of its arguments."""
+        async with self._session() as session:
+            result = await session.list_tools()
+        return {tool.name: tool.inputSchema for tool in result.tools}
+
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> ToolResult:
+        async with self._session() as session:
             result = await session.call_tool(name, arguments or {})
         if result.structuredContent is not None and not result.isError:
             text = json.dumps(_unwrap(result.structuredContent))

@@ -22,13 +22,17 @@ The system SHALL store each question as a record of its own holding: the questio
 
 ### Requirement: Author tasks ask for something only the author can do
 
-A question of kind author task SHALL ask the author to do or provide one concrete thing that no agent can: a secret or API key, an account or sign-up, a DNS record, a payment, or access to a service. It SHALL state exactly what to do, where, and how the agent will know it is done (for example, which variable must be set on which service). It SHALL NOT carry a default. The author answers it by saying it is done, or by handing over what was asked for when that is safe to record; the answer releases the issues it blocks as any answer does.
+A question of kind author task SHALL ask the author to do or provide one concrete thing that no agent can: a secret or API key, an account or sign-up, a DNS record, a payment, or access to a service. It SHALL state exactly what to do, where, and how the agent will know it is done (for example, which variable must be set on which service).
 
 #### Scenario: Asking for a key
 - GIVEN the worker needs an API key set on a Railway service before issue 160 can be finished
 - WHEN it asks an author task naming the variable, the service and the provider to get the key from, blocking issue 160
 - THEN the question is stored with kind author task and those details
 - AND issue 160 is labelled needs-author
+
+### Requirement: An author task waits for the author
+
+A question of kind author task SHALL NOT carry a default. The author answers it by saying it is done, or by handing over what was asked for when that is safe to record; the answer releases the issues it blocks as any answer does.
 
 #### Scenario: No default for an author task
 - GIVEN an author task asked a week ago
@@ -56,13 +60,17 @@ A run that cannot continue without something only the author can do or provide S
 
 ### Requirement: Small questions settle by default while the author is away
 
-A question of kind clarification or improvement MAY carry a default answer and a wait, three days unless the asker gives another. When the wait passes with no answer, the system SHALL record the default as the answer with the outcome `defaulted`, release the issues it blocked as an answer would, and note on each that the default was taken. Questions of every other kind, which decide what a project should be or ask the author to act, SHALL NOT carry a default and SHALL wait for the author. The author MAY later answer a defaulted question, which records the new answer and its outcome as usual.
+A question of kind clarification or improvement MAY carry a default answer and a wait, three days unless the asker gives another. When the wait passes with no answer, the system SHALL record the default as the answer with the outcome `defaulted`, release the issues it blocked as an answer would, and note on each that the default was taken. The author MAY later answer a defaulted question, which records the new answer and its outcome as usual.
 
 #### Scenario: Away for a week
 - GIVEN a clarification question with a default, blocking issue 160, asked four days ago and unanswered
 - WHEN the open questions are read
 - THEN the question is answered with its default and the outcome defaulted
 - AND issue 160 is released with a note saying the default was taken
+
+### Requirement: Other questions wait for the author
+
+Questions of every kind other than clarification and improvement, which decide what a project should be or ask the author to act, SHALL NOT carry a default and SHALL wait for the author.
 
 #### Scenario: Spec decision waits
 - GIVEN a spec contradiction question asked a month ago
