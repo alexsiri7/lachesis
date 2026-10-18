@@ -1775,20 +1775,23 @@ async def test_get_issue_activity_keeps_an_issue_a_readable_named_pull_landed(
     assert activity["failure"] == "transient"
 
 
+def _asks_for(request: httpx.Request, alias: str) -> bool:
+    """Whether *request*'s batched query reads *alias*, as batches go out in no set order."""
+    return f" {alias}: " in json.loads(request.content)["query"]
+
+
 async def test_get_issue_activity_leaves_out_an_unlanded_issue_once_rate_limited(
     httpx_mock: HTTPXMock,
 ) -> None:
     """A batch that read before the quota ran out cannot have its comments checked."""
-    httpx_mock.add_response(
-        method="POST",
-        url=_GRAPHQL_URL,
-        json={
-            "data": {
-                "repository": {"i1": _closed_by_hand(1), "i2": {**_activity_node(), "number": 2}}
-            }
-        },
-    )
-    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=429, json={})
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if _asks_for(request, "i1"):
+            repository = {"i1": _closed_by_hand(1), "i2": {**_activity_node(), "number": 2}}
+            return httpx.Response(200, json={"data": {"repository": repository}})
+        return httpx.Response(429, json={})
+
+    httpx_mock.add_callback(respond, method="POST", url=_GRAPHQL_URL, is_reusable=True)
 
     activity = await get_issue_activity("owner/repo", [1, 2, *range(3, 27)])
 
@@ -1878,10 +1881,13 @@ async def test_get_issue_activity_reads_the_rate_limit_off_a_403(httpx_mock: HTT
 
 async def test_get_issue_activity_keeps_the_chunks_that_worked(httpx_mock: HTTPXMock) -> None:
     """One failed batch costs its own issues, not the repo's."""
-    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
-    httpx_mock.add_response(
-        method="POST", url=_GRAPHQL_URL, json={"data": {"repository": {"i42": _activity_node()}}}
-    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if _asks_for(request, "i42"):
+            return httpx.Response(200, json={"data": {"repository": {"i42": _activity_node()}}})
+        return httpx.Response(500, json={})
+
+    httpx_mock.add_callback(respond, method="POST", url=_GRAPHQL_URL, is_reusable=True)
 
     activity = await get_issue_activity("owner/repo", [*range(1, 26), 42])
 
@@ -1889,16 +1895,27 @@ async def test_get_issue_activity_keeps_the_chunks_that_worked(httpx_mock: HTTPX
     assert activity["failure"] == "transient"
 
 
-async def test_get_issue_activity_stops_asking_once_rate_limited(httpx_mock: HTTPXMock) -> None:
-    """A cause that cannot improve on a retry must not spend the remaining quota."""
-    httpx_mock.add_response(
-        method="POST", url=_GRAPHQL_URL, status_code=429, json={}, is_reusable=True
-    )
+async def test_get_issue_activity_reads_every_batch_at_once(httpx_mock: HTTPXMock) -> None:
+    """A repo linking dozens of issues costs one round trip, not one per batch in turn."""
+    in_flight = 0
+    most = 0
 
-    activity = await get_issue_activity("owner/repo", [*range(1, 26), 42])
+    async def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, most
+        in_flight += 1
+        most = max(most, in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return httpx.Response(200, json={"data": {"repository": {}}})
+        finally:
+            in_flight -= 1
 
-    assert activity["failure"] == "rate_limited"
-    assert len(httpx_mock.get_requests()) == 1
+    httpx_mock.add_callback(respond, method="POST", url=_GRAPHQL_URL, is_reusable=True)
+
+    await get_issue_activity("owner/repo", list(range(1, 80)))
+
+    assert len(httpx_mock.get_requests()) == 4
+    assert most == 4
 
 
 async def test_get_issue_activity_normalizes_landing_and_blocker_facts(
