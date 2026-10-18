@@ -358,8 +358,8 @@ _ISSUES_PAGE_SIZE = 100
 # costs a round trip: listing every registered repository that way took next_issue past a
 # minute. GitHub pages this listing by cursor, so its Link header never names the last
 # page; the newest item's number bounds how many there are, as issues and pull requests
-# share one sequence. At most this many listing requests, and batched issue reads, are in
-# flight at once, across every listing, well inside GitHub's limit on concurrent requests.
+# share one sequence. At most this many listing requests are in flight at once, across
+# every listing, well inside GitHub's limit on concurrent requests.
 _ISSUES_REQUESTS_IN_FLIGHT = 16
 # A bound past this many pages is not trusted; the rest are followed one by one.
 _ISSUES_MAX_SPECULATIVE_PAGES = 50
@@ -370,7 +370,7 @@ _listing_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Sem
 
 
 def _listing_gate() -> asyncio.Semaphore:
-    """The running loop's cap on listing and batched issue-read requests in flight."""
+    """The running loop's cap on listing requests in flight."""
     loop = asyncio.get_running_loop()
     gate = _listing_gates.get(loop)
     if gate is None:
@@ -1517,26 +1517,18 @@ async def _read_numbers(
     numbers: list[int],
     build_query: Callable[[list[int]], str],
 ) -> tuple[dict[int, dict[str, Any]], list[int], ActivityFailure | None]:
-    """Read *numbers* in aliased batches, all at once: the nodes found, the numbers
-    that are certainly absent, and the worst failure.
+    """Read *numbers* in aliased batches: the nodes found, the numbers that are
+    certainly absent, and the worst failure.
 
     Only a batch that read cleanly can say a number is absent; one that failed
     says nothing about its numbers.
     """
-    gate = _listing_gate()
-
-    async def read(chunk: list[int]) -> tuple[dict[str, Any] | None, ActivityFailure | None]:
-        async with gate:
-            return await _read_chunk(http, repo, build_query(chunk))
-
-    chunks = [
-        numbers[start : start + _ISSUE_ACTIVITY_CHUNK]
-        for start in range(0, len(numbers), _ISSUE_ACTIVITY_CHUNK)
-    ]
     nodes: dict[int, dict[str, Any]] = {}
     absent: list[int] = []
     failure: ActivityFailure | None = None
-    for repository, chunk_failure in await asyncio.gather(*(read(chunk) for chunk in chunks)):
+    for start in range(0, len(numbers), _ISSUE_ACTIVITY_CHUNK):
+        chunk = numbers[start : start + _ISSUE_ACTIVITY_CHUNK]
+        repository, chunk_failure = await _read_chunk(http, repo, build_query(chunk))
         for alias, node in (repository or {}).items():
             if node:
                 nodes[node["number"]] = node
@@ -1544,6 +1536,8 @@ async def _read_numbers(
                 absent.append(int(alias[1:]))
         if chunk_failure is not None:
             failure = _worse(failure, chunk_failure)
+            if chunk_failure != "transient":
+                break
     return nodes, absent, failure
 
 
@@ -1567,8 +1561,8 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
     a caller reporting derived status degrades to saying so rather than failing
     the listing it was really asked for.  So ``facts`` keeps whatever the
     readable batches yielded and ``failure`` names the worst cause seen — and a
-    cause no retry can improve stops the comment and pull request lookups instead
-    of spending quota to fail identically.
+    cause no retry can improve stops the remaining batches instead of spending
+    quota to fail identically.
     """
     if not numbers:
         return {"facts": {}, "failure": None}
