@@ -4277,6 +4277,105 @@ async def test_next_issue_names_the_runners_up_it_passed_over(
     assert result["also_eligible"] == [{"repo": "owner/other", "number": 5, "title": "Issue 5"}]
 
 
+def _backlog_by_repo(rows: dict[str, list[dict]]):
+    """A db.list_backlog that, unlike _FakeBacklog, gives each repo its own rows."""
+
+    def list_backlog(user_id: str, repo_name: str) -> list[dict]:
+        return [
+            {"ready": True, "interrupt": False, "ready_since": None, **row}
+            for row in rows.get(repo_name, [])
+        ]
+
+    return list_backlog
+
+
+async def test_next_issue_a_blocked_or_parked_repo_never_holds_back_another(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Scenario: skip the blocked things and work on others.
+
+    One repo is wholly parked and the focused one holds only a blocked issue (its
+    blocker waits on the author); the third repo's ready issue is still offered, and
+    each repo says why it has nothing rather than repeating the whole answer's reason.
+    """
+    _mock_open_issues(httpx_mock, [1, 2], repo="owner/parked")
+    _mock_open_issues(httpx_mock, [3, 4], {4: ["needs-author"]}, repo="owner/blocked")
+    _mock_open_issues(httpx_mock, [5], repo="owner/ready")
+    _mock_blocked_by(httpx_mock, 3, [4], repo="owner/blocked")
+    _mock_blocked_by(httpx_mock, 5, [], repo="owner/ready")
+    rows = {
+        "owner/parked": [{"issue_number": 1, "ready": False}, {"issue_number": 2, "ready": False}]
+    }
+    registered = [
+        {"repo_name": "owner/parked"},
+        {"repo_name": "owner/blocked"},
+        {"repo_name": "owner/ready"},
+    ]
+
+    with (
+        _patch_backlog(
+            _FakeBacklog(), focus=[{"repo_name": "owner/blocked", "milestone_id": None}]
+        ),
+        patch("db.list_backlog", _backlog_by_repo(rows)),
+        patch("tools.requirements.db.list_repos", return_value=registered),
+    ):
+        result = await next_issue()
+
+    assert result["reason"] == "selected"
+    assert (result["issue"]["repo"], result["issue"]["number"]) == ("owner/ready", 5)
+    assert [(e["repo"], e["number"]) for e in result["blocked"]] == [("owner/blocked", 3)]
+    assert result["repos"]["owner/ready"] == {"reason": "selected", "issue": 5}
+    assert result["repos"]["owner/blocked"]["reason"] == "all_blocked"
+    assert "#4" in result["repos"]["owner/blocked"]["explanation"]
+    assert result["repos"]["owner/parked"]["reason"] == "none_ready"
+    assert "2 parked" in result["repos"]["owner/parked"]["explanation"]
+
+
+async def test_next_issue_names_each_repos_own_offer(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """Every repo with work gets its own issue, and says which, alongside also_eligible."""
+    _mock_open_issues(httpx_mock, [1])
+    _mock_open_issues(httpx_mock, [5], repo="owner/other")
+    _mock_blocked_by(httpx_mock, 1, [])
+    _mock_blocked_by(httpx_mock, 5, [], repo="owner/other")
+    registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
+
+    with (
+        _patch_backlog(_FakeBacklog()),
+        patch("tools.requirements.db.list_repos", return_value=registered),
+    ):
+        result = await next_issue()
+
+    assert result["repos"] == {
+        "owner/repo": {"reason": "selected", "issue": 1},
+        "owner/other": {"reason": "selected", "issue": 5},
+    }
+
+
+async def test_next_issue_reports_an_unreadable_repo_in_its_own_outcome(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """A repo whose backlog could not be read says so in its own entry."""
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/gone/issues?state=open&per_page=100",
+        status_code=404,
+        json={},
+    )
+    _mock_open_issues(httpx_mock, [1])
+    _mock_blocked_by(httpx_mock, 1, [])
+    registered = [{"repo_name": "owner/gone"}, {"repo_name": "owner/repo"}]
+
+    with (
+        _patch_backlog(_FakeBacklog()),
+        patch("tools.requirements.db.list_repos", return_value=registered),
+    ):
+        result = await next_issue()
+
+    assert result["repos"]["owner/gone"]["reason"] == "unreadable"
+    assert result["repos"]["owner/repo"] == {"reason": "selected", "issue": 1}
+
+
 async def test_next_issue_scoped_call_omits_also_eligible(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
@@ -4485,6 +4584,29 @@ async def test_next_issue_offers_security_work_from_the_reserve(
         result = await next_issue("owner/repo")
 
     assert result["issue"]["number"] == 2
+
+
+async def test_next_issue_keeps_offering_unplanned_work_while_budget_is_left(
+    httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
+) -> None:
+    """The sprint plan is a forecast, not a gate: within pace and with budget left,
+    every repo's ready issue is offered, estimated or not, planned or not."""
+    _mock_open_issues(httpx_mock, [1], created=_recent(1))
+    _mock_open_issues(httpx_mock, [5], created=_recent(5), repo="owner/other")
+    _mock_blocked_by(httpx_mock, 1, [])
+    _mock_blocked_by(httpx_mock, 5, [], repo="owner/other")
+    fuel = _sprint_fuel(used=10.0, overflow_spent=0.0)
+    registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
+
+    with (
+        _patch_backlog(_FakeBacklog(), fuel=fuel),
+        patch("tools.requirements.db.list_repos", return_value=registered),
+    ):
+        result = await next_issue()
+
+    assert result["reason"] == "selected"
+    assert result["issue"]["number"] == 1
+    assert result["also_eligible"] == [{"repo": "owner/other", "number": 5, "title": "Issue 5"}]
 
 
 async def test_next_issue_holds_an_early_burst_back(

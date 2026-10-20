@@ -1602,6 +1602,7 @@ class _RepoScan(NamedTuple):
     saw_waiting: bool
     saw_over_budget: bool
     saw_over_pace: bool
+    parked: int = 0
 
 
 async def _open_blockers(
@@ -1656,6 +1657,7 @@ async def _scan_repo(
     saw_waiting = False
     saw_over_budget = False
     saw_over_pace = False
+    parked = 0
 
     for item in order:
         # Interrupts lead the order, so keep walking that group even once a candidate
@@ -1663,6 +1665,7 @@ async def _scan_repo(
         if candidate is not None and not item["interrupt"]:
             break
         if not item["ready"]:
+            parked += 1
             continue
         if _IN_PROGRESS_LABEL in item["labels"]:
             saw_claimed = True
@@ -1710,6 +1713,7 @@ async def _scan_repo(
         saw_waiting,
         saw_over_budget,
         saw_over_pace,
+        parked,
     )
 
 
@@ -1723,6 +1727,59 @@ def _describe_blocked(entries: list[dict[str, Any]]) -> str:
         )
         for entry in entries
     )
+
+
+def _why_nothing(
+    scans: list[_RepoScan], budget: dict[str, Any] | None, registered: bool
+) -> tuple[str, str]:
+    """Return the ``reason`` and ``explanation`` for *scans* holding no candidate.
+
+    Used for the whole answer and for each repo's own outcome, so a repo whose every
+    issue is parked says so rather than inheriting another repo's reason.
+    """
+    blocked = [entry for scan in scans for entry in scan.blocked]
+    if blocked:
+        reason = "all_blocked"
+        explanation = (
+            f"Every ready issue is blocked — {_describe_blocked(blocked)}. "
+            "Unblocking one is the move here."
+        )
+    elif budget is not None and any(scan.saw_over_budget for scan in scans):
+        reason = "budget_spent"
+        explanation = (
+            f"The sprint budget left outside the reserve ({budget['left_tokens']} tokens) fits "
+            "no ready issue other than security work; only security work is offered until "
+            f"the allowance resets at {budget['end'].isoformat()}."
+        )
+    elif any(scan.saw_over_pace for scan in scans):
+        reason = "over_pace"
+        explanation = (
+            "Spending is ahead of today's pace, so work other than security work is held "
+            "until it is back within pace."
+        )
+    elif any(scan.saw_waiting for scan in scans):
+        reason = "all_waiting"
+        explanation = (
+            f"Every ready, unblocked issue not already in progress carries {_NEEDS_AUTHOR_LABEL} "
+            "— answer_author on one makes it eligible again."
+        )
+    elif any(scan.saw_claimed for scan in scans):
+        reason = "all_in_progress"
+        explanation = f"Every ready, unblocked issue already carries {_IN_PROGRESS_LABEL}."
+    elif any(scan.saw_open for scan in scans):
+        reason = "none_ready"
+        parked = sum(scan.parked for scan in scans)
+        explanation = (
+            f"There are open issues but every one is parked ({parked} parked) — call "
+            "set_backlog_flags with ready=True to unpark one."
+        )
+    elif not registered:
+        reason = "empty"
+        explanation = "No repos are registered with Lachesis, so there is no backlog to read."
+    else:
+        reason = "empty"
+        explanation = "The backlog is empty — there are no open issues."
+    return reason, explanation
 
 
 async def next_issue(repo: str | None = None) -> dict[str, Any]:
@@ -1740,9 +1797,13 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     ``selected`` / ``all_blocked`` / ``budget_spent`` / ``over_pace`` / ``all_waiting`` /
     ``all_in_progress`` / ``none_ready`` / ``empty``, a one-sentence ``explanation``,
     and ``blocked`` — the ready issues passed over because a dependency of theirs is
-    still open, each naming its blockers. An unscoped call skips a repo it cannot read
-    and says so in the explanation, rather than letting one unreachable repo cost the
-    caller every other repo's backlog.
+    still open, each naming its blockers. ``repos`` gives each repo read its own
+    outcome: ``reason`` (one of the above, or ``unreadable``), its ``issue`` number
+    when it has one to offer, and otherwise an ``explanation`` of its own. A blocked
+    issue never holds back another issue or another repo: the walk passes over it.
+    An unscoped call skips a repo it cannot read and says so in the explanation,
+    rather than letting one unreachable repo cost the caller every other repo's
+    backlog.
 
     Whatever the issue, ``audit`` is the next due audit the factory may start alongside
     it (see :func:`next_audit`), present only when there is one.
@@ -1794,10 +1855,12 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     if isinstance(audit, BaseException):
         raise audit
     scans: list[_RepoScan] = []
+    scanned: list[str] = []
     unreadable: list[str] = []
     for repo_name, result in zip(repos, results, strict=True):
         if not isinstance(result, BaseException):
             scans.append(result)
+            scanned.append(repo_name)
             continue
         # A scoped call named this repo, so its failure is the answer. Unscoped, one
         # repo gone from the PAT's reach must not cost the worker every other backlog.
@@ -1807,6 +1870,26 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         unreadable.append(repo_name)
 
     blocked = [entry for scan in scans for entry in scan.blocked]
+    # Each repo's own answer, so a caller filling every repo's slot can say why one
+    # repo gets nothing — every issue parked, say — instead of repeating the reason
+    # for the whole answer, which another repo's blocked or selected issue decides.
+    per_repo: dict[str, dict[str, Any]] = {}
+    for repo_name, scan in zip(scanned, scans, strict=True):
+        if scan.candidate is not None:
+            per_repo[repo_name] = {"reason": "selected", "issue": scan.candidate["number"]}
+        else:
+            repo_reason, repo_explanation = _why_nothing([scan], budget, True)
+            per_repo[repo_name] = {
+                "reason": repo_reason,
+                "issue": None,
+                "explanation": repo_explanation,
+            }
+    for repo_name in unreadable:
+        per_repo[repo_name] = {
+            "reason": "unreadable",
+            "issue": None,
+            "explanation": f"Could not read the backlog of {repo_name}.",
+        }
 
     candidates = [
         (index, scan.candidate) for index, scan in enumerate(scans) if scan.candidate is not None
@@ -1833,6 +1916,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
             "reason": "selected",
             "explanation": explanation + caveat,
             "blocked": blocked,
+            "repos": per_repo,
             **offer,
         }
         if repo is None and len(candidates) > 1:
@@ -1842,52 +1926,13 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
             ]
         return result
 
-    if blocked:
-        reason = "all_blocked"
-        explanation = (
-            f"Every ready issue is blocked — {_describe_blocked(blocked)}. "
-            "Unblocking one is the move here."
-        )
-    elif budget is not None and any(scan.saw_over_budget for scan in scans):
-        reason = "budget_spent"
-        explanation = (
-            f"The sprint budget left outside the reserve ({budget['left_tokens']} tokens) fits "
-            "no ready issue other than security work; only security work is offered until "
-            f"the allowance resets at {budget['end'].isoformat()}."
-        )
-    elif any(scan.saw_over_pace for scan in scans):
-        reason = "over_pace"
-        explanation = (
-            "Spending is ahead of today's pace, so work other than security work is held "
-            "until it is back within pace."
-        )
-    elif any(scan.saw_waiting for scan in scans):
-        reason = "all_waiting"
-        explanation = (
-            f"Every ready, unblocked issue not already in progress carries {_NEEDS_AUTHOR_LABEL} "
-            "— answer_author on one makes it eligible again."
-        )
-    elif any(scan.saw_claimed for scan in scans):
-        reason = "all_in_progress"
-        explanation = f"Every ready, unblocked issue already carries {_IN_PROGRESS_LABEL}."
-    elif any(scan.saw_open for scan in scans):
-        reason = "none_ready"
-        explanation = (
-            "There are open issues but every one is parked — call set_backlog_flags "
-            "with ready=True to unpark one."
-        )
-    elif not repos:
-        reason = "empty"
-        explanation = "No repos are registered with Lachesis, so there is no backlog to read."
-    else:
-        reason = "empty"
-        explanation = "The backlog is empty — there are no open issues."
-
+    reason, explanation = _why_nothing(scans, budget, bool(repos))
     return {
         "issue": None,
         "reason": reason,
         "explanation": explanation + caveat,
         "blocked": blocked,
+        "repos": per_repo,
         **offer,
     }
 

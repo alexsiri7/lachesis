@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -487,9 +488,37 @@ def test_list_open_questions_reads_open_questions_in_registered_repos_oldest_fir
     (call,) = mock.connect.return_value.execute.call_args_list
     sql = str(call[0][0])
     assert "answered_at IS NULL" in sql
-    assert "SELECT repo_name FROM lachesis_repos WHERE user_id = :user_id" in sql
+    assert db._IN_REGISTERED_REPO in sql
     assert "ORDER BY created_at, id" in sql
     assert call[0][1] == {"user_id": "uid"}
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda: db.list_open_questions("uid"),
+        lambda: db.list_expired_defaults("uid"),
+        lambda: db.list_defaulted_questions("uid", datetime(2026, 1, 1, tzinfo=UTC)),
+    ],
+    ids=["open", "expired-defaults", "defaulted"],
+)
+def test_question_reads_match_a_repo_registered_by_url(read: Any) -> None:
+    """A repo registered as https://github.com/owner/repo still owns its questions.
+
+    Questions name their repo as owner/repo; repos registered before register_repo
+    normalized its input are stored as URLs. Comparing the two as they stand hid those
+    repos' questions from the author and kept their defaults from ever settling.
+    """
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        read()
+
+    (call,) = mock.connect.return_value.execute.call_args_list
+    sql = str(call[0][0])
+    assert "SELECT repo_name FROM lachesis_repos" not in sql
+    assert db._IN_REGISTERED_REPO in sql
+    assert "regexp_replace(repo_name, '^(https?://)?github\\.com/', '')" in sql
+    assert "'(\\.git)?/?$'" in sql
 
 
 def test_search_answered_questions_matches_answered_questions_by_text() -> None:
