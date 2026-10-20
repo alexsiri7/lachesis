@@ -1789,6 +1789,11 @@ def _why_nothing(
     else:
         reason = "empty"
         explanation = "The backlog is empty — there are no open issues."
+    # A repo with some issues waiting and the rest parked would otherwise read as only
+    # waiting, and answering its questions would not give it all its work back.
+    parked = sum(scan.parked for scan in scans)
+    if reason != "none_ready" and parked:
+        explanation += f" Another {parked} open issues are parked."
     return reason, explanation
 
 

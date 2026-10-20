@@ -4331,6 +4331,23 @@ async def test_next_issue_a_blocked_or_parked_repo_never_holds_back_another(
     assert "2 parked" in result["repos"]["owner/parked"]["explanation"]
 
 
+async def test_next_issue_counts_the_parked_issues_behind_another_reason(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    """A repo with one issue waiting on the author and two parked says both."""
+    _mock_open_issues(httpx_mock, [1, 2, 3], {1: ["needs-author"]})
+    fake = _FakeBacklog([{"issue_number": 2, "ready": False}, {"issue_number": 3, "ready": False}])
+
+    with _patch_backlog(fake):
+        result = await next_issue("owner/repo")
+
+    assert result["reason"] == "all_waiting"
+    assert result["explanation"].endswith("Another 2 open issues are parked.")
+    assert result["repos"]["owner/repo"]["explanation"].endswith(
+        "Another 2 open issues are parked."
+    )
+
+
 async def test_next_issue_names_each_repos_own_offer(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
