@@ -751,6 +751,19 @@ def open_questions_blocking(user_id: str, repo_name: str, issue: int) -> list[in
         return [row["id"] for row in conn.execute(sql, params).mappings().all()]
 
 
+# A question names its repository as owner/repo, but a repository registered before
+# register_repo normalized its input is stored as the URL it was given
+# (https://github.com/owner/repo). Matching the stored names as they stand hid every
+# question in such a repository from the author, and its defaults never settled.
+# Mirrors tools.repos.normalize_repo.
+_IN_REGISTERED_REPO = r"""repo_name IN (
+            SELECT regexp_replace(
+                regexp_replace(repo_name, '^(https?://)?github\.com/', ''), '(\.git)?/?$', ''
+            )
+            FROM lachesis_repos WHERE user_id = :user_id
+          )"""
+
+
 def list_open_questions(user_id: str) -> list[dict[str, Any]]:
     """Return the open questions in every repo *user_id* has registered, oldest first."""
     sql = text(
@@ -758,7 +771,7 @@ def list_open_questions(user_id: str) -> list[dict[str, Any]]:
         SELECT {_QUESTION_COLUMNS}
         FROM lachesis_questions
         WHERE user_id = :user_id AND answered_at IS NULL
-          AND repo_name IN (SELECT repo_name FROM lachesis_repos WHERE user_id = :user_id)
+          AND {_IN_REGISTERED_REPO}
         ORDER BY created_at, id
         """
     )
@@ -777,7 +790,7 @@ def list_expired_defaults(user_id: str) -> list[dict[str, Any]]:
         FROM lachesis_questions
         WHERE user_id = :user_id AND answered_at IS NULL
           AND default_after IS NOT NULL AND default_after <= now()
-          AND repo_name IN (SELECT repo_name FROM lachesis_repos WHERE user_id = :user_id)
+          AND {_IN_REGISTERED_REPO}
         ORDER BY created_at, id
         """
     )
@@ -795,7 +808,7 @@ def list_defaulted_questions(user_id: str, since: datetime) -> list[dict[str, An
         SELECT {_QUESTION_COLUMNS}
         FROM lachesis_questions
         WHERE user_id = :user_id AND outcome = 'defaulted' AND answered_at >= :since
-          AND repo_name IN (SELECT repo_name FROM lachesis_repos WHERE user_id = :user_id)
+          AND {_IN_REGISTERED_REPO}
         ORDER BY answered_at, id
         """
     )
