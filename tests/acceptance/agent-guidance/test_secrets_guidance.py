@@ -41,7 +41,6 @@ async def _every_workflow(lachesis: Lachesis) -> list[str]:
     return guidance
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #354")
 @scenario("agent-guidance", "A new service needs a session secret")
 async def test_a_new_service_needs_a_session_secret(lachesis: Lachesis) -> None:
     for guidance in await _every_workflow(lachesis):
@@ -60,7 +59,6 @@ async def test_a_secret_value_is_never_exposed(lachesis: Lachesis) -> None:
             assert place in guidance, place
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #354")
 @scenario("agent-guidance", "A key only the author can get")
 async def test_a_key_only_the_author_can_get(lachesis: Lachesis) -> None:
     for guidance in await _every_workflow(lachesis):
