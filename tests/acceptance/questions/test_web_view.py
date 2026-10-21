@@ -7,7 +7,8 @@ The contract these tests set for the implementation issues of spec change #382:
   and the section shows its question, context and every option.
 - Each issue a question blocks is an ``<a data-blocks="N">`` linking to the issue on GitHub.
 - Each question has an ``<a data-discuss="ID">`` linking to ``https://claude.ai/new`` with
-  the pre-filled message in its ``q`` query parameter.
+  the pre-filled message in its ``q`` query parameter: the question's id, repository,
+  question, context, every option, every blocked issue's number and ``answer_question``.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from harness import Lachesis, scenario
 
 REPO = "owner/repo"
 ISSUE = 160
-QUESTION = "Should the export be CSV or JSON?"
+QUESTION = "Which format should the export use?"
 CONTEXT = "The importer on the other side reads both formats."
 OPTIONS = ["CSV", "JSON"]
 
@@ -144,4 +145,7 @@ async def test_discuss_in_claude(lachesis: Lachesis) -> None:
     assert REPO in message
     assert QUESTION in message
     assert CONTEXT in message
+    for option in OPTIONS:
+        assert option in message
+    assert str(ISSUE) in message
     assert "answer_question" in message
