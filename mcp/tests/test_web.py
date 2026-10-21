@@ -246,11 +246,11 @@ def test_crlf_last_section():
 # ---------------------------------------------------------------------------
 
 
-def _dashboard(audits: dict) -> str:
+def _dashboard(audits: dict, open_questions: list[dict] | None = None) -> str:
     response = _render(
         "dashboard.html",
         user_email=_TEST_EMAIL,
-        open_questions=[],
+        open_questions=open_questions or [],
         waiting_on_author=[],
         waiting_on_author_unreadable=[],
         repos=[],
@@ -337,3 +337,10 @@ def test_discuss_url_never_cuts_the_question() -> None:
     assert "Context:" not in message
     assert "Options:" not in message
     assert "owner/repo" in message
+
+
+def test_discuss_link_opens_in_a_new_tab() -> None:
+    question = _question(kind="clarification", waited="2h")
+    html = _dashboard({"repos": [], "unreadable": []}, [{**question, "discuss_url": "u"}])
+
+    assert '<a data-discuss="7" href="u" target="_blank" rel="noopener"' in html
