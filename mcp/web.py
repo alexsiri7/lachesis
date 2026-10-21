@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 from urllib.parse import urlencode
@@ -181,6 +182,57 @@ def _waited(since: str, now: datetime) -> str:
     return f"{hours // 24}d" if hours >= 24 else f"{hours}h"
 
 
+# claude.ai/new carries its pre-filled message in the query string; past about 6000
+# characters the link stops opening reliably.
+_DISCUSS_URL_LIMIT = 6000
+
+
+def _discuss_url(question: dict[str, Any]) -> str:
+    """A claude.ai link pre-filled with *question* and how to record its answer.
+
+    When the link is too long the context is cut first, then the options; the id, the
+    repository and the question are never cut.
+    """
+    repo = question["repo_name"]
+    qid = question["id"]
+    issues = "\n".join(f"- #{n}: https://github.com/{repo}/issues/{n}" for n in question["blocks"])
+    instruction = (
+        "Discuss this with me. Once I decide, record the answer with the Lachesis "
+        f"answer_question tool (repo {repo}, id {qid}, answerer claude-ai)."
+    )
+
+    def url(context: str, options: str) -> str:
+        parts = [f"Open question {qid} in {repo}:\n\n{question['question']}"]
+        if context:
+            parts.append(f"Context:\n{context}")
+        if options:
+            parts.append(f"Options:\n{options}")
+        if issues:
+            parts.append(f"Blocks:\n{issues}")
+        parts.append(instruction)
+        return "https://claude.ai/new?" + urlencode({"q": "\n\n".join(parts)})
+
+    context = question["context"] or ""
+    options = "\n".join(f"- {option}" for option in question["options"] or [])
+    context = _cut_to_fit(context, lambda c: url(c, options))
+    options = _cut_to_fit(options, lambda o: url(context, o))
+    return url(context, options)
+
+
+def _cut_to_fit(text: str, build: Callable[[str], str]) -> str:
+    """The longest prefix of *text*, marked as cut, whose ``build`` fits the link limit."""
+    if len(build(text)) <= _DISCUSS_URL_LIMIT:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(build(text[:middle] + "…")) <= _DISCUSS_URL_LIMIT:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low] + "…" if low else ""
+
+
 def _google_auth_url(redirect_uri: str, state: str) -> str:
     params = {
         "client_id": settings.google_client_id,
@@ -314,7 +366,12 @@ async def web_index(request: Request) -> Response:
         "dashboard.html",
         user_email=user.get("email"),
         open_questions=[
-            {**q, "waited": _waited(q["created_at"].isoformat(), now)} for q in open_questions
+            {
+                **q,
+                "waited": _waited(q["created_at"].isoformat(), now),
+                "discuss_url": _discuss_url(q),
+            }
+            for q in open_questions
         ],
         waiting_on_author=[
             {**issue, "waited": _waited(issue["waiting_since"], now)}

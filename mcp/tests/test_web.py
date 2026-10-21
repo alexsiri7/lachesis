@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from unittest.mock import MagicMock
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -15,7 +16,14 @@ from jose import jwt as jose_jwt
 # Ensure mcp/ is on the path so we can import web directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from web import _COOKIE_NAME, _extract_section, _get_web_user_status, _render
+from web import (
+    _COOKIE_NAME,
+    _DISCUSS_URL_LIMIT,
+    _discuss_url,
+    _extract_section,
+    _get_web_user_status,
+    _render,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -286,3 +294,46 @@ def test_dashboard_says_when_the_audit_history_cannot_be_read() -> None:
     html = _dashboard({"error": "could not read the audit history"})
 
     assert "Audit history could not be read." in html
+
+
+# ---------------------------------------------------------------------------
+# Discuss in Claude link
+# ---------------------------------------------------------------------------
+
+
+def _question(**overrides: object) -> dict:
+    return {
+        "id": 7,
+        "repo_name": "owner/repo",
+        "question": "Which format should the export use?",
+        "context": "The importer reads both.",
+        "options": ["CSV", "JSON"],
+        "blocks": [160],
+        **overrides,
+    }
+
+
+def _message(url: str) -> str:
+    [message] = parse_qs(urlsplit(url).query)["q"]
+    return message
+
+
+def test_discuss_url_cuts_the_context_before_the_options() -> None:
+    url = _discuss_url(_question(context="x" * 10_000))
+
+    assert len(url) <= _DISCUSS_URL_LIMIT
+    message = _message(url)
+    assert "x…" in message
+    assert "- CSV\n- JSON" in message
+    assert "answer_question tool (repo owner/repo, id 7" in message
+
+
+def test_discuss_url_never_cuts_the_question() -> None:
+    question = "Which? " * 2_000
+
+    message = _message(_discuss_url(_question(question=question, options=["y" * 5_000])))
+
+    assert question in message
+    assert "Context:" not in message
+    assert "Options:" not in message
+    assert "owner/repo" in message
