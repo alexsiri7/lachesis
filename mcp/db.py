@@ -751,6 +751,21 @@ def open_questions_blocking(user_id: str, repo_name: str, issue: int) -> list[in
         return [row["id"] for row in conn.execute(sql, params).mappings().all()]
 
 
+def answers_on_issue(user_id: str, repo_name: str, issue: int) -> set[str]:
+    """Return the answers recorded for the answered questions in *repo_name* that block *issue*."""
+    sql = text(
+        """
+        SELECT answer
+        FROM lachesis_questions
+        WHERE user_id = :user_id AND repo_name = :repo_name
+          AND answered_at IS NOT NULL AND :issue = ANY(blocks)
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "issue": issue}
+    with _engine().connect() as conn:
+        return {row["answer"] for row in conn.execute(sql, params).mappings().all()}
+
+
 # A question names its repository as owner/repo, but a repository registered before
 # register_repo normalized its input is stored as the URL it was given
 # (https://github.com/owner/repo). Matching the stored names as they stand hid every

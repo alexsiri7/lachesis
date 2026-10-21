@@ -735,7 +735,7 @@ async def test_list_issue_comments_returns_none_on_404(httpx_mock: HTTPXMock) ->
     assert await list_issue_comments("owner/repo", 42) is None
 
 
-async def test_create_issue_comment_returns_url(httpx_mock: HTTPXMock) -> None:
+async def test_create_issue_comment_marks_the_comment_automated(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         method="POST",
         url=_COMMENTS_URL,
@@ -746,7 +746,21 @@ async def test_create_issue_comment_returns_url(httpx_mock: HTTPXMock) -> None:
     url = await create_issue_comment("owner/repo", 42, "Which one?")
 
     assert url == "https://github.com/owner/repo/issues/42#issuecomment-7"
-    assert json.loads(httpx_mock.get_requests()[0].content) == {"body": "Which one?"}
+    assert json.loads(httpx_mock.get_requests()[0].content) == {
+        "body": "Which one?\n\n<!-- lachesis:automated -->"
+    }
+
+
+async def test_create_issue_comment_posts_the_authors_words_as_written(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(
+        method="POST", url=_COMMENTS_URL, status_code=201, json={"html_url": "u"}
+    )
+
+    await create_issue_comment("owner/repo", 42, "Keep it.", automated=False)
+
+    assert json.loads(httpx_mock.get_requests()[0].content) == {"body": "Keep it."}
 
 
 async def test_create_issue_comment_returns_none_on_404(httpx_mock: HTTPXMock) -> None:

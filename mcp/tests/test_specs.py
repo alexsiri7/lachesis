@@ -12,6 +12,7 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
+import github
 import main
 from spec_reference import SpecReference, parse_reference
 from tools.requirements import (
@@ -928,6 +929,10 @@ async def test_session_start_with_the_author(httpx_mock: HTTPXMock, specs: bool 
 
     assert "call list_open_questions and get_dashboard before anything else" in guidance
     assert "waiting_on_author" in guidance
+
+
+async def test_guidance_names_the_automated_marker() -> None:
+    assert github.AUTOMATED_MARKER in await get_initial_instructions()
 
 
 @pytest.mark.parametrize("specs", [True, False, None])

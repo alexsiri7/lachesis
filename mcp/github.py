@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 _BASE_URL = "https://api.github.com"
 _ERROR_BODY_CHARS = 500
 
+# Lachesis posts with the author's token, so its comments come from the author's
+# account; this hidden marker tells them apart from the author's own.
+AUTOMATED_MARKER = "<!-- lachesis:automated -->"
+
 
 def _headers() -> dict[str, str]:
     return {
@@ -730,6 +734,16 @@ async def create_issue(
     }
 
 
+async def get_token_login() -> str:
+    """Return the login of the account the server's token belongs to: the author's."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(f"{_BASE_URL}/user", headers=_headers())
+    if not resp.is_success:
+        logger.warning("github.get_token_login failed status=%s", resp.status_code)
+    resp.raise_for_status()
+    return resp.json()["login"]
+
+
 async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
     """Return issue fields for *issue_number*, or ``None`` on 404.
 
@@ -839,8 +853,16 @@ async def list_issue_comments(repo: str, issue_number: int) -> list[dict[str, An
     ]
 
 
-async def create_issue_comment(repo: str, issue_number: int, body: str) -> str | None:
-    """Post *body* as a comment on an issue or pull request; return its URL, or ``None`` on 404."""
+async def create_issue_comment(
+    repo: str, issue_number: int, body: str, *, automated: bool = True
+) -> str | None:
+    """Post *body* as a comment on an issue or pull request; return its URL, or ``None`` on 404.
+
+    An *automated* comment ends with ``AUTOMATED_MARKER``; only the author's own
+    words, posted for them as written, are not.
+    """
+    if automated:
+        body = f"{body}\n\n{AUTOMATED_MARKER}"
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/comments",

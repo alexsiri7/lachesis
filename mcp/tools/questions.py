@@ -228,7 +228,7 @@ async def answer_question(
 
     comments: list[dict[str, Any]] = []
     for number in question["blocks"]:
-        url = await github.create_issue_comment(repo, number, answer)
+        url = await github.create_issue_comment(repo, number, answer, automated=False)
         if url is None:
             raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
         comments.append({"issue": number, "url": url})
@@ -290,15 +290,101 @@ async def settle_expired_defaults(user_id: str) -> list[dict[str, Any]]:
     return settled
 
 
+def _is_automated(body: str) -> bool:
+    # The archon checks cover the factory's comments until it stamps AUTOMATED_MARKER itself.
+    return (
+        github.AUTOMATED_MARKER in body
+        or "<!-- archon:" in body
+        or body.lstrip().startswith("archon-ship finished")
+    )
+
+
+def _first_answer(
+    comments: list[dict[str, Any]], author: str, asked_at: datetime, answered: set[str]
+) -> dict[str, Any] | None:
+    return next(
+        (
+            comment
+            for comment in comments
+            if comment["author"] == author
+            and datetime.fromisoformat(comment["created_at"]) > asked_at
+            and not _is_automated(comment["body"])
+            and comment["body"].strip() not in answered
+        ),
+        None,
+    )
+
+
+async def take_answers_from_issues(user_id: str) -> list[dict[str, Any]]:
+    """Answer each open question the author has answered by commenting on an issue it blocks.
+
+    The author's account is the one the server's token belongs to. Of the comments
+    made on its blocked issues after the question was asked, the earliest the author
+    wrote that is neither automated (see ``_is_automated``) nor an answer already
+    recorded for another question on that issue is recorded as its answer,
+    with answerer ``author`` and outcome ``none``; then ``needs-author`` is removed
+    from each issue no other open question still blocks, as ``answer_question``
+    does, without posting the answer again. Called on every read of the open
+    questions, so it never raises: a question that fails is logged and left for the
+    next read.
+
+    Returns the questions answered, each with ``released``.
+    """
+    try:
+        waiting = [question for question in db.list_open_questions(user_id) if question["blocks"]]
+        if not waiting:
+            return []
+        author = await github.get_token_login()
+    except Exception:
+        logger.warning("take_answers_from_issues: could not read the questions", exc_info=True)
+        return []
+    answered: list[dict[str, Any]] = []
+    for question in waiting:
+        repo = question["repo_name"]
+        try:
+            candidates = []
+            for number in question["blocks"]:
+                comments = await github.list_issue_comments(repo, number)
+                if not comments:
+                    continue
+                comment = _first_answer(
+                    comments,
+                    author,
+                    question["created_at"],
+                    db.answers_on_issue(user_id, repo, number),
+                )
+                if comment is not None:
+                    candidates.append(comment)
+            if not candidates:
+                continue
+            first = min(candidates, key=lambda c: datetime.fromisoformat(c["created_at"]))
+            recorded = db.answer_question(
+                user_id, repo, question["id"], first["body"].strip(), "author", "none"
+            )
+            for number in recorded["released"]:
+                await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
+        except Exception:
+            logger.warning(
+                "take_answers_from_issues: question %s in %s was not checked",
+                question["id"],
+                repo,
+                exc_info=True,
+            )
+            continue
+        answered.append(recorded)
+    return answered
+
+
 async def list_open_questions() -> list[dict[str, Any]]:
     """Return the open questions across every registered repository, oldest first.
 
-    Questions whose wait for a default has passed are settled first, so they are
-    not listed. Each is its record — kind, what it is about, the issues it
-    ``blocks``, any ``default_answer`` and ``default_after`` — with
-    ``waiting_hours``: whole hours since it was asked.
+    Questions the author has answered on an issue they block, and those whose wait
+    for a default has passed, are settled first, so they are not listed. Each is its
+    record — kind, what it is about, the issues it ``blocks``, any ``default_answer``
+    and ``default_after`` — with ``waiting_hours``: whole hours since it was asked.
     """
     user_id = _require_user_id()
+    await take_answers_from_issues(user_id)
     await settle_expired_defaults(user_id)
     now = datetime.now(UTC)
     return [
@@ -375,7 +461,7 @@ async def _answer_unrecorded(repo: str, number: int, answer: str) -> dict[str, A
     """
     await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
     try:
-        url = await github.create_issue_comment(repo, number, answer)
+        url = await github.create_issue_comment(repo, number, answer, automated=False)
         if url is None:
             raise FileNotFoundError(f"Issue #{number} not found in {repo!r}")
     except Exception as failure:

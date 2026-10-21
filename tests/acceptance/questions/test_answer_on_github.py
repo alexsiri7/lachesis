@@ -110,7 +110,6 @@ async def _open_ids(lachesis: Lachesis) -> list[int]:
     return [question["id"] for question in listed.json()]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #382")
 @scenario("questions", "Answered on GitHub")
 async def test_answered_on_github(lachesis: Lachesis) -> None:
     await _repo(lachesis)
@@ -139,7 +138,6 @@ async def test_answered_on_github(lachesis: Lachesis) -> None:
     assert _posted(lachesis) == [question_comment]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #382")
 @scenario("questions", "Automated comment is not an answer")
 async def test_automated_comment_is_not_an_answer(lachesis: Lachesis) -> None:
     await _repo(lachesis)
