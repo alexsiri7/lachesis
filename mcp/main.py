@@ -408,9 +408,11 @@ mcp.tool(
         "has its id, repo_name, question, context, options, kind, asker, what it is "
         "about (capability, spec_change, milestone, issue), the issues it blocks, "
         "created_at, waiting_hours, and any default_answer with default_after, when it "
-        "is taken. Questions whose wait has passed are first settled by their default "
-        "(outcome defaulted, found with search_answered_questions). Answer one with "
-        "answer_question."
+        "is taken. A question the author has answered by commenting on an issue it "
+        "blocks, after it was asked, is first recorded with that comment as its answer "
+        "(answerer author, outcome none) and its issues released; questions whose wait "
+        "has passed are first settled by their default (outcome defaulted). Both are "
+        "found with search_answered_questions. Answer one with answer_question."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(question_tools.list_open_questions)

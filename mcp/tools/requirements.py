@@ -96,7 +96,11 @@ with your question and move on to other work. If a sensible default would do whi
 author is away, pass it as default: unanswered after wait_days (3), it is taken. The
 issue is labelled needs-author and next_issue passes over it, keeping its computed place,
 until answer_author posts the answer and removes the label, once no other open question
-blocks the issue.
+blocks the issue. The author may also answer by commenting on the issue: their first
+comment after the question was asked is taken as its answer. Every comment Lachesis posts,
+other than an answer it posts for the author, ends with the hidden marker
+<!-- lachesis:automated -->, and no comment carrying it is an answer; put it in any comment
+you post on GitHub yourself, since it comes from the author's account.
 For any other decision only the author can make — a spec contradiction, large work,
 maturity or an improvement — or one that blocks several issues, call ask_question.
 answer_question records the author's answer to a question by id, with its outcome, and

@@ -22,12 +22,14 @@ from tools.questions import (
     list_open_questions,
     search_answered_questions,
     settle_expired_defaults,
+    take_answers_from_issues,
 )
 
 _REAL_SEND = notify.send
 _REGISTERED = [{"id": "r1", "repo_name": "alexsiri7/lachesis", "created_at": "t"}]
 _ISSUES_URL = "https://api.github.com/repos/alexsiri7/lachesis/issues"
 _LABELS_URL = "https://api.github.com/repos/alexsiri7/lachesis/labels"
+_MARKED = "\n\n<!-- lachesis:automated -->"
 
 
 @pytest.fixture()
@@ -121,7 +123,7 @@ async def test_asking_with_options(
     assert json.loads(httpx_mock.get_requests()[0].content) == {
         "body": "Does this change contradict the backlog capability?\n\n"
         "The backlog spec says new issues are ready by default.\n\n"
-        "Options:\n- It contradicts it\n- It does not"
+        "Options:\n- It contradicts it\n- It does not" + _MARKED
     }
 
 
@@ -301,7 +303,7 @@ async def test_asking(
 
     assert result == {"url": _comment_url(160)}
     requests = httpx_mock.get_requests()
-    assert json.loads(requests[0].content) == {"body": "Behaviour A or B?"}
+    assert json.loads(requests[0].content) == {"body": "Behaviour A or B?" + _MARKED}
     assert json.loads(requests[1].content) == {"name": "needs-author", "color": "fbca04"}
     assert json.loads(requests[2].content) == {"labels": ["needs-author"]}
     args = record_question.call_args
@@ -771,7 +773,10 @@ async def test_reading_the_queue(set_user_id: str) -> None:
             "created_at": now - timedelta(hours=2, minutes=1),
         },
     ]
-    with patch("tools.questions.db.list_open_questions", return_value=rows) as queue:
+    with (
+        patch("tools.questions.take_answers_from_issues", new_callable=AsyncMock),
+        patch("tools.questions.db.list_open_questions", return_value=rows) as queue,
+    ):
         result = await list_open_questions()
 
     queue.assert_called_once_with("test-uid")
@@ -928,15 +933,86 @@ async def test_settling_never_raises_when_the_questions_cannot_be_read() -> None
         assert await settle_expired_defaults("test-uid") == []
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Done.\n\n<!-- lachesis:automated -->",
+        "<!-- archon:run 12 -->\nPicked up.",
+        "archon-ship finished: merged #12",
+    ],
+)
+async def test_a_factory_comment_from_the_author_account_is_not_an_answer(
+    httpx_mock: HTTPXMock, body: str
+) -> None:
+    asked_at = datetime(2026, 10, 1, tzinfo=UTC)
+    question = {"id": 7, "repo_name": "alexsiri7/lachesis", "blocks": [160], "created_at": asked_at}
+    httpx_mock.add_response(
+        method="GET", url="https://api.github.com/user", json={"login": "the-author"}
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{_ISSUES_URL}/160/comments?per_page=100&page=1",
+        json=[
+            {
+                "user": {"login": "the-author"},
+                "created_at": "2026-10-02T00:00:00Z",
+                "body": body,
+                "html_url": _comment_url(160),
+            }
+        ],
+    )
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=[question]),
+        patch("tools.questions.db.answers_on_issue", return_value=set()),
+        patch("tools.questions.db.answer_question") as answer,
+    ):
+        assert await take_answers_from_issues("test-uid") == []
+
+    answer.assert_not_called()
+
+
+async def test_an_answer_posted_for_another_question_is_not_an_answer(
+    httpx_mock: HTTPXMock,
+) -> None:
+    asked_at = datetime(2026, 10, 1, tzinfo=UTC)
+    question = {"id": 8, "repo_name": "alexsiri7/lachesis", "blocks": [160], "created_at": asked_at}
+    httpx_mock.add_response(
+        method="GET", url="https://api.github.com/user", json={"login": "the-author"}
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{_ISSUES_URL}/160/comments?per_page=100&page=1",
+        json=[
+            {
+                "user": {"login": "the-author"},
+                "created_at": "2026-10-02T00:00:00Z",
+                "body": "Always A.",
+                "html_url": _comment_url(160),
+            }
+        ],
+    )
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=[question]),
+        patch("tools.questions.db.answers_on_issue", return_value={"Always A."}) as recorded,
+        patch("tools.questions.db.answer_question") as answer,
+    ):
+        assert await take_answers_from_issues("test-uid") == []
+
+    recorded.assert_called_once_with("test-uid", "alexsiri7/lachesis", 160)
+    answer.assert_not_called()
+
+
 async def test_reading_the_open_questions_settles_expired_defaults_first(
     set_user_id: str,
 ) -> None:
     with (
+        patch("tools.questions.take_answers_from_issues", new_callable=AsyncMock) as taken,
         patch("tools.questions.settle_expired_defaults", new_callable=AsyncMock) as settle,
         patch("tools.questions.db.list_open_questions", return_value=[]),
     ):
         await list_open_questions()
 
+    taken.assert_awaited_once_with("test-uid")
     settle.assert_awaited_once_with("test-uid")
 
 

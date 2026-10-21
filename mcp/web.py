@@ -358,6 +358,7 @@ async def web_index(request: Request) -> Response:
         )
 
     now = datetime.now(UTC)
+    await question_tools.take_answers_from_issues(lachesis_uid)
     await question_tools.settle_expired_defaults(lachesis_uid)
     waiting = await waiting_on_author([row["repo_name"] for row in repos_raw])
     open_questions = db.list_open_questions(lachesis_uid)
