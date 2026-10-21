@@ -177,3 +177,18 @@ The web view SHALL show every milestone that is active or verifying, with its go
 - GIVEN an active milestone grouping spec change 5, with two issues of which one is closed with a merged pull request
 - WHEN the signed-in author opens the web view
 - THEN the milestone is shown with its goal, spec change 5, and one of two issues done
+
+### Requirement: The site root leads a browser to the web view
+
+A browser request for the site root SHALL be redirected to the web view, and from there to sign-in when the visitor is not signed in. Requests from MCP clients to the root SHALL keep their current behaviour.
+
+#### Scenario: Browser at the root
+- GIVEN a visitor who is not signed in
+- WHEN their browser opens the site root
+- THEN they are redirected to the web view and asked to sign in with Google
+- AND no raw error is shown
+
+#### Scenario: MCP client at the root
+- GIVEN an MCP client without a token
+- WHEN it calls the site root
+- THEN it gets the same unauthorized response as today
