@@ -5,6 +5,7 @@ from harness.find import find_matching
 from harness.github import FakeGitHub
 from harness.markers import scenario
 from harness.ntfy import FakeNtfy, Notification
+from harness.web import elements_in, section_of, with_attribute
 
 __all__ = [
     "FakeGitHub",
@@ -12,6 +13,9 @@ __all__ = [
     "Lachesis",
     "Notification",
     "ToolResult",
+    "elements_in",
     "find_matching",
     "scenario",
+    "section_of",
+    "with_attribute",
 ]

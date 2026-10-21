@@ -13,47 +13,18 @@ The contract these tests set for the implementation issues of spec change #382:
 
 from __future__ import annotations
 
-import re
-from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from harness import Lachesis, scenario
+from harness import Lachesis, elements_in, scenario, section_of, with_attribute
 
 REPO = "owner/repo"
 ISSUE = 160
 QUESTION = "Which format should the export use?"
 CONTEXT = "The importer on the other side reads both formats."
 OPTIONS = ["CSV", "JSON"]
-
-
-class _Elements(HTMLParser):
-    """Every element's attributes, in document order."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.elements: list[dict[str, str]] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.elements.append({"tag": tag, **{k: v or "" for k, v in attrs}})
-
-
-def _elements(html: str) -> list[dict[str, str]]:
-    parser = _Elements()
-    parser.feed(html)
-    return parser.elements
-
-
-def _section(html: str, section_id: str) -> str:
-    match = re.search(rf'<section[^>]*\bid="{section_id}"[^>]*>(.*?)</section>', html, re.DOTALL)
-    assert match is not None, f"no section {section_id!r} on the page"
-    return match.group(1)
-
-
-def _with(elements: list[dict[str, str]], attribute: str) -> list[dict[str, str]]:
-    return [element for element in elements if attribute in element]
 
 
 def _issue(number: int) -> dict[str, Any]:
@@ -110,18 +81,20 @@ async def _open_question(lachesis: Lachesis) -> int:
 async def test_question_on_the_page(lachesis: Lachesis) -> None:
     question_id = await _open_question(lachesis)
 
-    section = _section(await lachesis.web_page(), "questions")
+    section = section_of(await lachesis.web_page(), "questions")
 
-    elements = _elements(section)
+    elements = elements_in(section)
     [shown] = [
-        e for e in _with(elements, "data-question") if e["data-question"] == str(question_id)
+        e
+        for e in with_attribute(elements, "data-question")
+        if e["data-question"] == str(question_id)
     ]
     assert shown["data-waited"]
     assert QUESTION in section
     assert CONTEXT in section
     for option in OPTIONS:
         assert option in section
-    [blocked] = _with(elements, "data-blocks")
+    [blocked] = with_attribute(elements, "data-blocks")
     assert blocked["data-blocks"] == str(ISSUE)
     assert blocked["href"] == f"https://github.com/{REPO}/issues/{ISSUE}"
 
@@ -131,11 +104,11 @@ async def test_question_on_the_page(lachesis: Lachesis) -> None:
 async def test_discuss_in_claude(lachesis: Lachesis) -> None:
     question_id = await _open_question(lachesis)
 
-    section = _section(await lachesis.web_page(), "questions")
+    section = section_of(await lachesis.web_page(), "questions")
 
     [discuss] = [
         e
-        for e in _with(_elements(section), "data-discuss")
+        for e in with_attribute(elements_in(section), "data-discuss")
         if e["data-discuss"] == str(question_id)
     ]
     link = urlsplit(discuss["href"])
