@@ -150,13 +150,17 @@ The system SHALL let any caller search answered questions by repository and text
 
 ### Requirement: The web view shows each open question in full
 
-The web view SHALL list every open question as the one queue returns it, each with its repository, kind, what it is about, how long it has waited, the question, its context and its suggested options, and a link to every issue it blocks on GitHub. Each question SHALL carry a link that opens a new claude.ai conversation pre-filled with the question's id, repository, question, context, options and blocked issues, and with an instruction to discuss it with the author and, once they decide, record the answer through answer_question with that id. Text too long for the link SHALL be cut, keeping the id, the repository and the question whole.
+The web view SHALL list every open question as the one queue returns it, each with its repository, kind, what it is about, how long it has waited, the question, its context and its suggested options, and a link to every issue it blocks on GitHub.
 
 #### Scenario: Question on the page
 - GIVEN an open clarification question 7 in a registered repository, with context and two options, blocking issue 160
 - WHEN the signed-in author opens the web view
 - THEN question 7 is shown with its question, context, both options and how long it has waited
 - AND issue 160 is linked to its page on GitHub
+
+### Requirement: Each open question can be discussed in Claude
+
+Each question on the web view SHALL carry a link that opens a new claude.ai conversation pre-filled with the question's id, repository, question, context, options and blocked issues, and with an instruction to discuss it with the author and, once they decide, record the answer through answer_question with that id. Text too long for the link SHALL be cut, keeping the id, the repository and the question whole.
 
 #### Scenario: Discuss in Claude
 - GIVEN open question 7 is shown on the web view
@@ -166,7 +170,7 @@ The web view SHALL list every open question as the one queue returns it, each wi
 
 ### Requirement: An answer on the issue counts
 
-When the author comments on an issue an open question blocks, after the question was asked, the system SHALL record that comment as the question's answer with outcome none and the author as answerer, and release the issues as answering does, without posting the answer again. Only comments by the author's GitHub account SHALL count. Comments the system posts itself SHALL carry a hidden automated marker, and a comment carrying one SHALL never be taken as an answer. Comments SHALL be checked whenever the open questions are listed or the web view is opened.
+When the author comments on an issue an open question blocks, after the question was asked, the system SHALL record that comment as the question's answer with outcome none and the author as answerer, and release the issues as answering does, without posting the answer again. Only comments by the author's GitHub account SHALL count. Comments SHALL be checked whenever the open questions are listed or the web view is opened.
 
 #### Scenario: Answered on GitHub
 - GIVEN open question 7 blocks issue 160
@@ -176,12 +180,16 @@ When the author comments on an issue an open question blocks, after the question
 - AND issue 160 is no longer waiting on the author
 - AND no second comment repeating the answer is posted on issue 160
 
-#### Scenario: Automated comment is not an answer
-- GIVEN open question 7 blocks issue 160
-- WHEN a comment carrying the automated marker is posted on issue 160 from the author's account
-- THEN question 7 stays open
-
 #### Scenario: Comment from before the question
 - GIVEN the author commented on issue 160 before question 7 was asked
 - WHEN open questions are listed
+- THEN question 7 stays open
+
+### Requirement: The system's own comments are never answers
+
+Comments the system posts itself SHALL carry a hidden automated marker, and a comment carrying one SHALL never be taken as an answer, even when posted from the author's account.
+
+#### Scenario: Automated comment is not an answer
+- GIVEN open question 7 blocks issue 160
+- WHEN a comment carrying the automated marker is posted on issue 160 from the author's account
 - THEN question 7 stays open
