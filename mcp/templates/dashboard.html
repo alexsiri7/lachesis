@@ -3,7 +3,7 @@
 {% block content %}
 <h1 class="text-xl font-bold mb-6">Requirements Dashboard</h1>
 {% if open_questions or waiting_on_author or waiting_on_author_unreadable %}
-<section class="mb-8 bg-white rounded-lg border border-yellow-300 p-5">
+<section id="questions" class="mb-8 bg-white rounded-lg border border-yellow-300 p-5">
   <h2 class="font-semibold text-base mb-4">Waiting on you ({{ open_questions | length + waiting_on_author | length }})</h2>
   {% if waiting_on_author_unreadable %}
   <p class="text-xs text-gray-500 mb-3">
@@ -12,7 +12,7 @@
   {% endif %}
   <ul class="space-y-3">
     {% for q in open_questions %}
-    <li class="text-sm">
+    <li class="text-sm" data-question="{{ q.id }}" data-waited="{{ q.waited }}">
       <div class="flex items-center gap-3">
         <span class="font-mono text-gray-400 shrink-0">{{ q.repo_name }}</span>
         <span class="flex-1">
@@ -22,13 +22,25 @@
           {%- if q.milestone %} on milestone {{ q.milestone }}{% endif %}
           {%- if q.issue %} on issue #{{ q.issue }}{% endif %}
           {%- if q.blocks %}, blocking
-            {%- for n in q.blocks %} <a href="https://github.com/{{ q.repo_name }}/issues/{{ n }}" target="_blank"
+            {%- for n in q.blocks %} <a data-blocks="{{ n }}" href="https://github.com/{{ q.repo_name }}/issues/{{ n }}" target="_blank"
                class="font-mono text-gray-400 hover:underline">#{{ n }}</a>{% endfor %}
           {%- endif %}
         </span>
         <span class="text-xs text-gray-500 shrink-0">waiting {{ q.waited }}</span>
+        <a data-discuss="{{ q.id }}" href="{{ q.discuss_url }}" target="_blank" rel="noopener"
+           class="text-xs text-blue-700 shrink-0 hover:underline">Discuss in Claude</a>
       </div>
-      <pre class="mt-1 ml-2 pl-3 border-l border-gray-100 whitespace-pre-wrap font-sans text-gray-700">{{ q.question }}</pre>
+      <div class="mt-1 ml-2 pl-3 border-l border-gray-100 text-gray-700">
+        <pre class="whitespace-pre-wrap font-sans">{{ q.question }}</pre>
+        {% if q.context %}
+        <pre class="mt-1 whitespace-pre-wrap font-sans text-gray-500">{{ q.context }}</pre>
+        {% endif %}
+        {% if q.options %}
+        <ul class="mt-1 list-disc list-inside">
+          {% for option in q.options %}<li>{{ option }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+      </div>
     </li>
     {% endfor %}
     {% for issue in waiting_on_author %}

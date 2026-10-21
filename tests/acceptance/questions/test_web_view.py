@@ -16,8 +16,6 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-import pytest
-
 from harness import Lachesis, elements_in, scenario, section_of, with_attribute
 
 REPO = "owner/repo"
@@ -76,7 +74,6 @@ async def _open_question(lachesis: Lachesis) -> int:
     return int(asked.json()["id"])
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #382")
 @scenario("questions", "Question on the page")
 async def test_question_on_the_page(lachesis: Lachesis) -> None:
     question_id = await _open_question(lachesis)
@@ -99,7 +96,6 @@ async def test_question_on_the_page(lachesis: Lachesis) -> None:
     assert blocked["href"] == f"https://github.com/{REPO}/issues/{ISSUE}"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #382")
 @scenario("questions", "Discuss in Claude")
 async def test_discuss_in_claude(lachesis: Lachesis) -> None:
     question_id = await _open_question(lachesis)
