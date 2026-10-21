@@ -6,44 +6,15 @@ wording and layout can change without changing what is checked.
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime, timedelta
-from html.parser import HTMLParser
 from typing import Any
 
 import pytest
 
-from harness import Lachesis, scenario
+from harness import Lachesis, elements_in, scenario, section_of, with_attribute
 
 REPO = "owner/repo"
 NOW = datetime.now(UTC)
-
-
-class _Elements(HTMLParser):
-    """Every element's attributes, in document order."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.elements: list[dict[str, str]] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.elements.append({"tag": tag, **{k: v or "" for k, v in attrs}})
-
-
-def _elements(html: str) -> list[dict[str, str]]:
-    parser = _Elements()
-    parser.feed(html)
-    return parser.elements
-
-
-def _section(html: str, section_id: str) -> str:
-    match = re.search(rf'<section[^>]*\bid="{section_id}"[^>]*>(.*?)</section>', html, re.DOTALL)
-    assert match is not None, f"no section {section_id!r} on the page"
-    return match.group(1)
-
-
-def _with(elements: list[dict[str, str]], attribute: str) -> list[dict[str, str]]:
-    return [element for element in elements if attribute in element]
 
 
 async def _ok(lachesis: Lachesis, tool: str, arguments: dict[str, Any]) -> Any:
@@ -99,17 +70,17 @@ async def test_two_accounts_on_the_page(lachesis: Lachesis) -> None:
     )
     await _ok(lachesis, "report_overflow", {"spent_usd": 0, "cap_usd": 10})
 
-    fuel = _elements(_section(await lachesis.web_page(), "fuel"))
+    fuel = elements_in(section_of(await lachesis.web_page(), "fuel"))
 
-    accounts = {e["data-account"]: e for e in _with(fuel, "data-account")}
+    accounts = {e["data-account"]: e for e in with_attribute(fuel, "data-account")}
     assert float(accounts["factory"]["data-used"]) == 100
     assert float(accounts["main"]["data-used"]) == 19
     assert float(accounts["main"]["data-reserve"]) == 6.5
     assert float(accounts["main"]["data-usable"]) == 39.5
-    [overflow] = _with(fuel, "data-overflow-cap")
+    [overflow] = with_attribute(fuel, "data-overflow-cap")
     assert float(overflow["data-overflow-spent"]) == 0
     assert float(overflow["data-overflow-cap"]) == 10
-    [sprint] = _with(fuel, "data-sprint-budget")
+    [sprint] = with_attribute(fuel, "data-sprint-budget")
     assert int(sprint["data-sprint-budget"]) > 0
     assert "data-sprint-spent" in sprint
     assert "data-sprint-left" in sprint
@@ -118,7 +89,7 @@ async def test_two_accounts_on_the_page(lachesis: Lachesis) -> None:
 
 @scenario("progress-reporting", "No fuel reported")
 async def test_no_fuel_reported(lachesis: Lachesis) -> None:
-    fuel = _section(await lachesis.web_page(), "fuel")
+    fuel = section_of(await lachesis.web_page(), "fuel")
 
     assert "No fuel has been reported" in fuel
 
@@ -132,13 +103,13 @@ async def test_next_up(lachesis: Lachesis) -> None:
         lachesis.github.on("GET", f"/repos/{REPO}/issues/{item['number']}", json=item)
     await _ok(lachesis, "set_backlog_flags", {"repo": REPO, "issue_number": 7, "interrupt": True})
 
-    backlog = _elements(_section(await lachesis.web_page(), "backlog"))
+    backlog = elements_in(section_of(await lachesis.web_page(), "backlog"))
 
-    listed = [e for e in _with(backlog, "data-issue") if e.get("data-repo") == REPO]
+    listed = [e for e in with_attribute(backlog, "data-issue") if e.get("data-repo") == REPO]
     order = [int(e["data-issue"]) for e in listed]
     assert order.index(7) < order.index(3)
     assert next(e for e in listed if e["data-issue"] == "7")["data-tier"] == "interrupt"
-    [next_up] = _with(backlog, "data-next-issue")
+    [next_up] = with_attribute(backlog, "data-next-issue")
     assert next_up["data-next-issue"] == "7"
     assert next_up["data-next-repo"] == REPO
 
@@ -183,14 +154,14 @@ async def test_active_milestone(lachesis: Lachesis) -> None:
     )
     await _ok(lachesis, "start_milestone", {"repo": REPO, "milestone": created["id"]})
 
-    milestones = _elements(_section(await lachesis.web_page(), "milestones"))
+    milestones = elements_in(section_of(await lachesis.web_page(), "milestones"))
 
-    [milestone] = _with(milestones, "data-milestone")
+    [milestone] = with_attribute(milestones, "data-milestone")
     assert milestone["data-milestone"] == "Widgets"
     assert milestone["data-goal"] == "Widgets ship"
     assert int(milestone["data-issues-done"]) == 1
     assert int(milestone["data-issues-total"]) == 2
-    assert [e["data-spec-change"] for e in _with(milestones, "data-spec-change")] == ["5"]
+    assert [e["data-spec-change"] for e in with_attribute(milestones, "data-spec-change")] == ["5"]
 
 
 def _activity_node(number: int, *, closed: bool, merged_pull: int | None = None) -> dict:
