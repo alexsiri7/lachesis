@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse
 from starlette.types import ASGIApp
 
 import db as _db
@@ -1295,6 +1295,12 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
                     f' resource_metadata="{_resource_uri}"',
                 )
                 return
+
+        # A signed-out browser at the root goes to the web view, which leads on to sign-in;
+        # MCP clients never ask for HTML, so they keep the 401 below.
+        if path == "/" and "text/html" in headers.get(b"accept", b"").decode("latin-1"):
+            await RedirectResponse("/web/", status_code=302)(scope, receive, send)
+            return
 
         # No token or completely invalid token → generic 401
         await _send_401(

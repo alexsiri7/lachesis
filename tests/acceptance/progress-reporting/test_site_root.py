@@ -8,7 +8,6 @@ is the one every unauthenticated MCP request gets: 401, ``{"error": "unauthorize
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from harness import Lachesis, scenario
 
@@ -16,7 +15,6 @@ BROWSER_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.
 MCP_ACCEPT = "application/json, text/event-stream"
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #382")
 @scenario("progress-reporting", "Browser at the root")
 async def test_browser_at_the_root(lachesis: Lachesis) -> None:
     async with httpx.AsyncClient(base_url=lachesis.base_url, follow_redirects=True) as http:
