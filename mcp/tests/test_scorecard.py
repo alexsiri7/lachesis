@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from auth import current_db_user_id
-from tools.scorecard import is_trusted, read_scorecard, report_run_outcome, scorecard
+from tools.scorecard import read_scorecard, report_run_outcome, scorecard, trust_level
 
 _REGISTERED = [{"id": "r1", "repo_name": "alexsiri7/lachesis", "created_at": "t"}]
 _REPO = "alexsiri7/lachesis"
@@ -40,9 +41,11 @@ def _run(
     tokens_out: int = 10,
     cost_usd: float | None = None,
     repo_name: str = _REPO,
+    size: int | None = None,
 ) -> dict[str, Any]:
     return {
         "repo_name": repo_name,
+        "size": size,
         "issue": issue,
         "model": model,
         "kind": kind,
@@ -104,9 +107,142 @@ def test_reading_the_scorecard() -> None:
         "tokens_in": 0,
         "tokens_out": 0,
         "cost_usd": 0.0,
+        "tokens_per_point": None,
+        "cost_per_point": None,
         "trusted": False,
+        "trusted_up_to": None,
+        "sizes": [],
         "may_trial": False,
     }
+
+
+def test_each_size_is_scored_per_point_delivered() -> None:
+    """Scenario: Reading the scorecard — per size: tokens and cost per point delivered."""
+    runs = [
+        _run(1, size=3, tokens_in=50, tokens_out=40, cost_usd=0.03),
+        _run(2, size=3, tokens_in=50, tokens_out=40, cost_usd=0.03, rework=1),
+        _run(3, size=3, tokens_in=50, tokens_out=40, cost_usd=0.03),
+        _run(4, size=1, tokens_in=5, tokens_out=5),
+        _run(5),
+    ]
+
+    triage = _kind(scorecard(runs, {_REPO: {1, 2, 4, 5}}), "deepseek/deepseek-chat", "triage")
+
+    # The open issue 3 delivered no points, but its tokens and cost still count.
+    assert triage["sizes"] == [
+        {
+            "size": 1,
+            "runs": 1,
+            "merged_without_rework": 1,
+            "retries": 0,
+            "audit_findings": 0,
+            "tokens": 10,
+            "cost_usd": 0.0,
+            "tokens_per_point": 10.0,
+            "cost_per_point": 0.0,
+            "trusted": False,
+        },
+        {
+            "size": 3,
+            "runs": 3,
+            "merged_without_rework": 1,
+            "retries": 0,
+            "audit_findings": 0,
+            "tokens": 270,
+            "cost_usd": 0.09,
+            "tokens_per_point": 45.0,
+            "cost_per_point": 0.015,
+            "trusted": False,
+        },
+    ]
+    assert triage["runs"] == 5
+    assert triage["tokens_per_point"] == 40.0
+
+
+def _sized(size: int | None, first: int, count: int = 5, **failure: int) -> list[dict[str, Any]]:
+    return [_run(n, size=size, **failure) for n in range(first, first + count)]
+
+
+def test_trust_at_a_size_covers_every_smaller_size() -> None:
+    """Scenario: Stepping up a size — trust at 3 points covers 1 and 2, not 5."""
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(1, 1, 2, rework=1) + _sized(3, 10)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] == 3
+    assert [(s["size"], s["trusted"]) for s in triage["sizes"]] == [(1, True), (3, True)]
+    assert triage["trusted"]
+
+
+def test_runs_at_a_smaller_size_do_not_earn_trust_at_a_larger_one() -> None:
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(1, 1, 3) + _sized(5, 10, 2)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] == 1
+    assert [(s["size"], s["trusted"]) for s in triage["sizes"]] == [(1, True), (5, False)]
+
+
+def test_losing_trust_at_a_size() -> None:
+    """Scenario: Losing trust — two failures at a size lose trust at every size."""
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(2, 1) + _sized(2, 10, 2, rework=1)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] is None
+    assert not triage["trusted"]
+
+
+def test_failures_at_a_smaller_size_lose_the_trust_a_larger_one_gave_it() -> None:
+    """Scenario: Losing trust — clean runs at 3 points do not hide failures at 1."""
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(3, 1) + _sized(1, 10, 2, rework=1)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] is None
+    assert not triage["trusted"]
+
+
+def test_failures_at_a_smaller_size_before_the_streak_completes_withhold_trust() -> None:
+    """Scenario: Losing trust — failures at 1 point inside the streak at 3 still count."""
+    closed = {_REPO: set(range(1, 30))}
+    runs = _sized(3, 1, 4) + _sized(1, 10, 2, rework=1) + _sized(3, 20, 1)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] is None
+    assert not triage["trusted"]
+    assert [(s["size"], s["trusted"]) for s in triage["sizes"]] == [(1, False), (3, False)]
+
+
+def test_failures_before_the_streak_stop_counting_once_out_of_the_window() -> None:
+    closed = {_REPO: set(range(1, 30))}
+    runs = _sized(3, 1, 4) + _sized(1, 10, 2, rework=1) + _sized(3, 20, 4)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] == 3
+
+
+def test_failures_at_a_larger_size_leave_trust_at_a_smaller_one() -> None:
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(2, 1) + _sized(3, 10, 2, rework=1)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] == 2
+
+
+def test_runs_on_issues_never_sized_earn_trust_at_one_point() -> None:
+    closed = {_REPO: set(range(1, 6))}
+
+    triage = _kind(scorecard(_sized(None, 1), closed), "deepseek/deepseek-chat", "triage")
+
+    assert (triage["trusted"], triage["trusted_up_to"], triage["sizes"]) == (True, 1, [])
 
 
 def test_earning_trust() -> None:
@@ -179,8 +315,41 @@ def test_losing_trust() -> None:
         ([True] * 5 + [False, False] + [True] * 5, True),
     ],
 )
-def test_is_trusted_replays_the_rules(judged: list[bool], trusted: bool) -> None:
-    assert is_trusted(judged) is trusted
+def test_trust_level_replays_the_rules(judged: list[bool], trusted: bool) -> None:
+    assert (trust_level([(1, clean) for clean in judged]) is not None) is trusted
+
+
+@pytest.mark.parametrize(
+    ("judged", "level"),
+    [
+        ([(3, True)] * 4 + [(1, False)] * 2 + [(3, True)], None),
+        ([(3, True)] * 5 + [(1, False)] * 2, None),
+        ([(3, True)] * 4 + [(1, False)] * 2 + [(3, True)] * 4, 3),
+        ([(1, False)] * 2 + [(3, True)] * 5, 3),
+        ([(3, True)] * 4 + [(1, False), (2, False)] + [(3, True)], None),
+        ([(3, True)] * 5 + [(5, False)] * 2, 3),
+    ],
+)
+def test_trust_level_counts_failures_in_the_window_whichever_comes_first(
+    judged: list[tuple[int, bool]], level: int | None
+) -> None:
+    assert trust_level(judged) == level
+
+
+def test_trust_never_stands_with_two_failures_in_the_last_five_runs_it_covers() -> None:
+    """Every ordering of clean and failed runs at 1 and 3 points, up to eight runs: trust
+    at a size stands only after five clean runs in a row at that size or larger, and never
+    while two of the last five runs at the sizes it covers failed."""
+    steps = [(size, clean) for size in (1, 3) for clean in (True, False)]
+    for length in range(9):
+        for judged in itertools.product(steps, repeat=length):
+            level = trust_level(list(judged))
+            if level is None:
+                continue
+            covered = [clean for size, clean in judged if size <= level][-5:]
+            assert covered.count(False) < 2, judged
+            at_least = [clean for size, clean in judged if size >= level]
+            assert any(all(at_least[i : i + 5]) for i in range(len(at_least) - 4)), judged
 
 
 def _may_trial(runs: list[dict[str, Any]]) -> dict[str, bool]:

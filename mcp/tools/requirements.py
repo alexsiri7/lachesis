@@ -118,8 +118,9 @@ When review sends a run's work back for changes, when you retry a failed run, or
 audit finds a gap in work done on an issue, call report_run_outcome with the issue, the
 kind of work and the outcome: rework, retry or audit_finding. It counts against the latest
 run of that kind on the issue, so report a retry at the start of the retrying run.
-read_scorecard shows, for each model and kind of work, its runs and failures, whether it is
-trusted, and whether it may trial that kind.
+read_scorecard shows, for each model and kind of work and each issue size, its runs and
+failures, tokens and cost per point, whether it is trusted, and whether it may trial that
+kind.
 
 Every issue carries an estimate in tokens. When you create or triage an issue, call
 estimate_issue with the issue, the kind of work it mostly is and the model if you know it;
@@ -134,11 +135,11 @@ overflow until it has been reported. read_fuel returns what is left on every acc
 reserve, 20 percent of the share the factory may use of it, kept for security work and
 production incidents, whether its five-hour window has paused it, and its pace for today;
 and the overflow figures.
-Then call route_run with the kind of work, and emergency true only for security work or a
-production incident, and run the model it chooses: Claude on the allowance, or any other
-model through Requesty. When it names an account other than the one you run on, or chooses
-none, do not start the work on your account: leave it, or follow its reason. Give the
-account in report_usage for every run on a Claude allowance.
+Then call route_run with the kind of work, the issue's size, and emergency true only for
+security work or a production incident, and run the model it chooses: a Claude model on
+the allowance, or any other model through Requesty. When it names an account other than
+the one you run on, or chooses none, do not start the work on your account: leave it, or
+follow its reason. Give the account in report_usage for every run on a Claude allowance.
 
 Sprints run from one weekly allowance reset to the next. read_sprint returns the sprint's
 dates, its budget in tokens — every account's share less its reserve, and the overflow cap — what is

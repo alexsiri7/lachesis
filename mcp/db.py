@@ -1115,23 +1115,26 @@ def record_run_outcome(
 def list_runs(
     user_id: str, *, start: datetime | None = None, end: datetime | None = None
 ) -> list[dict[str, Any]]:
-    """Return the account's runs with their count of each outcome, oldest first.
+    """Return the account's runs with their count of each outcome and their issue's size
+    (None while unsized), oldest first.
 
     With *start* or *end*, only the runs reported in ``[start, end)``.
     """
     sql = text(
         """
         SELECT r.id, r.repo_name, r.issue, r.model, r.kind,
-               r.tokens_in, r.tokens_out, r.cost_usd, r.account,
+               r.tokens_in, r.tokens_out, r.cost_usd, r.account, s.size,
                COUNT(o.id) FILTER (WHERE o.outcome = 'rework') AS rework,
                COUNT(o.id) FILTER (WHERE o.outcome = 'retry') AS retries,
                COUNT(o.id) FILTER (WHERE o.outcome = 'audit_finding') AS audit_findings
         FROM lachesis_usage_reports r
         LEFT JOIN lachesis_run_outcomes o ON o.run_id = r.id
+        LEFT JOIN lachesis_issue_sizes s
+            ON s.user_id = r.user_id AND s.repo_name = r.repo_name AND s.issue = r.issue
         WHERE r.user_id = :user_id
           AND (CAST(:start AS timestamptz) IS NULL OR r.created_at >= :start)
           AND (CAST(:end AS timestamptz) IS NULL OR r.created_at < :end)
-        GROUP BY r.id
+        GROUP BY r.id, s.size
         ORDER BY r.id
         """
     )
