@@ -283,6 +283,18 @@ def test_failures_at_a_smaller_size_take_a_model_off_it() -> None:
     assert (result["model"], result["candidates"]) == ("claude", [])
 
 
+def test_failures_at_a_smaller_size_inside_the_streak_keep_a_model_off_it() -> None:
+    """Scenario: Losing trust — routing agrees with the scorecard when the failures at
+    1 point come before the streak at 3 points completes."""
+    runs = _sized(_DEEPSEEK, "tests", 3, 1, 4, cost_usd=_CHEAP)
+    runs += _sized(_DEEPSEEK, "tests", 1, 10, 2, cost_usd=_CHEAP, rework=1)
+    runs += _sized(_DEEPSEEK, "tests", 3, 20, 1, cost_usd=_CHEAP)
+
+    for size in (1, 3):
+        result = _route_sized(runs, "tests", size)
+        assert (result["model"], result["candidates"]) == ("claude", [])
+
+
 def test_trust_from_runs_never_sized_holds_at_one_point_and_trials_the_next() -> None:
     runs = _trusted(cost_usd=_CHEAP)
 

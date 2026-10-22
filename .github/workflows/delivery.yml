@@ -58,9 +58,16 @@ jobs:
         # github.event.pull_request.base.sha can lag behind the base branch's actual tip (e.g.
         # right after the PR branch merges main into itself), making a stale ancestor of HEAD
         # look like it introduced every commit since. Recompute it from the live ref instead.
+        # Fail closed: an empty base would make goalposts diff nothing and pass.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          git fetch origin "${{ github.base_ref }}"
-          echo "sha=$(git merge-base "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}")" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          git fetch origin "$BASE_REF"
+          base=$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")
+          test -n "$base"
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
 
       - name: Implementation leaves acceptance tests alone
         env:

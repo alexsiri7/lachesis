@@ -17,28 +17,39 @@ TRUST_LOST_AFTER_FAILURES = 2
 TRIAL_KINDS = ("triage", "summarising")
 
 
+def _window_holds(judged: list[tuple[int, bool]], up_to: int) -> bool:
+    """Return whether fewer than TRUST_LOST_AFTER_FAILURES of the last TRUST_WINDOW
+    *judged* runs at sizes up to *up_to* failed."""
+    covered = [clean for size, clean in judged if size <= up_to][-TRUST_WINDOW:]
+    return covered.count(False) < TRUST_LOST_AFTER_FAILURES
+
+
 def trust_level(judged: list[tuple[int, bool]]) -> int | None:
     """Replay *judged* runs in order, each its size and True for a clean run, and return
     the largest size trust stands at, or None.
 
     Trust at a size comes after TRUST_AFTER_CLEAN_RUNS clean runs in a row at that size or
-    larger, and covers every smaller size. It is lost at every size once
-    TRUST_LOST_AFTER_FAILURES of the last TRUST_WINDOW runs at the sizes it covered failed.
+    larger, and covers every smaller size. Trust at a size never stands while
+    TRUST_LOST_AFTER_FAILURES of the last TRUST_WINDOW runs at the sizes it covers failed,
+    whether those failures came before or after the streak that earned it; once held trust
+    meets them, it is lost at every size and must be earned again from a new streak.
     """
     level: int | None = None
     streaks = dict.fromkeys(db.SIZES, 0)
-    recent: list[bool] = []
+    history: list[tuple[int, bool]] = []
     for size, clean in judged:
+        history.append((size, clean))
         for at_least in db.SIZES:
             if size >= at_least:
                 streaks[at_least] = streaks[at_least] + 1 if clean else 0
-        if level is not None and size <= level:
-            recent = (recent + [clean])[-TRUST_WINDOW:]
-            if recent.count(False) >= TRUST_LOST_AFTER_FAILURES:
-                level = None
-                streaks = dict.fromkeys(db.SIZES, 0)
-                recent = []
-        earned = [at_least for at_least in db.SIZES if streaks[at_least] >= TRUST_AFTER_CLEAN_RUNS]
+        if level is not None and not _window_holds(history, level):
+            level = None
+            streaks = dict.fromkeys(db.SIZES, 0)
+        earned = [
+            at_least
+            for at_least in db.SIZES
+            if streaks[at_least] >= TRUST_AFTER_CLEAN_RUNS and _window_holds(history, at_least)
+        ]
         if earned and (level is None or earned[-1] > level):
             level = earned[-1]
     return level

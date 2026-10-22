@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -206,6 +207,27 @@ def test_failures_at_a_smaller_size_lose_the_trust_a_larger_one_gave_it() -> Non
     assert not triage["trusted"]
 
 
+def test_failures_at_a_smaller_size_before_the_streak_completes_withhold_trust() -> None:
+    """Scenario: Losing trust — failures at 1 point inside the streak at 3 still count."""
+    closed = {_REPO: set(range(1, 30))}
+    runs = _sized(3, 1, 4) + _sized(1, 10, 2, rework=1) + _sized(3, 20, 1)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] is None
+    assert not triage["trusted"]
+    assert [(s["size"], s["trusted"]) for s in triage["sizes"]] == [(1, False), (3, False)]
+
+
+def test_failures_before_the_streak_stop_counting_once_out_of_the_window() -> None:
+    closed = {_REPO: set(range(1, 30))}
+    runs = _sized(3, 1, 4) + _sized(1, 10, 2, rework=1) + _sized(3, 20, 4)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] == 3
+
+
 def test_failures_at_a_larger_size_leave_trust_at_a_smaller_one() -> None:
     closed = {_REPO: set(range(1, 20))}
     runs = _sized(2, 1) + _sized(3, 10, 2, rework=1)
@@ -295,6 +317,39 @@ def test_losing_trust() -> None:
 )
 def test_trust_level_replays_the_rules(judged: list[bool], trusted: bool) -> None:
     assert (trust_level([(1, clean) for clean in judged]) is not None) is trusted
+
+
+@pytest.mark.parametrize(
+    ("judged", "level"),
+    [
+        ([(3, True)] * 4 + [(1, False)] * 2 + [(3, True)], None),
+        ([(3, True)] * 5 + [(1, False)] * 2, None),
+        ([(3, True)] * 4 + [(1, False)] * 2 + [(3, True)] * 4, 3),
+        ([(1, False)] * 2 + [(3, True)] * 5, 3),
+        ([(3, True)] * 4 + [(1, False), (2, False)] + [(3, True)], None),
+        ([(3, True)] * 5 + [(5, False)] * 2, 3),
+    ],
+)
+def test_trust_level_counts_failures_in_the_window_whichever_comes_first(
+    judged: list[tuple[int, bool]], level: int | None
+) -> None:
+    assert trust_level(judged) == level
+
+
+def test_trust_never_stands_with_two_failures_in_the_last_five_runs_it_covers() -> None:
+    """Every ordering of clean and failed runs at 1 and 3 points, up to eight runs: trust
+    at a size stands only after five clean runs in a row at that size or larger, and never
+    while two of the last five runs at the sizes it covers failed."""
+    steps = [(size, clean) for size in (1, 3) for clean in (True, False)]
+    for length in range(9):
+        for judged in itertools.product(steps, repeat=length):
+            level = trust_level(list(judged))
+            if level is None:
+                continue
+            covered = [clean for size, clean in judged if size <= level][-5:]
+            assert covered.count(False) < 2, judged
+            at_least = [clean for size, clean in judged if size >= level]
+            assert any(all(at_least[i : i + 5]) for i in range(len(at_least) - 4)), judged
 
 
 def _may_trial(runs: list[dict[str, Any]]) -> dict[str, bool]:
