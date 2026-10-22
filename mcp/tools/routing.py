@@ -11,7 +11,7 @@ from settings import settings
 from .fuel import read
 from .repos import _require_user_id
 from .requirements import _resolve_repo
-from .scorecard import closed_issues, scorecard
+from .scorecard import closed_issues, failed, scorecard
 
 CLAUDE = "claude"
 
@@ -144,9 +144,7 @@ def failed_trial(
     ]
     if not on_issue:
         return False
-    latest = runs[on_issue[-1]]
-    failed = latest["rework"] + latest["retries"] + latest["audit_findings"] > 0
-    return failed and ran_on_trial(runs, on_issue[-1], closed)
+    return failed(runs[on_issue[-1]]) and ran_on_trial(runs, on_issue[-1], closed)
 
 
 def options(

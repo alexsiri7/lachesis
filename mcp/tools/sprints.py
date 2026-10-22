@@ -310,7 +310,8 @@ def trial_issues(
     claude_price: float,
 ) -> set[tuple[str, int]]:
     """Return the estimated issues whose next run, of their estimate's kind at their
-    size, :func:`routing.route` would give a model on trial."""
+    size, :func:`routing.route` would give a model on trial: not those whose last run of
+    the kind was a failed trial, which a trusted model redoes."""
     routed: dict[tuple[str, int | None], bool] = {}
     found: set[tuple[str, int]] = set()
     for row in estimates:
@@ -323,7 +324,9 @@ def trial_issues(
                 row["kind"], runs, closed, fuel, claude_price, False, fuel["accounts"], size
             )
             routed[(row["kind"], size)] = choice["trial"]
-        if routed[(row["kind"], size)]:
+        if routed[(row["kind"], size)] and not routing.failed_trial(
+            runs, closed, *key, row["kind"]
+        ):
             found.add(key)
     return found
 

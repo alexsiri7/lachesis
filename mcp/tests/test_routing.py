@@ -427,6 +427,35 @@ async def test_route_run_routes_from_the_users_runs_issues_and_fuel(set_user_id:
     list_all_issues.assert_awaited_once_with(_REPO)
 
 
+@pytest.mark.parametrize(("allowance_tokens", "trial"), [(1_000, False), (1_000_000, True)])
+async def test_route_run_offers_no_trial_once_the_sprints_trials_spent_their_share(
+    set_user_id: str, allowance_tokens: int, trial: bool
+) -> None:
+    """Scenario: Trial share respected — Haiku's first five runs, 550 tokens, were trials
+    this sprint: a share of 80 tokens is spent, one of 80,000 is not."""
+    haiku = "claude-haiku"
+    runs = _sized(haiku, "tests", 1, 1)
+    issues = [{"number": n, "state": "closed", "is_pull_request": False} for n in range(1, 6)]
+    row = {
+        "weekly_used_percent": 0.0,
+        "weekly_resets_at": datetime.now(UTC) + timedelta(days=2),
+        "shorter_limit_until": None,
+        "overflow_spent_usd": 0.0,
+        "overflow_cap_usd": 0.0,
+        "reported_at": datetime.now(UTC),
+    }
+    with (
+        patch("db.list_runs", return_value=runs),
+        patch("tools.scorecard.github.list_all_issues", new=AsyncMock(return_value=issues)),
+        patch("db.get_fuel", return_value=row),
+        patch("tools.sprints.settings.claude_weekly_allowance_tokens", allowance_tokens),
+    ):
+        result = await route_run("implementation", size=1)
+
+    assert (result["model"] == haiku, result["trial"]) == (trial, trial)
+    assert ("spent the sprint's trial share" in result["reason"]) is not trial
+
+
 async def test_route_run_refuses_a_size_that_is_not_a_fibonacci_point(set_user_id: str) -> None:
     with patch("tools.routing.db.list_runs") as list_runs:
         with pytest.raises(ValueError, match="size must be one of"):
