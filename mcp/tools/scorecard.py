@@ -17,36 +17,43 @@ TRUST_LOST_AFTER_FAILURES = 2
 TRIAL_KINDS = ("triage", "summarising")
 
 
-def is_trusted(judged: list[bool]) -> bool:
-    """Replay *judged* runs in order, True for a clean run, and return whether trust stands.
+def trust_level(judged: list[tuple[int, bool]]) -> int | None:
+    """Replay *judged* runs in order, each its size and True for a clean run, and return
+    the largest size trust stands at, or None.
 
-    Trust comes after TRUST_AFTER_CLEAN_RUNS clean runs in a row and is lost once
-    TRUST_LOST_AFTER_FAILURES of the last TRUST_WINDOW runs failed.
+    Trust at a size comes after TRUST_AFTER_CLEAN_RUNS clean runs in a row at that size or
+    larger, and covers every smaller size. It is lost at every size once
+    TRUST_LOST_AFTER_FAILURES of the last TRUST_WINDOW runs at the sizes it covered failed.
     """
-    trusted = False
-    streak = 0
+    level: int | None = None
+    streaks = dict.fromkeys(db.SIZES, 0)
     recent: list[bool] = []
-    for clean in judged:
-        recent = (recent + [clean])[-TRUST_WINDOW:]
-        if trusted:
+    for size, clean in judged:
+        for at_least in db.SIZES:
+            if size >= at_least:
+                streaks[at_least] = streaks[at_least] + 1 if clean else 0
+        if level is not None and size <= level:
+            recent = (recent + [clean])[-TRUST_WINDOW:]
             if recent.count(False) >= TRUST_LOST_AFTER_FAILURES:
-                trusted = False
-                streak = 0
-        else:
-            streak = streak + 1 if clean else 0
-            trusted = streak >= TRUST_AFTER_CLEAN_RUNS
-    return trusted
+                level = None
+                streaks = dict.fromkeys(db.SIZES, 0)
+                recent = []
+        earned = [at_least for at_least in db.SIZES if streaks[at_least] >= TRUST_AFTER_CLEAN_RUNS]
+        if earned and (level is None or earned[-1] > level):
+            level = earned[-1]
+    return level
 
 
-def _judge(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> list[bool]:
-    """Return *runs* judged in order, True for clean: merged with no failure reported, or
-    failed once any is. Runs on open issues with no failure are not yet judged."""
-    judged: list[bool] = []
+def _judge(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> list[tuple[int, bool]]:
+    """Return *runs* judged in order, each its size and True for clean: merged with no
+    failure reported, or failed once any is. Runs on open issues with no failure are not
+    yet judged; a run on an issue never sized counts at the smallest size."""
+    judged: list[tuple[int, bool]] = []
     for run in runs:
         merged = run["issue"] in closed.get(run["repo_name"], set())
         failed = run["rework"] + run["retries"] + run["audit_findings"] > 0
         if failed or merged:
-            judged.append(not failed)
+            judged.append((run["size"] or db.SIZES[0], not failed))
     return judged
 
 
@@ -83,21 +90,9 @@ def _per_point(sized: list[dict[str, Any]], closed: dict[str, set[int]]) -> dict
     }
 
 
-def trusted_up_to(sized: list[dict[str, Any]], closed: dict[str, set[int]]) -> int | None:
-    """Return the largest size the *sized* runs of one kind earn trust at, or None.
-
-    Trust at a size is judged on the runs at that size or larger, and covers every
-    smaller size.
-    """
-    for size in reversed(db.SIZES):
-        if is_trusted(_judge([run for run in sized if run["size"] >= size], closed)):
-            return size
-    return None
-
-
 def _kind_score(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> dict[str, Any]:
     sized = [run for run in runs if run["size"] is not None]
-    up_to = trusted_up_to(sized, closed)
+    up_to = trust_level(_judge(runs, closed))
     sizes = []
     for size in sorted({run["size"] for run in sized}):
         at_size = [run for run in sized if run["size"] == size]
@@ -118,7 +113,7 @@ def _kind_score(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> dict
     return {
         **_totals(runs, closed),
         **_per_point(sized, closed),
-        "trusted": up_to is not None or is_trusted(_judge(runs, closed)),
+        "trusted": up_to is not None,
         "trusted_up_to": up_to,
         "sizes": sizes,
     }
@@ -129,9 +124,9 @@ def scorecard(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> list[d
     merged once its issue is in *closed* for its repository.
 
     A run is judged clean once merged with no failure reported, failed once any is; runs
-    on open issues with no failure are not yet judged. A model is trusted for a kind at
-    some size, or by its runs of every size together. A model may trial the trial kinds,
-    any kind it is trusted for, and any kind after one it is trusted for.
+    on open issues with no failure are not yet judged. A model is trusted for a kind when
+    it is trusted at some size. A model may trial the trial kinds, any kind it is trusted
+    for, and any kind after one it is trusted for.
     """
     kinds: tuple[str, ...] = get_args(db.UsageKind)
     by_model: dict[str, dict[str, list[dict[str, Any]]]] = {}

@@ -656,13 +656,14 @@ mcp.tool(
         "ran at with runs, merged without rework, retries, audit findings, tokens, cost, "
         "tokens and cost per point, and `trusted`. A model is trusted at a size after 5 "
         "consecutive clean runs of the kind at that size or larger — merged with no rework, "
-        "retry or audit finding — and loses it after 2 failures in the last 5; trust at a "
-        "size covers every smaller size, and `trusted_up_to` is the largest such size (null "
-        "for none). Runs on open issues with no failure are not yet judged. `trusted` for "
-        "the kind is true when the model is trusted at some size or by its runs of every "
-        "size together. `may_trial` is true for triage and summarising, and for any other "
-        "kind once the model is trusted for it or for a lower-risk kind. Derived on every "
-        "read."
+        "retry or audit finding — and trust at a size covers every smaller size. It is lost "
+        "at every size after 2 failures in the last 5 runs at the sizes it covers, and "
+        "earned again the same way. `trusted_up_to` is the largest size the model is "
+        "trusted at (null for none), and `trusted` for the kind is true when there is one. "
+        "A run on an issue never sized counts at 1 point for trust. Runs on open issues "
+        "with no failure are not yet judged. `may_trial` is true for triage and "
+        "summarising, and for any other kind once the model is trusted for it or for a "
+        "lower-risk kind. Derived on every read."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(scorecard_tools.read_scorecard)

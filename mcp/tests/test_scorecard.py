@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from auth import current_db_user_id
-from tools.scorecard import is_trusted, read_scorecard, report_run_outcome, scorecard
+from tools.scorecard import read_scorecard, report_run_outcome, scorecard, trust_level
 
 _REGISTERED = [{"id": "r1", "repo_name": "alexsiri7/lachesis", "created_at": "t"}]
 _REPO = "alexsiri7/lachesis"
@@ -158,7 +158,7 @@ def test_each_size_is_scored_per_point_delivered() -> None:
     assert triage["tokens_per_point"] == 40.0
 
 
-def _sized(size: int, first: int, count: int = 5, **failure: int) -> list[dict[str, Any]]:
+def _sized(size: int | None, first: int, count: int = 5, **failure: int) -> list[dict[str, Any]]:
     return [_run(n, size=size, **failure) for n in range(first, first + count)]
 
 
@@ -185,7 +185,7 @@ def test_runs_at_a_smaller_size_do_not_earn_trust_at_a_larger_one() -> None:
 
 
 def test_losing_trust_at_a_size() -> None:
-    """Scenario: Losing trust — two failures at a size lose trust there and below."""
+    """Scenario: Losing trust — two failures at a size lose trust at every size."""
     closed = {_REPO: set(range(1, 20))}
     runs = _sized(2, 1) + _sized(2, 10, 2, rework=1)
 
@@ -193,6 +193,34 @@ def test_losing_trust_at_a_size() -> None:
 
     assert triage["trusted_up_to"] is None
     assert not triage["trusted"]
+
+
+def test_failures_at_a_smaller_size_lose_the_trust_a_larger_one_gave_it() -> None:
+    """Scenario: Losing trust — clean runs at 3 points do not hide failures at 1."""
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(3, 1) + _sized(1, 10, 2, rework=1)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] is None
+    assert not triage["trusted"]
+
+
+def test_failures_at_a_larger_size_leave_trust_at_a_smaller_one() -> None:
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(2, 1) + _sized(3, 10, 2, rework=1)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] == 2
+
+
+def test_runs_on_issues_never_sized_earn_trust_at_one_point() -> None:
+    closed = {_REPO: set(range(1, 6))}
+
+    triage = _kind(scorecard(_sized(None, 1), closed), "deepseek/deepseek-chat", "triage")
+
+    assert (triage["trusted"], triage["trusted_up_to"], triage["sizes"]) == (True, 1, [])
 
 
 def test_earning_trust() -> None:
@@ -265,8 +293,8 @@ def test_losing_trust() -> None:
         ([True] * 5 + [False, False] + [True] * 5, True),
     ],
 )
-def test_is_trusted_replays_the_rules(judged: list[bool], trusted: bool) -> None:
-    assert is_trusted(judged) is trusted
+def test_trust_level_replays_the_rules(judged: list[bool], trusted: bool) -> None:
+    assert (trust_level([(1, clean) for clean in judged]) is not None) is trusted
 
 
 def _may_trial(runs: list[dict[str, Any]]) -> dict[str, bool]:

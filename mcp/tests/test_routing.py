@@ -261,6 +261,40 @@ def test_a_smaller_claude_model_trusted_at_the_size_runs_on_the_allowance() -> N
     assert result["size"] == 2
 
 
+def test_a_cheaper_trusted_claude_variant_beats_overflow_cheaper_than_claude() -> None:
+    haiku = "claude-haiku"
+    runs = _sized(haiku, "implementation", 2, 1, tokens_in=2, tokens_out=2)
+    runs += _sized("claude", "implementation", 2, 10, 2, tokens_in=50, tokens_out=50)
+    runs += _sized(_DEEPSEEK, "implementation", 2, 20, cost_usd=0.0003, tokens_in=50, tokens_out=50)
+
+    result = _route_sized(runs, "implementation", 2)
+
+    assert [c["model"] for c in result["candidates"]] == [haiku, _DEEPSEEK]
+    assert (result["model"], result["via"]) == (haiku, "allowance")
+
+
+def test_failures_at_a_smaller_size_take_a_model_off_it() -> None:
+    """Scenario: Losing trust — clean runs at 3 points do not keep it routed at 1."""
+    runs = _sized(_DEEPSEEK, "tests", 3, 1, cost_usd=_CHEAP)
+    runs += _sized(_DEEPSEEK, "tests", 1, 10, 2, cost_usd=_CHEAP, rework=1)
+
+    result = _route_sized(runs, "tests", 1)
+
+    assert (result["model"], result["candidates"]) == ("claude", [])
+
+
+def test_trust_from_runs_never_sized_holds_at_one_point_and_trials_the_next() -> None:
+    runs = _trusted(cost_usd=_CHEAP)
+
+    one = _route_sized(runs, "triage", 1)
+    two = _route_sized(runs, "triage", 2)
+    three = _route_sized(runs, "triage", 3)
+
+    assert (one["model"], one["trial"]) == (_DEEPSEEK, False)
+    assert (two["model"], two["trial"]) == (_DEEPSEEK, True)
+    assert three["model"] == "claude"
+
+
 def test_cost_per_point_lets_a_pricier_model_win_on_fewer_tokens() -> None:
     runs = _sized(_DEEPSEEK, "tests", 2, 1, cost_usd=_PRICEY)
     runs += _sized("claude", "tests", 2, 10, 2, tokens_in=1000, tokens_out=1000)
