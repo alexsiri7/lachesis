@@ -14,6 +14,7 @@ import main
 from auth import current_db_user_id
 from settings import settings
 from tools.estimates import price_per_point
+from tools.fuel import fuel_status
 from tools.sprints import (
     capacity_points,
     ended_sprint,
@@ -26,6 +27,7 @@ from tools.sprints import (
     sprint_budget,
     sprint_findings,
     sprint_spending,
+    trial_issues,
 )
 
 
@@ -227,10 +229,11 @@ def _two_repos(
     models = {"owner/a": {9: {"claude": 120}}, "owner/b": {}}
 
     estimates = [
-        {"repo_name": "owner/a", "issue": 1, "tokens": 60},
-        {"repo_name": "owner/b", "issue": 2, "tokens": 60},
+        {"repo_name": "owner/a", "issue": 1, "kind": "implementation", "tokens": 60},
+        {"repo_name": "owner/b", "issue": 2, "kind": "implementation", "tokens": 60},
     ]
     with (
+        patch("db.list_runs", return_value=[]),
         patch("db.list_repos", return_value=[{"repo_name": "owner/a"}, {"repo_name": "owner/b"}]),
         patch(
             "db.get_fuel",
@@ -307,6 +310,66 @@ def test_improvement_work_is_planned_first_within_its_share() -> None:
         (4, False),
     ]
     assert not_planned == 1
+
+
+def test_trials_are_planned_first_and_never_beyond_their_share() -> None:
+    """Scenario: Trial share respected — a budget of 100 gives trials 10; a trial that
+    does not fit is planned for a trusted model, and one that is improvement work too
+    counts against the trial share."""
+    plan, not_planned = plan_with_improvement(
+        [_entry(1), _entry(2), _entry(3), _entry(4)],
+        {("owner/repo", 3)},
+        _estimates({1: 50, 2: 6, 3: 4, 4: 6}),
+        left_tokens=100,
+        improvement_tokens=10,
+        trial_issues={("owner/repo", 2), ("owner/repo", 3), ("owner/repo", 4)},
+        trial_tokens=10,
+    )
+
+    assert [
+        (item["number"], item.get("trial", False), item.get("improvement", False)) for item in plan
+    ] == [(2, True, False), (3, True, True), (1, False, False), (4, False, False)]
+    assert sum(item["estimate_tokens"] for item in plan if item.get("trial")) <= 10
+    assert not_planned == 0
+
+
+def test_an_issue_whose_trial_failed_is_not_planned_as_a_trial() -> None:
+    """Scenario: Failed trial redone — route_run gives the redo to a trusted model, so the
+    plan does not count it against the trial share."""
+    haiku = "claude-haiku"
+    runs = [
+        {
+            "id": n,
+            "repo_name": "owner/repo",
+            "issue": n,
+            "size": 1,
+            "model": haiku,
+            "kind": "tests" if n <= 5 else "implementation",
+            "tokens_in": 100,
+            "tokens_out": 10,
+            "cost_usd": None,
+            "rework": 1 if n == 6 else 0,
+            "retries": 0,
+            "audit_findings": 0,
+        }
+        for n in range(1, 7)
+    ]
+    estimates = [
+        {"repo_name": "owner/repo", "issue": number, "kind": "implementation", "tokens": 6}
+        for number in (6, 7)
+    ]
+    fuel = {**fuel_status(_fuel(used=0.0), _NOW), "accounts": []}
+
+    found = trial_issues(
+        estimates,
+        {("owner/repo", 6): 1, ("owner/repo", 7): 1},
+        runs,
+        {"owner/repo": set(range(1, 6))},
+        fuel,
+        5.0,
+    )
+
+    assert found == {("owner/repo", 7)}
 
 
 def _due_audit(kind: str, estimate: int | None) -> dict[str, Any]:

@@ -10,7 +10,8 @@ from settings import settings
 
 from .fuel import read
 from .repos import _require_user_id
-from .scorecard import closed_issues, scorecard
+from .requirements import _resolve_repo
+from .scorecard import closed_issues, failed, scorecard
 
 CLAUDE = "claude"
 
@@ -109,21 +110,60 @@ def _trial(score: dict[str, Any], size: int | None) -> bool | None:
     return None
 
 
+def ran_on_trial(runs: list[dict[str, Any]], index: int, closed: dict[str, set[int]]) -> bool:
+    """Return whether the run at *index* of *runs* was a trial: by a model not trusted, on
+    the runs before it, for its kind at its issue's size."""
+    run = runs[index]
+    if run["model"] == CLAUDE:
+        return False
+    earlier = [other for other in runs[:index] if other["model"] == run["model"]]
+    if not earlier:
+        return True
+    [entry] = scorecard(earlier, closed)
+    score = next(score for score in entry["kinds"] if score["kind"] == run["kind"])
+    return _trial(score, run["size"]) is not False
+
+
+def trial_tokens(runs: list[dict[str, Any]], closed: dict[str, set[int]], ids: set[int]) -> int:
+    """Return the tokens of the runs among *runs* whose id is in *ids* that were trials."""
+    return sum(
+        run["tokens_in"] + run["tokens_out"]
+        for index, run in enumerate(runs)
+        if run["id"] in ids and ran_on_trial(runs, index, closed)
+    )
+
+
+def failed_trial(
+    runs: list[dict[str, Any]], closed: dict[str, set[int]], repo: str, issue: int, kind: str
+) -> bool:
+    """Return whether the latest *kind* run on *issue* in *repo* was a trial that failed."""
+    on_issue = [
+        index
+        for index, run in enumerate(runs)
+        if run["repo_name"] == repo and run["issue"] == issue and run["kind"] == kind
+    ]
+    if not on_issue:
+        return False
+    return failed(runs[on_issue[-1]]) and ran_on_trial(runs, on_issue[-1], closed)
+
+
 def options(
     kind: str,
     size: int | None,
     runs: list[dict[str, Any]],
     closed: dict[str, set[int]],
     claude_price: float,
+    trusted_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the models a *kind* run of *size* may use, cheapest first.
 
     CLAUDE is trusted for every kind and size; any other model must earn trust, or be due
-    a trial, as :func:`_trial` says. An overflow model also needs an observed price;
-    Claude models are priced at *claude_price*. The cost of a model is its tokens per
-    point delivered on *kind* at its price, when every model has delivered points of
-    *kind*, else its price per token. On a tie a trusted model goes before a trial, Claude
-    before overflow, and CLAUDE first.
+    a trial, as :func:`_trial` says, and with *trusted_only* must be trusted. An overflow
+    model also needs an observed price; Claude models are priced at *claude_price*. The
+    cost of a model is its tokens per point delivered on *kind* at its price, when every
+    model has delivered points of *kind*, else its price per token. On a tie a trial goes
+    before a trusted model, so that models earn trust, then Claude before overflow, and
+    CLAUDE first.
     """
     known = prices(runs)
     scores = {
@@ -135,14 +175,14 @@ def options(
         if model == CLAUDE or not (is_claude(model) or model in known):
             continue
         trial = _trial(score, size)
-        if trial is not None:
+        if trial is False or (trial and not trusted_only):
             found.append(_option(model, trial, score, known.get(model, claude_price)))
     by_point = all(option["usd_per_point"] is not None for option in found)
     return sorted(
         found,
         key=lambda option: (
             option["usd_per_point"] if by_point else option["usd_per_million_tokens"],
-            option["trial"],
+            not option["trial"],
             not is_claude(option["model"]),
             option["model"] != CLAUDE,
             option["model"],
@@ -172,15 +212,16 @@ def route(
     emergency: bool,
     accounts: list[dict[str, Any]] | None = None,
     size: int | None = None,
+    no_trials: str | None = None,
 ) -> dict[str, Any]:
     """Choose the model for a *kind* run of *size* from its :func:`options`: the cheapest
     overflow model when it costs less than every Claude model and overflow is available,
     else the cheapest Claude model on the allowance, else the cheapest overflow model,
-    else none.
+    else none. With *no_trials*, the reason no trial may run, only trusted models do.
 
     With registered *accounts*, Claude is available only through an account
     :func:`choose_account` picks, and the choice names it as ``account``."""
-    ranked = options(kind, size, runs, closed, claude_price)
+    ranked = options(kind, size, runs, closed, claude_price, trusted_only=no_trials is not None)
     allowance = [option for option in ranked if is_claude(option["model"])]
     overflow = [option for option in ranked if not is_claude(option["model"])]
     claude_available, overflow_available = fuel_available(fuel, emergency)
@@ -192,6 +233,8 @@ def route(
     work = f"{kind} at {size} points" if size is not None else kind
 
     def choose(option: dict[str, Any] | None, via: str | None, reason: str) -> dict[str, Any]:
+        if no_trials is not None:
+            reason = f"{no_trials}, so only a trusted model runs it; {reason}"
         return {
             "kind": kind,
             "size": size,
@@ -257,19 +300,39 @@ def route(
 
 
 async def route_run(
-    kind: db.UsageKind, size: int | None = None, emergency: bool = False
+    kind: db.UsageKind,
+    size: int | None = None,
+    emergency: bool = False,
+    repo: str | None = None,
+    issue: int | None = None,
 ) -> dict[str, Any]:
     """Return the model for a run of *kind* on an issue of *size* points, derived from the
     scorecard, the observed prices and the latest fuel report. With no *size*, only trust
-    for the kind counts. *emergency* lets the run draw on the reserve."""
+    for the kind counts. *emergency* lets the run draw on the reserve. No trial runs once
+    the sprint's trials have spent its trial share, nor on the *issue* in *repo* the run
+    is for when its last run of *kind* was a trial that failed: a trusted model redoes it."""
+    from .sprints import current_budget, trial_share
+
     if kind not in get_args(db.UsageKind):
         raise ValueError(f"kind must be one of {', '.join(get_args(db.UsageKind))}, got {kind!r}")
     if size is not None:
         db.check_size(size)
+    if (repo is None) != (issue is None):
+        raise ValueError("repo and issue are given together, or neither")
     user_id = _require_user_id()
     runs = db.list_runs(user_id)
     closed = await closed_issues(runs)
-    fuel = read(user_id, datetime.now(UTC))
+    now = datetime.now(UTC)
+    no_trials = None
+    if repo is not None and issue is not None:
+        repo = await _resolve_repo(repo, require_registered=True)
+        if failed_trial(runs, closed, repo, issue, kind):
+            no_trials = f"a trial of {kind} failed on {repo}#{issue}"
+    budget = current_budget(user_id, now)
+    if no_trials is None and budget is not None:
+        if trial_share(user_id, budget, runs, closed)["left_tokens"] <= 0:
+            no_trials = "trials have spent the sprint's trial share"
+    fuel = read(user_id, now)
     return route(
         kind,
         runs,
@@ -279,4 +342,5 @@ async def route_run(
         emergency,
         fuel["accounts"],
         size,
+        no_trials,
     )

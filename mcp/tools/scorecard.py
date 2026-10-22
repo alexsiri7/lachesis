@@ -55,6 +55,11 @@ def trust_level(judged: list[tuple[int, bool]]) -> int | None:
     return level
 
 
+def failed(run: dict[str, Any]) -> bool:
+    """Return whether *run* had rework, a retry or an audit finding reported against it."""
+    return run["rework"] + run["retries"] + run["audit_findings"] > 0
+
+
 def _judge(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> list[tuple[int, bool]]:
     """Return *runs* judged in order, each its size and True for clean: merged with no
     failure reported, or failed once any is. Runs on open issues with no failure are not
@@ -62,9 +67,9 @@ def _judge(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> list[tupl
     judged: list[tuple[int, bool]] = []
     for run in runs:
         merged = run["issue"] in closed.get(run["repo_name"], set())
-        failed = run["rework"] + run["retries"] + run["audit_findings"] > 0
-        if failed or merged:
-            judged.append((run["size"] or db.SIZES[0], not failed))
+        clean = not failed(run)
+        if merged or not clean:
+            judged.append((run["size"] or db.SIZES[0], clean))
     return judged
 
 

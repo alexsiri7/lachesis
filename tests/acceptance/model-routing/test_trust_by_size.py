@@ -16,8 +16,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -225,7 +223,6 @@ async def test_losing_trust(lachesis: Lachesis) -> None:
     assert (await factory.size_entry(SONNET, "tests", 2))["trusted"] is False
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("model-routing", "Trial share respected")
 async def test_trial_share_respected(lachesis: Lachesis) -> None:
     await Factory(lachesis).start()
@@ -237,7 +234,6 @@ async def test_trial_share_respected(lachesis: Lachesis) -> None:
     assert sum(trials) <= sprint["trial_budget_tokens"]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("model-routing", "Failed trial redone")
 async def test_failed_trial_redone(lachesis: Lachesis) -> None:
     factory = await Factory(lachesis).start()

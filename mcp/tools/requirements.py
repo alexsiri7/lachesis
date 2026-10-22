@@ -135,8 +135,9 @@ overflow until it has been reported. read_fuel returns what is left on every acc
 reserve, 20 percent of the share the factory may use of it, kept for security work and
 production incidents, whether its five-hour window has paused it, and its pace for today;
 and the overflow figures.
-Then call route_run with the kind of work, the issue's size, and emergency true only for
-security work or a production incident, and run the model it chooses: a Claude model on
+Then call route_run with the kind of work, the issue's size, the repo and issue the run is
+for, and emergency true only for security work or a production incident, and run the model
+it chooses (a trial that failed on the issue is redone by a trusted model): a Claude model on
 the allowance, or any other model through Requesty. When it names an account other than
 the one you run on, or chooses none, do not start the work on your account: leave it, or
 follow its reason. Give the account in report_usage for every run on a Claude allowance.
@@ -1851,7 +1852,7 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
         settings.claude_usd_per_million_tokens,
         accounts_status(user_id, now),
     )
-    estimates = estimates_by_issue(user_id) if budget is not None else {}
+    estimates = estimates_by_issue(db.list_estimates(user_id)) if budget is not None else {}
     cache: dict[tuple[str, int], dict[str, Any] | None] = {}
 
     async def offer_audit() -> dict[str, Any] | None:
