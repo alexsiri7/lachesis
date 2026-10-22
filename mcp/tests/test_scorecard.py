@@ -40,9 +40,11 @@ def _run(
     tokens_out: int = 10,
     cost_usd: float | None = None,
     repo_name: str = _REPO,
+    size: int | None = None,
 ) -> dict[str, Any]:
     return {
         "repo_name": repo_name,
+        "size": size,
         "issue": issue,
         "model": model,
         "kind": kind,
@@ -104,9 +106,93 @@ def test_reading_the_scorecard() -> None:
         "tokens_in": 0,
         "tokens_out": 0,
         "cost_usd": 0.0,
+        "tokens_per_point": None,
+        "cost_per_point": None,
         "trusted": False,
+        "trusted_up_to": None,
+        "sizes": [],
         "may_trial": False,
     }
+
+
+def test_each_size_is_scored_per_point_delivered() -> None:
+    """Scenario: Reading the scorecard — per size: tokens and cost per point delivered."""
+    runs = [
+        _run(1, size=3, tokens_in=50, tokens_out=40, cost_usd=0.03),
+        _run(2, size=3, tokens_in=50, tokens_out=40, cost_usd=0.03, rework=1),
+        _run(3, size=3, tokens_in=50, tokens_out=40, cost_usd=0.03),
+        _run(4, size=1, tokens_in=5, tokens_out=5),
+        _run(5),
+    ]
+
+    triage = _kind(scorecard(runs, {_REPO: {1, 2, 4, 5}}), "deepseek/deepseek-chat", "triage")
+
+    # The open issue 3 delivered no points, but its tokens and cost still count.
+    assert triage["sizes"] == [
+        {
+            "size": 1,
+            "runs": 1,
+            "merged_without_rework": 1,
+            "retries": 0,
+            "audit_findings": 0,
+            "tokens": 10,
+            "cost_usd": 0.0,
+            "tokens_per_point": 10.0,
+            "cost_per_point": 0.0,
+            "trusted": False,
+        },
+        {
+            "size": 3,
+            "runs": 3,
+            "merged_without_rework": 1,
+            "retries": 0,
+            "audit_findings": 0,
+            "tokens": 270,
+            "cost_usd": 0.09,
+            "tokens_per_point": 45.0,
+            "cost_per_point": 0.015,
+            "trusted": False,
+        },
+    ]
+    assert triage["runs"] == 5
+    assert triage["tokens_per_point"] == 40.0
+
+
+def _sized(size: int, first: int, count: int = 5, **failure: int) -> list[dict[str, Any]]:
+    return [_run(n, size=size, **failure) for n in range(first, first + count)]
+
+
+def test_trust_at_a_size_covers_every_smaller_size() -> None:
+    """Scenario: Stepping up a size — trust at 3 points covers 1 and 2, not 5."""
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(1, 1, 2, rework=1) + _sized(3, 10)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] == 3
+    assert [(s["size"], s["trusted"]) for s in triage["sizes"]] == [(1, True), (3, True)]
+    assert triage["trusted"]
+
+
+def test_runs_at_a_smaller_size_do_not_earn_trust_at_a_larger_one() -> None:
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(1, 1, 3) + _sized(5, 10, 2)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] == 1
+    assert [(s["size"], s["trusted"]) for s in triage["sizes"]] == [(1, True), (5, False)]
+
+
+def test_losing_trust_at_a_size() -> None:
+    """Scenario: Losing trust — two failures at a size lose trust there and below."""
+    closed = {_REPO: set(range(1, 20))}
+    runs = _sized(2, 1) + _sized(2, 10, 2, rework=1)
+
+    triage = _kind(scorecard(runs, closed), "deepseek/deepseek-chat", "triage")
+
+    assert triage["trusted_up_to"] is None
+    assert not triage["trusted"]
 
 
 def test_earning_trust() -> None:

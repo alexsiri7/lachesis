@@ -38,34 +38,99 @@ def is_trusted(judged: list[bool]) -> bool:
     return trusted
 
 
-def _kind_score(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> dict[str, Any]:
+def _judge(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> list[bool]:
+    """Return *runs* judged in order, True for clean: merged with no failure reported, or
+    failed once any is. Runs on open issues with no failure are not yet judged."""
     judged: list[bool] = []
-    merged_without_rework = 0
     for run in runs:
         merged = run["issue"] in closed.get(run["repo_name"], set())
         failed = run["rework"] + run["retries"] + run["audit_findings"] > 0
-        if merged and not run["rework"]:
-            merged_without_rework += 1
         if failed or merged:
             judged.append(not failed)
+    return judged
+
+
+def _totals(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> dict[str, Any]:
     return {
         "runs": len(runs),
-        "merged_without_rework": merged_without_rework,
+        "merged_without_rework": sum(
+            1
+            for run in runs
+            if run["issue"] in closed.get(run["repo_name"], set()) and not run["rework"]
+        ),
         "retries": sum(run["retries"] for run in runs),
         "audit_findings": sum(run["audit_findings"] for run in runs),
         "tokens_in": sum(run["tokens_in"] for run in runs),
         "tokens_out": sum(run["tokens_out"] for run in runs),
         "cost_usd": round(sum(run["cost_usd"] or 0.0 for run in runs), 2),
-        "trusted": is_trusted(judged),
+    }
+
+
+def _per_point(sized: list[dict[str, Any]], closed: dict[str, set[int]]) -> dict[str, Any]:
+    """Tokens and cost of the *sized* runs per point delivered: the sizes of their issues
+    that merged, each issue counted once. None while none merged."""
+    delivered = {
+        (run["repo_name"], run["issue"]): run["size"]
+        for run in sized
+        if run["issue"] in closed.get(run["repo_name"], set())
+    }
+    points = sum(delivered.values())
+    tokens = sum(run["tokens_in"] + run["tokens_out"] for run in sized)
+    cost = sum(run["cost_usd"] or 0.0 for run in sized)
+    return {
+        "tokens_per_point": round(tokens / points, 2) if points else None,
+        "cost_per_point": round(cost / points, 4) if points else None,
+    }
+
+
+def trusted_up_to(sized: list[dict[str, Any]], closed: dict[str, set[int]]) -> int | None:
+    """Return the largest size the *sized* runs of one kind earn trust at, or None.
+
+    Trust at a size is judged on the runs at that size or larger, and covers every
+    smaller size.
+    """
+    for size in reversed(db.SIZES):
+        if is_trusted(_judge([run for run in sized if run["size"] >= size], closed)):
+            return size
+    return None
+
+
+def _kind_score(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> dict[str, Any]:
+    sized = [run for run in runs if run["size"] is not None]
+    up_to = trusted_up_to(sized, closed)
+    sizes = []
+    for size in sorted({run["size"] for run in sized}):
+        at_size = [run for run in sized if run["size"] == size]
+        totals = _totals(at_size, closed)
+        sizes.append(
+            {
+                "size": size,
+                "runs": totals["runs"],
+                "merged_without_rework": totals["merged_without_rework"],
+                "retries": totals["retries"],
+                "audit_findings": totals["audit_findings"],
+                "tokens": totals["tokens_in"] + totals["tokens_out"],
+                "cost_usd": totals["cost_usd"],
+                **_per_point(at_size, closed),
+                "trusted": up_to is not None and size <= up_to,
+            }
+        )
+    return {
+        **_totals(runs, closed),
+        **_per_point(sized, closed),
+        "trusted": up_to is not None or is_trusted(_judge(runs, closed)),
+        "trusted_up_to": up_to,
+        "sizes": sizes,
     }
 
 
 def scorecard(runs: list[dict[str, Any]], closed: dict[str, set[int]]) -> list[dict[str, Any]]:
-    """Score each model with *runs* at every kind of work, a run being merged once its
-    issue is in *closed* for its repository.
+    """Score each model with *runs* at every kind of work and every issue size, a run being
+    merged once its issue is in *closed* for its repository.
 
     A run is judged clean once merged with no failure reported, failed once any is; runs
-    on open issues with no failure are not yet judged. A model may trial the trial kinds,
+    on open issues with no failure are not yet judged. A model is trusted for a kind at
+    some size, or by its runs of every size together. A model may trial the trial kinds,
     any kind it is trusted for, and any kind after one it is trusted for.
     """
     kinds: tuple[str, ...] = get_args(db.UsageKind)

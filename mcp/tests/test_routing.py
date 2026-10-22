@@ -52,9 +52,11 @@ def _run(
     tokens_out: int = 10,
     cost_usd: float | None = None,
     repo_name: str = _REPO,
+    size: int | None = None,
 ) -> dict[str, Any]:
     return {
         "repo_name": repo_name,
+        "size": size,
         "issue": issue,
         "model": model,
         "kind": kind,
@@ -105,7 +107,16 @@ def test_cheap_model_for_triage() -> None:
 
     assert result["model"] == _DEEPSEEK
     assert result["via"] == "requesty"
-    assert result["candidates"] == [{"model": _DEEPSEEK, "usd_per_million_tokens": 0.9091}]
+    assert result["candidates"] == [
+        {
+            "model": _DEEPSEEK,
+            "trial": False,
+            "usd_per_million_tokens": 0.9091,
+            "tokens_per_point": None,
+            "usd_per_point": None,
+        }
+    ]
+    assert result["trial"] is False
     assert result["claude_usd_per_million_tokens"] == _CLAUDE_PRICE
 
 
@@ -210,15 +221,75 @@ def test_a_week_that_has_reset_makes_claude_and_overflow_available_again() -> No
     assert result["model"] == _DEEPSEEK
 
 
-def test_claude_models_and_models_with_no_reported_cost_are_never_candidates() -> None:
-    runs = _trusted("anthropic/claude-sonnet-5", cost_usd=_CHEAP) + _trusted(
-        "qwen/qwen-coder", cost_usd=None
-    )
+def test_models_with_no_reported_cost_are_never_candidates() -> None:
+    result = _route(_trusted("qwen/qwen-coder", cost_usd=None))
+
+    assert result["model"] == "claude"
+    assert result["candidates"] == []
+
+
+def test_a_smaller_claude_model_needs_cheaper_points_to_beat_claude() -> None:
+    sonnet = "claude-sonnet"
+    runs = _trusted(sonnet, cost_usd=None)
 
     result = _route(runs)
 
     assert result["model"] == "claude"
-    assert result["candidates"] == []
+    assert [c["model"] for c in result["candidates"]] == [sonnet]
+
+
+def _sized(
+    model: str, kind: str, size: int, first: int, count: int = 5, **extra: Any
+) -> list[dict[str, Any]]:
+    return [_run(n, kind, model, size=size, **extra) for n in range(first, first + count)]
+
+
+def _route_sized(runs: list[dict[str, Any]], kind: str, size: int) -> dict[str, Any]:
+    closed = {_REPO: {run["issue"] for run in runs}}
+    return route(kind, runs, closed, _fuel(), _CLAUDE_PRICE, False, size=size)
+
+
+def test_a_smaller_claude_model_trusted_at_the_size_runs_on_the_allowance() -> None:
+    """Scenario: Smaller model for small work — cheaper per point at a trusted size."""
+    sonnet = "claude-sonnet"
+    runs = _sized(sonnet, "implementation", 3, 1, tokens_in=20, tokens_out=10)
+    runs += _sized("claude", "implementation", 3, 10, 2, tokens_in=60, tokens_out=30)
+
+    result = _route_sized(runs, "implementation", 2)
+
+    assert (result["model"], result["via"], result["trial"]) == (sonnet, "allowance", False)
+    assert result["size"] == 2
+
+
+def test_cost_per_point_lets_a_pricier_model_win_on_fewer_tokens() -> None:
+    runs = _sized(_DEEPSEEK, "tests", 2, 1, cost_usd=_PRICEY)
+    runs += _sized("claude", "tests", 2, 10, 2, tokens_in=1000, tokens_out=1000)
+
+    result = _route_sized(runs, "tests", 2)
+
+    assert (result["model"], result["via"]) == (_DEEPSEEK, "requesty")
+    assert result["candidates"][0]["usd_per_point"] == 0.0005
+
+
+def test_a_trial_steps_up_one_size_above_the_trusted_one() -> None:
+    """Scenario: Stepping up a size — trusted up to 2 points, trialled at 3, not at 5."""
+    runs = _sized(_DEEPSEEK, "tests", 2, 1, cost_usd=_CHEAP)
+
+    three = _route_sized(runs, "tests", 3)
+    five = _route_sized(runs, "tests", 5)
+
+    assert (three["model"], three["trial"]) == (_DEEPSEEK, True)
+    assert (five["model"], five["trial"], five["candidates"]) == ("claude", False, [])
+
+
+def test_a_new_kind_is_trialled_at_one_point_first() -> None:
+    runs = _sized(_DEEPSEEK, "triage", 1, 1, cost_usd=_CHEAP)
+
+    one = _route_sized(runs, "tests", 1)
+    two = _route_sized(runs, "tests", 2)
+
+    assert (one["model"], one["trial"]) == (_DEEPSEEK, True)
+    assert two["model"] == "claude"
 
 
 def test_prices_are_reported_cost_over_total_tokens_per_million() -> None:
@@ -259,6 +330,14 @@ async def test_route_run_routes_from_the_users_runs_issues_and_fuel(set_user_id:
     list_runs.assert_called_once_with("test-uid")
     get_fuel.assert_called_once_with("test-uid")
     list_all_issues.assert_awaited_once_with(_REPO)
+
+
+async def test_route_run_refuses_a_size_that_is_not_a_fibonacci_point(set_user_id: str) -> None:
+    with patch("tools.routing.db.list_runs") as list_runs:
+        with pytest.raises(ValueError, match="size must be one of"):
+            await route_run("tests", size=4)
+
+    list_runs.assert_not_called()
 
 
 async def test_route_run_refuses_an_unknown_kind(set_user_id: str) -> None:

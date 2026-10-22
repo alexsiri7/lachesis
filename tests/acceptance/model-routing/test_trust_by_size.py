@@ -140,7 +140,6 @@ class Factory:
         return by_size
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("model-routing", "Reading the scorecard")
 async def test_reading_the_scorecard(lachesis: Lachesis) -> None:
     factory = await Factory(lachesis).start()
@@ -163,7 +162,6 @@ async def test_reading_the_scorecard(lachesis: Lachesis) -> None:
             assert key in entry
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("model-routing", "Cheap model for triage")
 async def test_cheap_model_for_triage(lachesis: Lachesis) -> None:
     factory = await Factory(lachesis).start()
@@ -175,7 +173,6 @@ async def test_cheap_model_for_triage(lachesis: Lachesis) -> None:
     assert routed["model"] == HAIKU
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("model-routing", "Smaller model for small work")
 async def test_smaller_model_for_small_work(lachesis: Lachesis) -> None:
     factory = await Factory(lachesis).start()
@@ -191,7 +188,6 @@ async def test_smaller_model_for_small_work(lachesis: Lachesis) -> None:
     assert large["model"] != SONNET or large.get("trial") is True
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("model-routing", "Earning trust")
 async def test_earning_trust(lachesis: Lachesis) -> None:
     factory = await Factory(lachesis).start()
@@ -203,7 +199,6 @@ async def test_earning_trust(lachesis: Lachesis) -> None:
     assert (await factory.size_entry(HAIKU, "triage", 1))["trusted"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("model-routing", "Stepping up a size")
 async def test_stepping_up_a_size(lachesis: Lachesis) -> None:
     factory = await Factory(lachesis).start()
@@ -219,7 +214,6 @@ async def test_stepping_up_a_size(lachesis: Lachesis) -> None:
     assert five["model"] != SONNET
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("model-routing", "Losing trust")
 async def test_losing_trust(lachesis: Lachesis) -> None:
     factory = await Factory(lachesis).start()
