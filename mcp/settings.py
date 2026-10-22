@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     claude_usd_per_million_tokens: float = 5.0
     claude_weekly_allowance_tokens: int = 100_000_000
     improvement_share_percent: int = 10
+    trial_share_percent: int = 10
 
     sentry_dsn: str = ""
 

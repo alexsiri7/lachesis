@@ -227,10 +227,11 @@ def _two_repos(
     models = {"owner/a": {9: {"claude": 120}}, "owner/b": {}}
 
     estimates = [
-        {"repo_name": "owner/a", "issue": 1, "tokens": 60},
-        {"repo_name": "owner/b", "issue": 2, "tokens": 60},
+        {"repo_name": "owner/a", "issue": 1, "kind": "implementation", "tokens": 60},
+        {"repo_name": "owner/b", "issue": 2, "kind": "implementation", "tokens": 60},
     ]
     with (
+        patch("db.list_runs", return_value=[]),
         patch("db.list_repos", return_value=[{"repo_name": "owner/a"}, {"repo_name": "owner/b"}]),
         patch(
             "db.get_fuel",
@@ -307,6 +308,27 @@ def test_improvement_work_is_planned_first_within_its_share() -> None:
         (4, False),
     ]
     assert not_planned == 1
+
+
+def test_trials_are_planned_first_and_never_beyond_their_share() -> None:
+    """Scenario: Trial share respected — a budget of 100 gives trials 10; a trial that
+    does not fit is planned for a trusted model, and one that is improvement work too
+    counts against the trial share."""
+    plan, not_planned = plan_with_improvement(
+        [_entry(1), _entry(2), _entry(3), _entry(4)],
+        {("owner/repo", 3)},
+        _estimates({1: 50, 2: 6, 3: 4, 4: 6}),
+        left_tokens=100,
+        improvement_tokens=10,
+        trial_issues={("owner/repo", 2), ("owner/repo", 3), ("owner/repo", 4)},
+        trial_tokens=10,
+    )
+
+    assert [
+        (item["number"], item.get("trial", False), item.get("improvement", False)) for item in plan
+    ] == [(2, True, False), (3, True, True), (1, False, False), (4, False, False)]
+    assert sum(item["estimate_tokens"] for item in plan if item.get("trial")) <= 10
+    assert not_planned == 0
 
 
 def _due_audit(kind: str, estimate: int | None) -> dict[str, Any]:

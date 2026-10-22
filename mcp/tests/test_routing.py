@@ -10,7 +10,7 @@ import pytest
 
 from auth import current_db_user_id
 from tools.fuel import fuel_status
-from tools.routing import prices, route, route_run
+from tools.routing import failed_trial, prices, route, route_run, trial_tokens
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +55,7 @@ def _run(
     size: int | None = None,
 ) -> dict[str, Any]:
     return {
+        "id": issue,
         "repo_name": repo_name,
         "size": size,
         "issue": issue,
@@ -338,6 +339,54 @@ def test_a_new_kind_is_trialled_at_one_point_first() -> None:
     assert two["model"] == "claude"
 
 
+def test_a_trial_wins_a_tie_with_claude() -> None:
+    """A Claude variant due a trial and priced like Claude runs, so it can earn trust."""
+    haiku = "claude-haiku"
+    runs = _sized(haiku, "tests", 1, 1)
+
+    result = _route_sized(runs, "implementation", 1)
+
+    assert (result["model"], result["trial"]) == (haiku, True)
+
+
+def test_with_no_trials_only_a_trusted_model_runs() -> None:
+    runs = _sized(_DEEPSEEK, "triage", 1, 1, cost_usd=_CHEAP)
+    closed = {_REPO: {run["issue"] for run in runs}}
+
+    result = route(
+        "tests", runs, closed, _fuel(), _CLAUDE_PRICE, False, size=1, no_trials="a reason"
+    )
+
+    assert (result["model"], result["trial"], result["candidates"]) == ("claude", False, [])
+    assert result["reason"].startswith("a reason, so only a trusted model runs it")
+
+
+def test_a_failed_trial_is_one_whose_model_was_not_trusted_when_it_ran() -> None:
+    """Scenario: Failed trial redone — only a failed run by a model on trial counts."""
+    haiku = "claude-haiku"
+    runs = _sized(haiku, "tests", 1, 1)
+    runs.append(_run(20, "implementation", haiku, size=1, rework=1))
+    runs.append(_run(21, "implementation", "claude", size=1, rework=1))
+    runs.append(_run(22, "tests", haiku, size=1, rework=1))
+    runs.append(_run(23, "implementation", haiku, size=1))
+    closed = {_REPO: set(range(1, 6))}
+
+    assert failed_trial(runs, closed, _REPO, 20, "implementation") is True
+    assert failed_trial(runs, closed, _REPO, 21, "implementation") is False
+    assert failed_trial(runs, closed, _REPO, 22, "tests") is False
+    assert failed_trial(runs, closed, _REPO, 23, "implementation") is False
+    assert failed_trial(runs, closed, _REPO, 24, "implementation") is False
+
+
+def test_trial_tokens_count_only_the_given_runs_that_were_trials() -> None:
+    runs = _sized(_DEEPSEEK, "triage", 1, 1, cost_usd=_CHEAP)  # the first five earn trust
+    runs.append(_run(6, "triage", _DEEPSEEK, size=1, cost_usd=_CHEAP))
+    runs.append(_run(7, "triage", "claude", size=1))
+    closed = {_REPO: set(range(1, 8))}
+
+    assert trial_tokens(runs, closed, {5, 6, 7}) == 110
+
+
 def test_prices_are_reported_cost_over_total_tokens_per_million() -> None:
     runs = [
         _run(1, cost_usd=0.002, tokens_in=1500, tokens_out=500),
@@ -373,8 +422,8 @@ async def test_route_run_routes_from_the_users_runs_issues_and_fuel(set_user_id:
 
     assert result["model"] == _DEEPSEEK
     assert result["via"] == "requesty"
-    list_runs.assert_called_once_with("test-uid")
-    get_fuel.assert_called_once_with("test-uid")
+    list_runs.assert_any_call("test-uid")
+    get_fuel.assert_any_call("test-uid")
     list_all_issues.assert_awaited_once_with(_REPO)
 
 

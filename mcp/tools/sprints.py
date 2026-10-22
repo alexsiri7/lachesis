@@ -13,12 +13,14 @@ import github
 import notify
 from settings import settings
 
+from . import routing
 from .audits import audit_history
 from .estimates import Price, _capability, factory_history, price_per_point
 from .experiments import experiment_view
-from .fuel import RESERVE_PERCENT, accounts_status, fuel_status
+from .fuel import RESERVE_PERCENT, accounts_status, fuel_status, read
 from .repos import _require_user_id, normalize_repo
 from .requirements import _NEEDS_AUTHOR_LABEL, _SPRINT, _backlog_order, _sprint_start
+from .scorecard import closed_issues
 
 logger = logging.getLogger(__name__)
 
@@ -107,12 +109,32 @@ def sprint_budget(
     }
 
 
-def estimates_by_issue(user_id: str) -> dict[tuple[str, int], int | None]:
-    """Return each estimated issue's tokens, keyed by ``(repo, issue)``."""
-    return {
-        (normalize_repo(row["repo_name"]), row["issue"]): row["tokens"]
-        for row in db.list_estimates(user_id)
-    }
+def current_budget(user_id: str, now: datetime) -> dict[str, Any] | None:
+    """Return :func:`sprint_budget` for the sprint holding *now*, from the stored fuel."""
+    return sprint_budget(
+        db.get_fuel(user_id),
+        now,
+        settings.claude_weekly_allowance_tokens,
+        settings.claude_usd_per_million_tokens,
+        accounts_status(user_id, now),
+    )
+
+
+def trial_share(
+    user_id: str, budget: dict[str, Any], runs: list[dict[str, Any]], closed: dict[str, set[int]]
+) -> dict[str, int]:
+    """Return the trial share of the sprint with *budget*: TRIAL_SHARE_PERCENT of it, what
+    the sprint's trials among *runs* spent of it, and what is left."""
+    share = round(budget["budget_tokens"] * settings.trial_share_percent / 100)
+    in_sprint = db.list_runs(user_id, start=budget["start"], end=budget["end"])
+    spent = routing.trial_tokens(runs, closed, {run["id"] for run in in_sprint})
+    return {"budget_tokens": share, "spent_tokens": spent, "left_tokens": max(0, share - spent)}
+
+
+def estimates_by_issue(rows: list[dict[str, Any]]) -> dict[tuple[str, int], int | None]:
+    """Return each estimated issue's tokens in the estimate *rows*, keyed by
+    ``(repo, issue)``."""
+    return {(normalize_repo(row["repo_name"]), row["issue"]): row["tokens"] for row in rows}
 
 
 def fits(estimate: int | None, left_tokens: int) -> bool:
@@ -223,18 +245,33 @@ def plan_with_improvement(
     improvement_tokens: int,
     sizes: dict[tuple[str, int], int] | None = None,
     due_audits: list[dict[str, Any]] | None = None,
+    trial_issues: set[tuple[str, int]] | None = None,
+    trial_tokens: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Plan the *improvement_issues* among *entries* first, within *improvement_tokens*
-    of what is left, marked ``improvement``; then the *due_audits*, which the factory
-    draws alongside issues rather than after them; then the ordinary backlog in what
-    remains.
+    """Plan the *trial_issues* among *entries* first, within *trial_tokens* of what is
+    left, marked ``trial``; then the *improvement_issues*, within *improvement_tokens*,
+    marked ``improvement``; then the *due_audits*, which the factory draws alongside
+    issues rather than after them; then the ordinary backlog in what remains.
 
-    An improvement issue that does not fit its share waits for the next sprint rather
-    than joining the ordinary backlog. Returns the plan and how many eligible entries
-    were not planned, as :func:`plan_sprint` does.
+    A trial counts against the trial share even when it is improvement work too. One
+    that does not fit the share is planned as the work it is, for a trusted model, as
+    route_run routes it once trials have spent the share. An improvement issue that does
+    not fit its share waits for the next sprint rather than joining the ordinary backlog.
+    Returns the plan and how many eligible entries were not planned, as
+    :func:`plan_sprint` does.
     """
+    trial_issues = trial_issues or set()
+    trials, _ = plan_sprint(
+        [e for e in entries if (e["repo"], e["number"]) in trial_issues],
+        estimates,
+        min(trial_tokens, left_tokens),
+        sizes,
+    )
+    left_tokens -= _planned_tokens(trials)
+    on_trial = {(item["repo"], item["number"]) for item in trials}
+    rest = [e for e in entries if (e["repo"], e["number"]) not in on_trial]
     improvement, improvement_not_planned = plan_sprint(
-        [e for e in entries if (e["repo"], e["number"]) in improvement_issues],
+        [e for e in rest if (e["repo"], e["number"]) in improvement_issues],
         estimates,
         min(improvement_tokens, left_tokens),
         sizes,
@@ -242,21 +279,59 @@ def plan_with_improvement(
     left_tokens -= _planned_tokens(improvement)
     audits, audits_not_planned = plan_audits(due_audits or [], left_tokens)
     ordinary, ordinary_not_planned = plan_sprint(
-        [e for e in entries if (e["repo"], e["number"]) not in improvement_issues],
+        [e for e in rest if (e["repo"], e["number"]) not in improvement_issues],
         estimates,
         left_tokens - _planned_tokens(audits),
         sizes,
     )
     return (
-        [{**item, "improvement": True} for item in improvement] + audits + ordinary,
+        [
+            {**item, "trial": True}
+            | (
+                {"improvement": True}
+                if (item["repo"], item["number"]) in improvement_issues
+                else {}
+            )
+            for item in trials
+        ]
+        + [{**item, "improvement": True} for item in improvement]
+        + audits
+        + ordinary,
         improvement_not_planned + audits_not_planned + ordinary_not_planned,
     )
 
 
+def trial_issues(
+    estimates: list[dict[str, Any]],
+    sizes: dict[tuple[str, int], int],
+    runs: list[dict[str, Any]],
+    closed: dict[str, set[int]],
+    fuel: dict[str, Any],
+    claude_price: float,
+) -> set[tuple[str, int]]:
+    """Return the estimated issues whose next run, of their estimate's kind at their
+    size, :func:`routing.route` would give a model on trial."""
+    routed: dict[tuple[str, int | None], bool] = {}
+    found: set[tuple[str, int]] = set()
+    for row in estimates:
+        key = (normalize_repo(row["repo_name"]), row["issue"])
+        size = sizes.get(key)
+        if size == db.TOO_BIG:
+            continue
+        if (row["kind"], size) not in routed:
+            choice = routing.route(
+                row["kind"], runs, closed, fuel, claude_price, False, fuel["accounts"], size
+            )
+            routed[(row["kind"], size)] = choice["trial"]
+        if routed[(row["kind"], size)]:
+            found.add(key)
+    return found
+
+
 async def read_sprint() -> dict[str, Any]:
-    """Return the current sprint: its dates, budget and the share of it kept for
-    improvement work, spending, the price of a point and the capacity in points it gives,
-    and the plan of issues and due audits."""
+    """Return the current sprint: its dates, budget and the shares of it kept for trials
+    and for improvement work, spending, the price of a point and the capacity in points it
+    gives, and the plan of issues and due audits."""
     # The backlogs, the audits and the factory history read the same whole listings.
     with github.sharing_listings():
         return await _read_sprint()
@@ -265,13 +340,7 @@ async def read_sprint() -> dict[str, Any]:
 async def _read_sprint() -> dict[str, Any]:
     user_id = _require_user_id()
     now = datetime.now(UTC)
-    budget = sprint_budget(
-        db.get_fuel(user_id),
-        now,
-        settings.claude_weekly_allowance_tokens,
-        settings.claude_usd_per_million_tokens,
-        accounts_status(user_id, now),
-    )
+    budget = current_budget(user_id, now)
     if budget is None:
         return {
             "reported": False,
@@ -299,6 +368,10 @@ async def _read_sprint() -> dict[str, Any]:
     }
     improvement_tokens = budget["budget_tokens"] * settings.improvement_share_percent // 100
     audits = await audit_history(user_id)
+    estimates = db.list_estimates(user_id)
+    runs = db.list_runs(user_id)
+    closed = await closed_issues(runs)
+    trials = trial_share(user_id, budget, runs, closed)
     plan, not_planned = plan_with_improvement(
         [entry for _, _, entry in entries],
         {
@@ -306,11 +379,20 @@ async def _read_sprint() -> dict[str, Any]:
             for experiment in db.list_open_experiments(user_id)
             for issue in experiment["issues"]
         },
-        estimates_by_issue(user_id),
+        estimates_by_issue(estimates),
         budget["left_tokens"],
         improvement_tokens,
         sizes,
         audits["due"],
+        trial_issues(
+            estimates,
+            sizes,
+            runs,
+            closed,
+            read(user_id, now),
+            settings.claude_usd_per_million_tokens,
+        ),
+        trials["left_tokens"],
     )
     history, unlisted = await factory_history(user_id)
     price = price_per_point(history)
@@ -318,6 +400,8 @@ async def _read_sprint() -> dict[str, Any]:
         "reported": True,
         **budget,
         "improvement_budget_tokens": improvement_tokens,
+        "trial_budget_tokens": trials["budget_tokens"],
+        "trial_spent_tokens": trials["spent_tokens"],
         "tokens_per_point": price["tokens_per_point"],
         "price_confidence": price["confidence"],
         "capacity_points": capacity_points(budget["budget_tokens"], price),
