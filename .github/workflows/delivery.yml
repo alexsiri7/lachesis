@@ -53,10 +53,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Resolve merge base
+        id: merge_base
+        # github.event.pull_request.base.sha can lag behind the base branch's actual tip (e.g.
+        # right after the PR branch merges main into itself), making a stale ancestor of HEAD
+        # look like it introduced every commit since. Recompute it from the live ref instead.
+        run: |
+          git fetch origin "${{ github.base_ref }}"
+          echo "sha=$(git merge-base "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}")" >> "$GITHUB_OUTPUT"
+
       - name: Implementation leaves acceptance tests alone
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.merge_base.outputs.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PR_BODY: ${{ github.event.pull_request.body }}
