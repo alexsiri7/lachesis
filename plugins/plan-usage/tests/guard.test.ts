@@ -272,3 +272,24 @@ test('5-hour lift: no 7-day reset time keeps the 5-hour cap', async ($, on) => {
   const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
   expect(r.deny ?? r.text).toContain('5-hour window at 70% (cap 60%)')
 })
+
+test('5-hour lift: the status line shows the lifted cap in the last hours of the week', async ($, on) => {
+  const shown: (string | undefined)[] = []
+  lifted(on, LIFT, '2026-10-10T12:00:00Z', WEEK_RESETS)
+  on('fs.write', () => ({ value: undefined }))
+  on('session.measure', (_$: any, e: any) => ({ changed: e.changed }))
+  on('ui.status', (_$: any, e: any) => {
+    shown.push(e.text ?? e.value)
+    return { value: undefined }
+  })
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 70 },
+      { kind: 'seven_day', percentUsed: 50, resetsAt: WEEK_RESETS },
+    ],
+    changed: ['rateLimits'],
+  } as any)
+  expect(shown.at(-1)).toStartWith('budget guard on · ')
+  expect(shown.at(-1)).toContain('5h 70% · 70% of 100% cap')
+})
