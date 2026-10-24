@@ -30,6 +30,10 @@ type GuardConfig = {
   // passed, then 90%, then 100% for the last 5%. Spare capacity most of the
   // week, all of it used by the end. Overrides weeklyCapPercent and pace.
   weeklySteps?: [number, number][]
+  // Optional lift of the 5-hour cap at the end of the week: once the 7-day
+  // window resets within `hours`, the 5-hour cap is `cap` instead of
+  // fiveHourCapPercent, so the week's last allowance is not held back.
+  fiveHourCapLastHours?: { hours: number; cap: number }
   // What a cap does. 'wrap-up' (the default) refuses nothing: past the cap every
   // tool result carries a reminder to finish the work in hand and start nothing
   // new, so no change is left half-made. 'stop' refuses every tool call but the
@@ -55,6 +59,12 @@ function formatSpan(ms: number): string {
   return `${m}m`
 }
 
+function msToReset(w: SessionRateLimit, now: number): number | undefined {
+  if (!w.resetsAt) return undefined
+  const msLeft = Date.parse(w.resetsAt) - now
+  return Number.isNaN(msLeft) ? undefined : msLeft
+}
+
 // How far through the window we are: time left to the reset and the share of
 // the window's length already elapsed, so usage can be read against pace.
 function windowTiming(
@@ -62,9 +72,8 @@ function windowTiming(
   now: number,
 ): { left: string; elapsed: number; elapsedExact: number } | undefined {
   const length = WINDOW_MS[w.kind]
-  if (!w.resetsAt || !length) return undefined
-  const msLeft = Date.parse(w.resetsAt) - now
-  if (Number.isNaN(msLeft)) return undefined
+  const msLeft = msToReset(w, now)
+  if (msLeft === undefined || !length) return undefined
   const elapsedExact = Math.min(100, Math.max(0, (1 - msLeft / length) * 100))
   return { left: formatSpan(msLeft), elapsed: Math.round(elapsedExact), elapsedExact }
 }
@@ -102,7 +111,7 @@ async function configDir($: EngineInterface): Promise<string> {
 
 // <config dir>/budget-guard.json, e.g.
 // { "enabled": true, "weeklyCapPercent": 65, "fiveHourCapPercent": 60, "pace": true,
-//   "mode": "wrap-up" }
+//   "fiveHourCapLastHours": { "hours": 5, "cap": 100 }, "mode": "wrap-up" }
 // Missing or unreadable means the guard is off.
 async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
   try {
@@ -114,6 +123,7 @@ async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
       fiveHourCapPercent: Number(raw.fiveHourCapPercent ?? 100),
       pace: raw.pace === true,
       weeklySteps: parseSteps(raw.weeklySteps),
+      fiveHourCapLastHours: parseLastHours(raw.fiveHourCapLastHours),
       mode: raw.mode === 'stop' ? 'stop' : 'wrap-up',
     }
   } catch {
@@ -132,6 +142,15 @@ function parseSteps(raw: unknown): [number, number][] | undefined {
   return steps.length ? steps : undefined
 }
 
+// { hours, cap } when both are numbers, else undefined.
+function parseLastHours(raw: unknown): GuardConfig['fiveHourCapLastHours'] {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const { hours, cap } = raw as Record<string, unknown>
+  if (hours === undefined || cap === undefined) return undefined
+  const lift = { hours: Number(hours), cap: Number(cap) }
+  return Number.isFinite(lift.hours) && Number.isFinite(lift.cap) ? lift : undefined
+}
+
 // The cap of the last step whose elapsed threshold has been reached.
 function stepCap(steps: [number, number][], elapsed: number): number {
   let cap = steps[0]![1]
@@ -139,12 +158,31 @@ function stepCap(steps: [number, number][], elapsed: number): number {
   return cap
 }
 
-// The cap in force for a window now. With weeklySteps, the weekly cap is the
-// step reached by the share of the week elapsed. With pace on, the weekly cap is
-// weeklyCapPercent times the share of the week elapsed, to one decimal; a
-// window with no reset time falls back to the full cap.
-function capFor(guard: GuardConfig, w: SessionRateLimit, now: number): number | undefined {
-  if (w.kind === 'five_hour') return guard.fiveHourCapPercent
+// fiveHourCapLastHours while it is in force: the 7-day window resets within its
+// hours. No 7-day reset time means the 5-hour cap is not lifted.
+function fiveHourLift(
+  guard: GuardConfig,
+  windows: SessionRateLimit[],
+  now: number,
+): GuardConfig['fiveHourCapLastHours'] {
+  const lift = guard.fiveHourCapLastHours
+  const week = windows.find(w => w.kind === 'seven_day')
+  const msLeft = lift && week ? msToReset(week, now) : undefined
+  return lift && msLeft !== undefined && msLeft <= lift.hours * 3600_000 ? lift : undefined
+}
+
+// The cap in force for a window now, given every window read with it. The
+// 5-hour cap is fiveHourCapLastHours' cap while it is lifted. With weeklySteps,
+// the weekly cap is the step reached by the share of the week elapsed. With pace
+// on, the weekly cap is weeklyCapPercent times the share of the week elapsed, to
+// one decimal; a window with no reset time falls back to the full cap.
+function capFor(
+  guard: GuardConfig,
+  w: SessionRateLimit,
+  windows: SessionRateLimit[],
+  now: number,
+): number | undefined {
+  if (w.kind === 'five_hour') return fiveHourLift(guard, windows, now)?.cap ?? guard.fiveHourCapPercent
   if (w.kind !== 'seven_day') return undefined
   if (guard.weeklySteps) {
     const t = windowTiming(w, now)
@@ -156,24 +194,28 @@ function capFor(guard: GuardConfig, w: SessionRateLimit, now: number): number | 
 }
 
 function describeCaps(guard: GuardConfig, windows: SessionRateLimit[], now: number): string {
+  const lift = fiveHourLift(guard, windows, now)
+  const fiveHour = lift
+    ? `5-hour cap ${lift.cap}% now (lifted from ${guard.fiveHourCapPercent}% in the last ${lift.hours}h of the week)`
+    : `5-hour cap ${guard.fiveHourCapPercent}%`
   const week = windows.find(w => w.kind === 'seven_day')
   if (guard.weeklySteps) {
     const steps = guard.weeklySteps.map(([e, c]) => `${c}% from ${e}%`).join(', ')
-    const inForce = week ? ` ${capFor(guard, week, now)}% now` : ''
-    return `7-day cap${inForce} (stepped by week elapsed: ${steps}), 5-hour cap ${guard.fiveHourCapPercent}%`
+    const inForce = week ? ` ${capFor(guard, week, windows, now)}% now` : ''
+    return `7-day cap${inForce} (stepped by week elapsed: ${steps}), ${fiveHour}`
   }
-  const weekCap = week && guard.pace ? capFor(guard, week, now) : undefined
+  const weekCap = week && guard.pace ? capFor(guard, week, windows, now) : undefined
   const weekly =
     weekCap !== undefined && weekCap !== guard.weeklyCapPercent
       ? `7-day cap ${weekCap}% now (${guard.weeklyCapPercent}% paced over the week)`
       : `7-day cap ${guard.weeklyCapPercent}%`
-  return `${weekly}, 5-hour cap ${guard.fiveHourCapPercent}%`
+  return `${weekly}, ${fiveHour}`
 }
 
 // The windows at or past their cap, as text; empty when within budget.
 function breaches(guard: GuardConfig, windows: SessionRateLimit[], now: number): string[] {
   return windows.flatMap(w => {
-    const cap = capFor(guard, w, now)
+    const cap = capFor(guard, w, windows, now)
     return cap !== undefined && w.percentUsed >= cap
       ? [`${LABELS[w.kind]} at ${w.percentUsed}% (cap ${cap}%)`]
       : []
@@ -230,7 +272,7 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const guard = await readGuard($)
     const lines = usage.rateLimits.length
-      ? usage.rateLimits.map(w => describeWindow(w, now, guard && capFor(guard, w, now)))
+      ? usage.rateLimits.map(w => describeWindow(w, now, guard && capFor(guard, w, usage.rateLimits, now)))
       : ['No rate-limit reading yet (none reported by the last API response).']
     if (usage.cost) lines.push(`Session cost so far: $${usage.cost.usd.toFixed(2)}`)
     if (usage.context.percent !== undefined) {
@@ -293,7 +335,7 @@ async function showStatus($: EngineInterface, windows: SessionRateLimit[]): Prom
     $.ui.status(windows.map(w => shortWindow(w, now)).join(' · ') || undefined)
     return
   }
-  const fig = windows.map(w => shortWindow(w, now, capFor(guard, w, now))).join(' | ')
+  const fig = windows.map(w => shortWindow(w, now, capFor(guard, w, windows, now))).join(' | ')
   const over = breaches(guard, windows, now)
   $.ui.status(
     !over.length
