@@ -222,3 +222,74 @@ test('the status line shows each cap and how much of it is used', async ($, on) 
   } as any)
   expect(shown.at(-1)).toBe('budget guard on · 5h 30% · 50% of 60% cap | 7d 52% · 80% of 65% cap')
 })
+
+const LIFT = { enabled: true, fiveHourCapPercent: 60, fiveHourCapLastHours: { hours: 5, cap: 100 }, mode: 'stop' }
+
+const WEEK_RESETS = '2026-10-10T15:00:00Z'
+
+// The 5-hour window is at 70%.
+function lifted(on: any, guard: object, now: string, weekResetsAt: string | undefined) {
+  on('clock.now', () => ({ value: Date.parse(now) }))
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({ value: JSON.stringify(guard) }))
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { window: 200000 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 70 },
+        { kind: 'seven_day', percentUsed: 50, resetsAt: weekResetsAt },
+      ],
+    },
+  }))
+  on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }))
+}
+
+test('5-hour lift absent: the 5-hour cap holds at the end of the week', async ($, on) => {
+  const { fiveHourCapLastHours, ...guard } = LIFT
+  lifted(on, guard, '2026-10-10T14:00:00Z', WEEK_RESETS)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny ?? r.text).toContain('5-hour window at 70% (cap 60%)')
+})
+
+test('5-hour lift: outside the last hours of the week the 5-hour cap holds', async ($, on) => {
+  lifted(on, LIFT, '2026-10-10T09:00:00Z', WEEK_RESETS)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny ?? r.text).toContain('5-hour window at 70% (cap 60%)')
+})
+
+test('5-hour lift: in the last hours of the week the lifted cap is in force', async ($, on) => {
+  lifted(on, LIFT, '2026-10-10T10:00:00Z', WEEK_RESETS) // exactly 5h to the reset
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny).toBeUndefined()
+  const usage = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(usage.result).toContain('5-hour window: 70% used; 70% of the 100% cap')
+  expect(usage.result).toContain('5-hour cap 100% now (lifted from 60% in the last 5h of the week)')
+})
+
+test('5-hour lift: no 7-day reset time keeps the 5-hour cap', async ($, on) => {
+  lifted(on, LIFT, '2026-10-10T14:00:00Z', undefined)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny ?? r.text).toContain('5-hour window at 70% (cap 60%)')
+})
+
+test('5-hour lift: the status line shows the lifted cap in the last hours of the week', async ($, on) => {
+  const shown: (string | undefined)[] = []
+  lifted(on, LIFT, '2026-10-10T12:00:00Z', WEEK_RESETS)
+  on('fs.write', () => ({ value: undefined }))
+  on('session.measure', (_$: any, e: any) => ({ changed: e.changed }))
+  on('ui.status', (_$: any, e: any) => {
+    shown.push(e.text ?? e.value)
+    return { value: undefined }
+  })
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 70 },
+      { kind: 'seven_day', percentUsed: 50, resetsAt: WEEK_RESETS },
+    ],
+    changed: ['rateLimits'],
+  } as any)
+  expect(shown.at(-1)).toStartWith('budget guard on · ')
+  expect(shown.at(-1)).toContain('5h 70% · 70% of 100% cap')
+})
