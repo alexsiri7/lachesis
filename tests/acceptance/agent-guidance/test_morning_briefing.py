@@ -6,7 +6,6 @@ serves and check that each scenario's instruction is in it.
 
 from __future__ import annotations
 
-import pytest
 from harness import Lachesis, scenario
 
 
@@ -55,7 +54,6 @@ async def test_worker_problem(lachesis: Lachesis) -> None:
     assert "file it as an issue or flag it on an existing one" in briefing
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #404")
 @scenario("agent-guidance", "All quiet")
 async def test_all_quiet(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)
@@ -80,7 +78,6 @@ async def test_nothing_in_focus(lachesis: Lachesis) -> None:
     assert "at most once a week" in briefing
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #404")
 @scenario("agent-guidance", "New critical finding")
 async def test_new_critical_finding(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)
@@ -92,7 +89,6 @@ async def test_new_critical_finding(lachesis: Lachesis) -> None:
     assert "right after the health lines" in briefing
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #404")
 @scenario("agent-guidance", "Security fix held at a gate")
 async def test_security_fix_held_at_a_gate(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)
@@ -104,7 +100,6 @@ async def test_security_fix_held_at_a_gate(lachesis: Lachesis) -> None:
     assert "what the author must do to clear it" in briefing
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #404")
 @scenario("agent-guidance", "Sentry finding with no issue")
 async def test_sentry_finding_with_no_issue(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)
@@ -119,7 +114,6 @@ async def test_sentry_finding_with_no_issue(lachesis: Lachesis) -> None:
     assert "the only security fix" in briefing
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #404")
 @scenario("agent-guidance", "Security outranks a question")
 async def test_security_outranks_a_question(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)
@@ -128,7 +122,6 @@ async def test_security_outranks_a_question(lachesis: Lachesis) -> None:
     assert "ahead of open questions" in briefing
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #404")
 @scenario("agent-guidance", "More security items than fit")
 async def test_more_security_items_than_fit(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)
