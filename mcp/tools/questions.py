@@ -435,6 +435,19 @@ async def take_answers_from_issues(user_id: str) -> list[dict[str, Any]]:
     return answered
 
 
+async def settle_open_questions(user_id: str) -> None:
+    """Settle every open question that is due, before the queue is read.
+
+    The author's answers on the blocked issues are taken first, so closing an issue
+    never records the closed note over the author's own answer; questions whose
+    issues are all closed settle before expired defaults, so no default is posted
+    on a closed issue. Never raises.
+    """
+    await take_answers_from_issues(user_id)
+    await settle_closed_questions(user_id)
+    await settle_expired_defaults(user_id)
+
+
 async def list_open_questions() -> list[dict[str, Any]]:
     """Return the open questions across every registered repository, oldest first.
 
@@ -445,9 +458,7 @@ async def list_open_questions() -> list[dict[str, Any]]:
     and ``default_after`` — with ``waiting_hours``: whole hours since it was asked.
     """
     user_id = _require_user_id()
-    await take_answers_from_issues(user_id)
-    await settle_closed_questions(user_id)
-    await settle_expired_defaults(user_id)
+    await settle_open_questions(user_id)
     now = datetime.now(UTC)
     return [
         {**row, "waiting_hours": int((now - row["created_at"]).total_seconds() // 3600)}

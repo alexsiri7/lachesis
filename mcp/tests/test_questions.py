@@ -23,6 +23,7 @@ from tools.questions import (
     search_answered_questions,
     settle_closed_questions,
     settle_expired_defaults,
+    settle_open_questions,
     take_answers_from_issues,
 )
 
@@ -1099,16 +1100,28 @@ async def test_reading_the_open_questions_settles_them_first(
     set_user_id: str,
 ) -> None:
     with (
-        patch("tools.questions.take_answers_from_issues", new_callable=AsyncMock) as taken,
-        patch("tools.questions.settle_closed_questions", new_callable=AsyncMock) as closed,
-        patch("tools.questions.settle_expired_defaults", new_callable=AsyncMock) as settle,
+        patch("tools.questions.settle_open_questions", new_callable=AsyncMock) as settle,
         patch("tools.questions.db.list_open_questions", return_value=[]),
     ):
         await list_open_questions()
 
-    taken.assert_awaited_once_with("test-uid")
-    closed.assert_awaited_once_with("test-uid")
     settle.assert_awaited_once_with("test-uid")
+
+
+async def test_the_authors_answer_is_taken_before_closed_issues_settle_a_question() -> None:
+    order: list[str] = []
+
+    def step(name: str) -> AsyncMock:
+        return AsyncMock(side_effect=lambda user_id: order.append(f"{name} {user_id}"))
+
+    with (
+        patch("tools.questions.take_answers_from_issues", step("answers")),
+        patch("tools.questions.settle_closed_questions", step("closed")),
+        patch("tools.questions.settle_expired_defaults", step("defaults")),
+    ):
+        await settle_open_questions("test-uid")
+
+    assert order == ["answers test-uid", "closed test-uid", "defaults test-uid"]
 
 
 async def test_the_author_may_answer_a_defaulted_question(

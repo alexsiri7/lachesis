@@ -1506,6 +1506,16 @@ async def _web_dashboard(
     return resp.text
 
 
+async def test_the_web_view_settles_the_open_questions(monkeypatch: pytest.MonkeyPatch) -> None:
+    settle = AsyncMock()
+    monkeypatch.setattr("tools.questions.settle_open_questions", settle)
+    monkeypatch.setattr("tools.requirements.next_issue", AsyncMock(return_value={"issue": None}))
+
+    await _web_dashboard(monkeypatch, AsyncMock(return_value=[]))
+
+    settle.assert_awaited_once_with("uid")
+
+
 async def test_the_web_view_lists_the_questions_waiting_on_the_author_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
