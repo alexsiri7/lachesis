@@ -145,6 +145,46 @@ The message SHALL open with one line saying whether the factory is working, from
 - WHEN the morning briefing is followed
 - THEN the fuel line states that fuel is not reported, as a fault
 
+### Requirement: The briefing checks for critical security problems
+
+Every morning the briefing SHALL tell the agent to check every registered repository for critical security problems and report them right after the health lines. A critical security problem SHALL be any of: an issue labelled security and opened in the last 24 hours whose stated severity is critical or high, or an open issue labelled security that waits on the author because it is labelled needs-author, is parked, or its pull request is held by a check only the author can clear.
+
+#### Scenario: New critical finding
+- GIVEN an issue labelled security with severity critical was opened last night
+- WHEN the morning briefing is followed
+- THEN the message names the project and the finding in words right after the health lines
+
+#### Scenario: Security fix held at a gate
+- GIVEN a security fix whose pull request passes every check except one that only the author can clear
+- WHEN the morning briefing is followed
+- THEN the message says what the fix is, which check holds it and what the author must do to clear it
+
+### Requirement: A regressed Sentry issue counts as critical and is filed
+
+A critical security problem SHALL also be a Sentry issue in a registered project that is new or regressed in the last 24 hours and points to an authentication, authorisation, data exposure or injection problem. When such a Sentry issue has no GitHub issue yet, the agent SHALL file one labelled security in that repository; this is the only security fix the briefing makes.
+
+#### Scenario: Sentry finding with no issue
+- GIVEN a new Sentry issue in a registered project that shows an authentication failure
+- AND no GitHub issue tracks it
+- WHEN the morning briefing is followed
+- THEN an issue labelled security is filed in that repository
+- AND the message names it
+
+### Requirement: Security comes before other author items
+
+Security problems that only the author can act on SHALL come first among the message's items, ahead of open questions, and SHALL count toward its limit of three items. When more security problems need the author than fit, the message SHALL list the most severe and say in one line how many more wait.
+
+#### Scenario: Security outranks a question
+- GIVEN an old open question and a new critical security issue waiting on the author
+- WHEN the morning briefing is followed
+- THEN the security issue is the first item
+
+#### Scenario: More security items than fit
+- GIVEN five security issues wait on the author
+- WHEN the morning briefing is followed
+- THEN the message lists the three most severe
+- AND one line says two more wait
+
 ### Requirement: The briefing sends only what needs the author
 
 The message SHALL list at most three items, each a direct question for the author or a concrete action, such as answering a question or deciding something. Work that waits on the worker, and Lachesis faults, SHALL be filed as issues or flagged on existing ones, and SHALL be neither listed for the author nor reported in the message.
@@ -167,12 +207,13 @@ The message SHALL be readable and actionable without opening anything else. It S
 
 ### Requirement: The briefing is short
 
-After the health lines and the items, the message SHALL give one line counting what landed since the previous morning, naming the work in words only when five or fewer landed, and one line per focused repository on the top of its backlog, described in words. When nothing needs the author and the factory is healthy, the whole message SHALL be a one-line all-quiet.
+After the health lines and the items, the message SHALL give one line counting what landed since the previous morning, naming the work in words only when five or fewer landed, and one line per focused repository on the top of its backlog, described in words. When nothing needs the author, no critical security problem was found and the factory is healthy, the whole message SHALL be a one-line all-quiet that says no security problem was found.
 
 #### Scenario: All quiet
-- GIVEN nothing needs the author and the factory is healthy
+- GIVEN nothing needs the author, no critical security problem was found and the factory is healthy
 - WHEN the morning briefing is followed
 - THEN the message is a single all-quiet line
+- AND that line says no security problem was found
 
 ### Requirement: The briefing sends one message every morning
 
