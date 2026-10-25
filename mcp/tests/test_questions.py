@@ -21,7 +21,9 @@ from tools.questions import (
     list_defaulted_questions,
     list_open_questions,
     search_answered_questions,
+    settle_closed_questions,
     settle_expired_defaults,
+    settle_open_questions,
     take_answers_from_issues,
 )
 
@@ -775,6 +777,7 @@ async def test_reading_the_queue(set_user_id: str) -> None:
     ]
     with (
         patch("tools.questions.take_answers_from_issues", new_callable=AsyncMock),
+        patch("tools.questions.settle_closed_questions", new_callable=AsyncMock),
         patch("tools.questions.db.list_open_questions", return_value=rows) as queue,
     ):
         result = await list_open_questions()
@@ -1002,18 +1005,123 @@ async def test_an_answer_posted_for_another_question_is_not_an_answer(
     answer.assert_not_called()
 
 
-async def test_reading_the_open_questions_settles_expired_defaults_first(
+def _mock_issue(httpx_mock: HTTPXMock, number: int, state: str) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{_ISSUES_URL}/{number}",
+        json={
+            "number": number,
+            "id": 1000 + number,
+            "title": f"Issue {number}",
+            "state": state,
+            "html_url": f"https://github.com/alexsiri7/lachesis/issues/{number}",
+        },
+    )
+
+
+def _blocking(question_id: int, blocks: list[int]) -> dict:
+    return {"id": question_id, "repo_name": "alexsiri7/lachesis", "blocks": blocks}
+
+
+async def test_a_question_whose_issues_all_closed_is_answered_and_its_issues_released(
+    httpx_mock: HTTPXMock,
+) -> None:
+    for number in (160, 161):
+        _mock_issue(httpx_mock, number, "closed")
+        _mock_unlabel(httpx_mock, number)
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=[_blocking(7, [160, 161])]),
+        patch(
+            "tools.questions.db.answer_question",
+            return_value={**_blocking(7, [160, 161]), "released": [160, 161]},
+        ) as answer,
+    ):
+        settled = await settle_closed_questions("test-uid")
+
+    answer.assert_called_once_with(
+        "test-uid",
+        "alexsiri7/lachesis",
+        7,
+        "Every issue this question blocked was closed: #160, #161",
+        "system",
+        "none",
+    )
+    assert [q["id"] for q in settled] == [7]
+    assert [method for method, _ in _requests(httpx_mock)] == ["GET", "GET", "DELETE", "DELETE"]
+
+
+@pytest.mark.parametrize("state", ["open", None])
+async def test_a_question_blocking_an_open_or_missing_issue_stays_open(
+    httpx_mock: HTTPXMock, state: str | None
+) -> None:
+    _mock_issue(httpx_mock, 160, "closed")
+    if state is None:
+        httpx_mock.add_response(method="GET", url=f"{_ISSUES_URL}/161", status_code=404)
+    else:
+        _mock_issue(httpx_mock, 161, state)
+    questions = [_blocking(7, [160, 161]), _blocking(8, [])]
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=questions),
+        patch("tools.questions.db.answer_question") as answer,
+    ):
+        assert await settle_closed_questions("test-uid") == []
+
+    answer.assert_not_called()
+
+
+async def test_a_question_whose_issues_cannot_be_read_is_left_for_the_next_read(
+    httpx_mock: HTTPXMock,
+) -> None:
+    httpx_mock.add_response(method="GET", url=f"{_ISSUES_URL}/160", status_code=500)
+    _mock_issue(httpx_mock, 161, "closed")
+    _mock_unlabel(httpx_mock, 161)
+    with (
+        patch(
+            "tools.questions.db.list_open_questions",
+            return_value=[_blocking(7, [160]), _blocking(8, [161])],
+        ),
+        patch(
+            "tools.questions.db.answer_question",
+            return_value={**_blocking(8, [161]), "released": [161]},
+        ) as answer,
+    ):
+        settled = await settle_closed_questions("test-uid")
+
+    answer.assert_called_once()
+    assert [q["id"] for q in settled] == [8]
+
+
+async def test_settling_closed_questions_never_raises_when_the_questions_cannot_be_read() -> None:
+    with patch("tools.questions.db.list_open_questions", side_effect=RuntimeError("down")):
+        assert await settle_closed_questions("test-uid") == []
+
+
+async def test_reading_the_open_questions_settles_them_first(
     set_user_id: str,
 ) -> None:
     with (
-        patch("tools.questions.take_answers_from_issues", new_callable=AsyncMock) as taken,
-        patch("tools.questions.settle_expired_defaults", new_callable=AsyncMock) as settle,
+        patch("tools.questions.settle_open_questions", new_callable=AsyncMock) as settle,
         patch("tools.questions.db.list_open_questions", return_value=[]),
     ):
         await list_open_questions()
 
-    taken.assert_awaited_once_with("test-uid")
     settle.assert_awaited_once_with("test-uid")
+
+
+async def test_the_authors_answer_is_taken_before_closed_issues_settle_a_question() -> None:
+    order: list[str] = []
+
+    def step(name: str) -> AsyncMock:
+        return AsyncMock(side_effect=lambda user_id: order.append(f"{name} {user_id}"))
+
+    with (
+        patch("tools.questions.take_answers_from_issues", step("answers")),
+        patch("tools.questions.settle_closed_questions", step("closed")),
+        patch("tools.questions.settle_expired_defaults", step("defaults")),
+    ):
+        await settle_open_questions("test-uid")
+
+    assert order == ["answers test-uid", "closed test-uid", "defaults test-uid"]
 
 
 async def test_the_author_may_answer_a_defaulted_question(

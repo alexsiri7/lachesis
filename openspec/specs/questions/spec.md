@@ -16,9 +16,27 @@ The system SHALL store each question as a record of its own holding: the questio
 - THEN the question is stored with its text, context, both options, kind, asker and issue 160 as blocked
 
 #### Scenario: Issue closed before the answer
-- GIVEN an open question that mentions issue 160
+- GIVEN an open question about issue 160 that blocks no issue
 - WHEN issue 160 is closed
+- AND open questions are listed
 - THEN the question is still open and readable
+
+### Requirement: A question settles when every issue it blocks closes
+
+When every issue an open question blocks is closed, the system SHALL record an answer saying those issues were closed, with outcome none, so the question leaves the queue. A question that still blocks an open issue, or that blocks no issue, SHALL stay open. The issues SHALL be checked whenever the open questions are read: when they are listed, when the next issue is chosen, and on the dashboard and the web view.
+
+#### Scenario: Every blocked issue closed
+- GIVEN an open question blocking issues 160 and 161
+- WHEN both issues are closed
+- AND open questions are listed
+- THEN the question is no longer listed
+- AND searching answered questions returns it with an answer saying issues 160 and 161 were closed
+
+#### Scenario: One blocked issue still open
+- GIVEN an open question blocking issues 160 and 161
+- WHEN issue 160 is closed and issue 161 stays open
+- AND open questions are listed
+- THEN the question is still listed
 
 ### Requirement: Author tasks ask for something only the author can do
 

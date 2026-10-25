@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 DEFAULTABLE_KINDS: tuple[db.QuestionKind, ...] = ("clarification", "improvement")
 DEFAULT_WAIT_DAYS = 3.0
 DEFAULT_ANSWERER = "default"
+CLOSED_ANSWERER = "system"
 
 # ntfy turns a message over 4096 bytes into an attachment; the full question
 # stays in its record and on any issue it names.
@@ -290,6 +291,65 @@ async def settle_expired_defaults(user_id: str) -> list[dict[str, Any]]:
     return settled
 
 
+def _closed_note(blocks: list[int]) -> str:
+    return "Every issue this question blocked was closed: " + ", ".join(
+        f"#{number}" for number in blocks
+    )
+
+
+async def _all_closed(repo: str, blocks: list[int]) -> bool:
+    for number in blocks:
+        issue = await github.get_issue(repo, number)
+        if issue is None or issue["state"] != "closed":
+            return False
+    return True
+
+
+async def settle_closed_questions(user_id: str) -> list[dict[str, Any]]:
+    """Answer each open question whose blocked issues are all closed.
+
+    The answer says those issues were closed, with answerer ``system`` and outcome
+    ``none``, and ``needs-author`` is removed from each issue no other open question
+    still blocks, as ``answer_question`` does; nothing is posted on the closed issues.
+    A question that blocks no issue, or one still open or not found, stays open.
+    Called on every read of the open questions, so it never raises: a question that
+    fails is logged and left for the next read.
+
+    Returns the questions answered, each with ``released``.
+    """
+    try:
+        waiting = [question for question in db.list_open_questions(user_id) if question["blocks"]]
+    except Exception:
+        logger.warning("settle_closed_questions: could not read the questions", exc_info=True)
+        return []
+    settled: list[dict[str, Any]] = []
+    for question in waiting:
+        repo = question["repo_name"]
+        try:
+            if not await _all_closed(repo, question["blocks"]):
+                continue
+            answered = db.answer_question(
+                user_id,
+                repo,
+                question["id"],
+                _closed_note(question["blocks"]),
+                CLOSED_ANSWERER,
+                "none",
+            )
+            for number in answered["released"]:
+                await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
+        except Exception:
+            logger.warning(
+                "settle_closed_questions: question %s in %s was not checked",
+                question["id"],
+                repo,
+                exc_info=True,
+            )
+            continue
+        settled.append(answered)
+    return settled
+
+
 def _is_automated(body: str) -> bool:
     # The archon checks cover the factory's comments until it stamps AUTOMATED_MARKER itself.
     return (
@@ -375,17 +435,30 @@ async def take_answers_from_issues(user_id: str) -> list[dict[str, Any]]:
     return answered
 
 
+async def settle_open_questions(user_id: str) -> None:
+    """Settle every open question that is due, before the queue is read.
+
+    The author's answers on the blocked issues are taken first, so closing an issue
+    never records the closed note over the author's own answer; questions whose
+    issues are all closed settle before expired defaults, so no default is posted
+    on a closed issue. Never raises.
+    """
+    await take_answers_from_issues(user_id)
+    await settle_closed_questions(user_id)
+    await settle_expired_defaults(user_id)
+
+
 async def list_open_questions() -> list[dict[str, Any]]:
     """Return the open questions across every registered repository, oldest first.
 
-    Questions the author has answered on an issue they block, and those whose wait
-    for a default has passed, are settled first, so they are not listed. Each is its
+    Questions the author has answered on an issue they block, those whose blocked
+    issues are all closed, and those whose wait for a default has passed, are settled
+    first, so they are not listed. Each is its
     record — kind, what it is about, the issues it ``blocks``, any ``default_answer``
     and ``default_after`` — with ``waiting_hours``: whole hours since it was asked.
     """
     user_id = _require_user_id()
-    await take_answers_from_issues(user_id)
-    await settle_expired_defaults(user_id)
+    await settle_open_questions(user_id)
     now = datetime.now(UTC)
     return [
         {**row, "waiting_hours": int((now - row["created_at"]).total_seconds() // 3600)}

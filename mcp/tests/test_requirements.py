@@ -1699,6 +1699,21 @@ async def test_get_dashboard_requirement_warns_when_no_github_issue(
     assert req["warning"] == "no linked issues"
 
 
+async def test_get_dashboard_settles_the_open_questions(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch("tools.questions.settle_open_questions", new_callable=AsyncMock) as settle,
+    ):
+        httpx_mock.add_response(json=_LIST_RESP)
+        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        await get_dashboard()
+
+    settle.assert_awaited_once_with("test-uid")
+
+
 async def test_get_dashboard_summary_includes_unlinked_count(
     httpx_mock: HTTPXMock, set_db_user_id: None
 ) -> None:
@@ -3957,6 +3972,21 @@ async def test_next_issue_returns_the_top_ready_unblocked_issue(
     assert result["issue"]["number"] == 2
     assert result["issue"]["repo"] == "owner/repo"
     assert result["blocked"] == []
+
+
+async def test_next_issue_settles_the_open_questions(
+    httpx_mock: HTTPXMock, set_user_id: str
+) -> None:
+    _mock_open_issues(httpx_mock, [1])
+    _mock_blocked_by(httpx_mock, 1, [])
+
+    with (
+        _patch_backlog(_FakeBacklog([])),
+        patch("tools.questions.settle_open_questions", new_callable=AsyncMock) as settle,
+    ):
+        await next_issue("owner/repo")
+
+    settle.assert_awaited_once_with("test-uid")
 
 
 async def test_next_issue_still_offers_the_issue_when_the_audits_cannot_be_read(

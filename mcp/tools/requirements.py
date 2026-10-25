@@ -1838,11 +1838,11 @@ async def next_issue(repo: str | None = None) -> dict[str, Any]:
     # audits, sprints and questions import this module, so they cannot be imported at the top.
     from .audits import next_audit
     from .fuel import accounts_status
-    from .questions import settle_expired_defaults
+    from .questions import settle_open_questions
     from .sprints import estimates_by_issue, sprint_budget
 
-    # A question whose default was taken releases its issues before they are read.
-    await settle_expired_defaults(user_id)
+    # A settled question releases its issues before they are read.
+    await settle_open_questions(user_id)
 
     now = datetime.now(UTC)
     budget = sprint_budget(
@@ -2237,9 +2237,9 @@ async def get_dashboard(
         )
     # audits and questions import this module, so they cannot be imported at the top.
     from .audits import audit_history
-    from .questions import settle_expired_defaults
+    from .questions import settle_open_questions
 
-    await settle_expired_defaults(user_id)
+    await settle_open_questions(user_id)
 
     repos = db.list_repos(user_id)
     limit = asyncio.Semaphore(_DASHBOARD_CONCURRENCY)
