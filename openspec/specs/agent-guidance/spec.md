@@ -147,7 +147,7 @@ The message SHALL open with one line saying whether the factory is working, from
 
 ### Requirement: The briefing checks for critical security problems
 
-Every morning the briefing SHALL tell the agent to check every registered repository for critical security problems and report them right after the health lines. A critical security problem SHALL be any of: an issue labelled security and opened in the last 24 hours whose stated severity is critical or high; an open issue labelled security that waits on the author, because it is labelled needs-author, is parked, or its pull request is held by a check only the author can clear; and a Sentry issue in a registered project that is new or regressed in the last 24 hours and points to an authentication, authorisation, data exposure or injection problem. When such a Sentry issue has no GitHub issue yet, the agent SHALL file one labelled security in that repository; this is the only security fix the briefing makes.
+Every morning the briefing SHALL tell the agent to check every registered repository for critical security problems and report them right after the health lines. A critical security problem SHALL be any of: an issue labelled security and opened in the last 24 hours whose stated severity is critical or high, or an open issue labelled security that waits on the author because it is labelled needs-author, is parked, or its pull request is held by a check only the author can clear.
 
 #### Scenario: New critical finding
 - GIVEN an issue labelled security with severity critical was opened last night
@@ -158,6 +158,10 @@ Every morning the briefing SHALL tell the agent to check every registered reposi
 - GIVEN a security fix whose pull request passes every check except one that only the author can clear
 - WHEN the morning briefing is followed
 - THEN the message says what the fix is, which check holds it and what the author must do to clear it
+
+### Requirement: A regressed Sentry issue counts as critical and is filed
+
+A critical security problem SHALL also be a Sentry issue in a registered project that is new or regressed in the last 24 hours and points to an authentication, authorisation, data exposure or injection problem. When such a Sentry issue has no GitHub issue yet, the agent SHALL file one labelled security in that repository; this is the only security fix the briefing makes.
 
 #### Scenario: Sentry finding with no issue
 - GIVEN a new Sentry issue in a registered project that shows an authentication failure
