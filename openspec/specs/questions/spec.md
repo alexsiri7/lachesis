@@ -23,7 +23,7 @@ The system SHALL store each question as a record of its own holding: the questio
 
 ### Requirement: A question settles when every issue it blocks closes
 
-When every issue an open question blocks is closed, the system SHALL record an answer saying those issues were closed, with outcome none, so the question leaves the queue. A question that still blocks an open issue, or that blocks no issue and waits on none, SHALL stay open. The issues SHALL be checked whenever the open questions are read: when they are listed, when the next issue is chosen, and on the dashboard and the web view.
+When every issue an open question blocks is closed, the system SHALL record an answer saying those issues were closed, with outcome none, so the question leaves the queue. A question SHALL stay open unless every issue it blocks is closed, or every issue it waits on is closed. The issues SHALL be checked whenever the open questions are read: when they are listed, when the next issue is chosen, and on the dashboard and the web view.
 
 #### Scenario: Every blocked issue closed
 - GIVEN an open question blocking issues 160 and 161
