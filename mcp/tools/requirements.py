@@ -144,9 +144,10 @@ the one you run on, or chooses none, do not start the work on your account: leav
 follow its reason. Give the account in report_usage for every run on a Claude allowance.
 
 Sprints run from one weekly allowance reset to the next. read_sprint returns the sprint's
-dates, its budget in tokens — every account's share less its reserve, and the overflow cap — what is
-spent and left, its capacity in points at the price of a point, and the plan: the backlog
-in order, together with the due audits, as far as estimates fit what is left. It is
+dates, its budget in tokens — every account's share less its reserve (unless released in the
+last 24 hours before its reset), and the overflow cap — what is spent and left, its capacity
+in points at the price of a point, and the plan: the backlog in order, together with the
+due audits, as far as estimates fit what is left. It is
 derived on every read, so a new focus re-plans it. next_issue offers work other than
 security work only while it fits the budget left and spending is within pace, and says
 when the sprint budget is spent. Alongside the issue it names, under audit, the next due
@@ -1783,7 +1784,7 @@ def _why_nothing(
     elif budget is not None and any(scan.saw_over_budget for scan in scans):
         reason = "budget_spent"
         explanation = (
-            f"The sprint budget left outside the reserve ({budget['left_tokens']} tokens) fits "
+            f"The sprint budget left ({budget['left_tokens']} tokens) fits "
             "no ready issue other than security work; only security work is offered until "
             f"the allowance resets at {budget['end'].isoformat()}."
         )
