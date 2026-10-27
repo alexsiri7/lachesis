@@ -20,6 +20,7 @@ from settings import settings
 from spec_reference import SpecReference, append_reference
 from tools.requirements import (
     _MAX_WRITE_ATTEMPTS,
+    _merge_setup_faults,
     _sprint_start,
     add_dependency,
     create_github_issues,
@@ -5330,6 +5331,20 @@ async def test_get_dashboard_reports_no_fault_for_a_lachesis_pr_with_automerge(
     assert result["lachesis_faults"] == []
     assert result["summary"]["lachesis_fault_count"] == 0
     refusals.assert_not_called()
+
+
+def test_merge_setup_fault_is_reported_once_for_a_repo_stored_under_two_rows() -> None:
+    refusals = {"allow_auto_merge": "forbidden"}
+    faults = _merge_setup_faults(
+        [
+            {"repo_name": "https://github.com/owner/repo", "merge_setup_refusals": refusals},
+            {"repo_name": "owner/repo", "merge_setup_refusals": refusals},
+        ]
+    )
+
+    assert [(fault["repo"], fault["setting"]) for fault in faults] == [
+        ("owner/repo", "allow_auto_merge")
+    ]
 
 
 async def test_get_dashboard_groups_a_pending_edit_of_a_landed_requirement_as_awaiting_merge(

@@ -37,6 +37,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   notify.py        Best-effort ntfy delivery (never raises into a caller)
   landing.py       Detects landed requirements and spec changes on read, and fires their notification
   spec_reference.py Writes and parses the spec reference block at the end of an issue body
+  unattended_merges.py Configures a repo so its pull requests merge without a human (auto-merge, branch deletion, no required approving review), returning what GitHub refused; register_repo, create_project and each start run it and record the refusals for get_dashboard's lachesis_faults
   tools/
     __init__.py
     notifications.py ntfy configuration and test-notification tools
@@ -77,7 +78,7 @@ railway.toml
 ## Environment variables
 
 See `.env.example`. Key ones:
-- `GITHUB_PAT` — server-side GitHub token with `repo` scope, plus `delete_repo` so a failed `create_project` can delete the repository it created; a fine-grained token also needs Checks (read), without which a private repository's scenario results cannot be read
+- `GITHUB_PAT` — server-side GitHub token with `repo` scope, plus `delete_repo` so a failed `create_project` can delete the repository it created; a fine-grained token also needs Checks (read), without which a private repository's scenario results cannot be read, and Administration (read and write), without which a repository's settings, branch protection and rulesets cannot be configured for unattended merges
 - `ALLOWED_EMAIL` — the single authorized Google account email
 - `SECRET_KEY` — JWT signing key
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (**both required**; register `{MCP_BASE_URL}/oauth/callback` as an authorized redirect URI in the Google OAuth Console)

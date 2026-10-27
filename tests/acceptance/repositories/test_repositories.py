@@ -11,8 +11,6 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 OWNER = "author"
@@ -269,7 +267,6 @@ async def test_re_register(lachesis: Lachesis) -> None:
     assert (await _registered(lachesis))[REPO]["landing_signal"] == "deployment"
 
 
-@pytest.mark.xfail(strict=True, reason="spec gap")
 @scenario("repositories", "Registering a repository with auto-merge off")
 async def test_registering_a_repository_with_auto_merge_off(lachesis: Lachesis) -> None:
     _repository_needing_a_human(lachesis)
@@ -285,7 +282,6 @@ async def test_registering_a_repository_with_auto_merge_off(lachesis: Lachesis) 
     assert _status_checks_untouched(lachesis)
 
 
-@pytest.mark.xfail(strict=True, reason="spec gap")
 @scenario("repositories", "Setting cannot be changed")
 async def test_setting_cannot_be_changed(lachesis: Lachesis) -> None:
     _repository_needing_a_human(lachesis)

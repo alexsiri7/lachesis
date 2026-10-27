@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import db
 import github
 
-from .repos import register_repo
+from .repos import _require_user_id, register_repo
 from .specs import _check_capabilities, _write_capability
 
 
@@ -26,10 +27,13 @@ async def create_project(
     content; without any, one capability named after the repository is seeded
     with *purpose* as its Purpose.  Every capability is format-checked and the
     name's availability is settled before anything is created.  A failure after
-    the repository exists deletes it again.
+    the repository exists deletes it again and drops its registration.
 
-    Returns ``{"repo", "url", "private", "capabilities"}``.
+    The repository is configured for unattended merges as :func:`register_repo` does.
+
+    Returns ``{"repo", "url", "private", "capabilities", "merge_setup_refusals"}``.
     """
+    user_id = _require_user_id()
     if not purpose.strip():
         raise ValueError("A project needs a purpose")
     specs = capabilities or {name: _purpose_only_spec(name, purpose)}
@@ -47,15 +51,21 @@ async def create_project(
             await _write_capability(
                 repo, created["default_branch"], capability, spec, f"spec: seed {capability}"
             )
-        await register_repo(repo)
+        registered = await register_repo(repo)
     except Exception as exc:
+        leftovers = []
         try:
             await github.delete_repo(repo)
         except Exception as cleanup_exc:
+            leftovers.append(f"Delete {created['html_url']} by hand ({cleanup_exc!r}).")
+        try:
+            db.unregister_repo(user_id, repo)
+        except Exception as cleanup_exc:
+            leftovers.append(f"Unregister {repo} if list_repos still shows it ({cleanup_exc!r}).")
+        if leftovers:
             raise RuntimeError(
-                f"Could not create project {repo!r} ({exc!r}), and could not delete the "
-                f"half-created repository ({cleanup_exc!r}). Delete {created['html_url']} "
-                "by hand; it is not registered with Lachesis."
+                f"Could not create project {repo!r} ({exc!r}), and could not undo it. "
+                + " ".join(leftovers)
             ) from exc
         raise RuntimeError(
             f"Could not create project {repo!r} ({exc!r}). The repository was deleted "
@@ -66,4 +76,5 @@ async def create_project(
         "url": created["html_url"],
         "private": created["private"],
         "capabilities": sorted(specs),
+        "merge_setup_refusals": registered["merge_setup_refusals"],
     }

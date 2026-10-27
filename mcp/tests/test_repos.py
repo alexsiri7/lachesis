@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from collections.abc import Iterator
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from auth import current_db_user_id
-from tools.repos import list_repos, register_repo, unregister_repo
+from tools.repos import list_repos, prepare_registered_repos, register_repo, unregister_repo
 
 
 @pytest.fixture()
@@ -16,6 +17,16 @@ def set_user_id():
     token = current_db_user_id.set("test-uid")
     yield "test-uid"
     current_db_user_id.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def configured() -> Iterator[MagicMock]:
+    """GitHub configures every repo registered, and the outcome is recorded."""
+    with (
+        patch("tools.repos.unattended_merges.configure", return_value={}) as configure,
+        patch("tools.repos.db.record_merge_setup_refusals"),
+    ):
+        yield configure
 
 
 @pytest.fixture()
@@ -39,6 +50,22 @@ async def test_register_repo_returns_row(set_user_id: str) -> None:
         result = await register_repo("owner/repo")
     mock_reg.assert_called_once_with("test-uid", "owner/repo", None)
     assert result["repo_name"] == "owner/repo"
+
+
+@pytest.mark.anyio
+async def test_register_repo_records_and_returns_what_github_refused(
+    set_user_id: str, configured: MagicMock
+) -> None:
+    refused = {"allow_auto_merge": "GitHub answered 403: Resource not accessible"}
+    configured.return_value = refused
+    with (
+        patch("tools.repos.db.register_repo", return_value={"repo_name": "owner/repo"}),
+        patch("tools.repos.db.record_merge_setup_refusals") as record,
+    ):
+        result = await register_repo("https://github.com/owner/repo")
+    configured.assert_called_once_with("owner/repo")
+    record.assert_called_once_with("test-uid", "owner/repo", refused)
+    assert result["merge_setup_refusals"] == refused
 
 
 @pytest.mark.anyio
@@ -109,3 +136,21 @@ async def test_unregister_repo_purges_stale_url_row(set_user_id: str) -> None:
     assert mock_unreg.call_count == 2
     mock_unreg.assert_any_call("test-uid", "owner/repo")
     mock_unreg.assert_any_call("test-uid", "https://github.com/owner/repo")
+
+
+@pytest.mark.anyio
+async def test_prepare_registered_repos_carries_on_past_a_repo_that_fails(
+    configured: MagicMock,
+) -> None:
+    rows = [
+        {"user_id": "uid", "repo_name": "owner/broken"},
+        {"user_id": "uid", "repo_name": "https://github.com/owner/fine"},
+    ]
+    configured.side_effect = [RuntimeError("boom"), {}]
+    with (
+        patch("tools.repos.db.list_all_repos", return_value=rows),
+        patch("tools.repos.db.record_merge_setup_refusals") as record,
+    ):
+        await prepare_registered_repos()
+    configured.assert_called_with("owner/fine")
+    record.assert_called_once_with("uid", "owner/fine", {})

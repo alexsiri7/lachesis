@@ -63,9 +63,18 @@ The system SHALL report one row per registry.
 @pytest.fixture(autouse=True)
 def register() -> Iterator[MagicMock]:
     token = current_db_user_id.set("test-uid")
-    with patch("tools.repos.db.register_repo", return_value={}) as mock_register:
+    with (
+        patch("tools.repos.db.register_repo", return_value={}) as mock_register,
+        patch("tools.repos.prepare_for_unattended_merges", return_value={}),
+    ):
         yield mock_register
     current_db_user_id.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def unregister() -> Iterator[MagicMock]:
+    with patch("tools.projects.db.unregister_repo") as mock_unregister:
+        yield mock_unregister
 
 
 def _mock_created(httpx_mock: HTTPXMock, *, private: bool = True) -> None:
@@ -114,6 +123,7 @@ async def test_create_with_initial_capabilities(httpx_mock: HTTPXMock, register:
         "url": f"https://github.com/{_REPO}",
         "private": True,
         "capabilities": ["lookup", "report"],
+        "merge_setup_refusals": {},
     }
     [create] = _requests(httpx_mock, "POST")
     assert json.loads(create.content) == {
@@ -229,6 +239,54 @@ async def test_failed_registration_deletes_the_repository(
     register.side_effect = RuntimeError("database unreachable")
 
     with pytest.raises(RuntimeError, match="deleted again"):
+        await create_project(_NAME, _PURPOSE)
+
+    assert len(_requests(httpx_mock, "DELETE")) == 1
+
+
+async def test_failure_after_registration_drops_the_registration(
+    httpx_mock: HTTPXMock, unregister: MagicMock
+) -> None:
+    _mock_created(httpx_mock)
+    _mock_seeded(httpx_mock, _NAME)
+    httpx_mock.add_response(method="DELETE", url=_API, status_code=204)
+
+    with (
+        patch("tools.repos.prepare_for_unattended_merges", side_effect=RuntimeError("lost")),
+        pytest.raises(RuntimeError, match="deleted again and nothing was registered"),
+    ):
+        await create_project(_NAME, _PURPOSE)
+
+    unregister.assert_called_once_with("test-uid", _REPO)
+    assert len(_requests(httpx_mock, "DELETE")) == 1
+
+
+async def test_failed_delete_still_drops_the_registration(
+    httpx_mock: HTTPXMock, unregister: MagicMock
+) -> None:
+    _mock_created(httpx_mock)
+    _mock_seeded(httpx_mock, _NAME)
+    httpx_mock.add_response(method="DELETE", url=_API, status_code=403)
+
+    with (
+        patch("tools.repos.prepare_for_unattended_merges", side_effect=RuntimeError("lost")),
+        pytest.raises(RuntimeError, match=f"Delete https://github.com/{_REPO} by hand"),
+    ):
+        await create_project(_NAME, _PURPOSE)
+
+    unregister.assert_called_once_with("test-uid", _REPO)
+
+
+async def test_database_outage_still_deletes_the_repository(
+    httpx_mock: HTTPXMock, register: MagicMock, unregister: MagicMock
+) -> None:
+    _mock_created(httpx_mock)
+    _mock_seeded(httpx_mock, _NAME)
+    httpx_mock.add_response(method="DELETE", url=_API, status_code=204)
+    register.side_effect = RuntimeError("database unreachable")
+    unregister.side_effect = RuntimeError("database unreachable")
+
+    with pytest.raises(RuntimeError, match=f"Unregister {_REPO} if list_repos still shows it"):
         await create_project(_NAME, _PURPOSE)
 
     assert len(_requests(httpx_mock, "DELETE")) == 1

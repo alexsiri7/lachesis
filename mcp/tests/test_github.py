@@ -895,6 +895,7 @@ async def test_get_repo_settings_returns_settings(httpx_mock: HTTPXMock) -> None
             "allow_merge_commit": True,
             "allow_rebase_merge": False,
             "delete_branch_on_merge": True,
+            "default_branch": "trunk",
         }
     )
     result = await get_repo_settings("owner/repo")
@@ -904,6 +905,7 @@ async def test_get_repo_settings_returns_settings(httpx_mock: HTTPXMock) -> None
         "allow_merge_commit": True,
         "allow_rebase_merge": False,
         "delete_branch_on_merge": True,
+        "default_branch": "trunk",
     }
 
 

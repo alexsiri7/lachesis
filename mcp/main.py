@@ -199,7 +199,13 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Register a repo so Lachesis tracks it. landing_signal decides when its "
+        "Register a repo so Lachesis tracks it, and configure it so its pull requests merge "
+        "without a human: auto-merge allowed, merged branches deleted, no approving review "
+        "required on the default branch, required status checks left as they are. "
+        "Registration stands whatever GitHub refuses; `merge_setup_refusals` maps each "
+        "setting that could not be changed to why, and get_dashboard reports it as a "
+        "Lachesis fault until a later registration or restart configures it. "
+        "landing_signal decides when its "
         "requirements and spec changes count as landed in production: 'deployment' "
         "announces one only once a successful production deployment carries its final "
         "merge, 'merge' (the default) treats the merge itself as the signal and says so "
@@ -1023,7 +1029,9 @@ mcp.tool(
         "as its Purpose. The repository is private unless `public` is true. Capabilities "
         "are format-checked as in propose_spec_change and a name already taken in the "
         "account is refused, both before anything is created; a failure after the "
-        "repository exists deletes it again, leaving nothing behind. The new repository "
+        "repository exists deletes it again, leaving nothing behind. The repository is "
+        "configured for unattended merges as register_repo does, with its "
+        "`merge_setup_refusals`. The new repository "
         "is ready for list_capabilities and propose_spec_change straight away."
     ),
 )(project_tools.create_project)
@@ -1182,6 +1190,18 @@ def _check_refresh_token_health() -> None:
         logger.info("startup check: %d active refresh token(s), all healthy", len(tokens))
 
 
+# The event loop holds only weak references to tasks; this keeps them until they finish.
+_startup_tasks: set[asyncio.Task[None]] = set()
+
+
+async def _prepare_registered_repos() -> None:
+    """Configure every registered repo for unattended merges. Non-fatal if DB unavailable."""
+    try:
+        await repo_tools.prepare_registered_repos()
+    except Exception as exc:
+        logger.warning("startup preparation of registered repos failed: %s", exc)
+
+
 def _apply_user_context(user_id: str, email: str, lachesis_uid: str | None) -> None:
     """Set current_user_id and current_db_user_id context vars for this request."""
     current_user_id.set(user_id)
@@ -1230,10 +1250,13 @@ def with_user_context(app: ASGIApp) -> ASGIApp:
             await app(scope, receive, send)
             return
 
-        # Run startup health check once on first HTTP request
+        # Run startup checks once on first HTTP request
         if not _startup_check_done:
             _startup_check_done = True
             _check_refresh_token_health()
+            task = asyncio.create_task(_prepare_registered_repos())
+            _startup_tasks.add(task)
+            task.add_done_callback(_startup_tasks.discard)
 
         headers = dict(scope.get("headers", []))
         auth_header = headers.get(b"authorization", b"").decode("ascii", errors="replace")
