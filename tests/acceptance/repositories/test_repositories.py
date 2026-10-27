@@ -6,8 +6,10 @@ wrote is what the stub serves back when the project is read afterwards.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -205,10 +207,13 @@ def _repository_needing_a_human(lachesis: Lachesis) -> None:
     github.on("GET", f"{PROTECTION}/required_status_checks", json=STATUS_CHECKS)
 
 
-def _auto_merge_allowed(lachesis: Lachesis) -> bool:
+def _auto_merge_allowed(lachesis: Lachesis, since: int = 0) -> bool:
+    """Whether a request to allow auto-merge on REPO was made after the first *since*."""
     return any(
-        (request.body or {}).get("allow_auto_merge") is True
-        for request in lachesis.github.requests_to("PATCH", f"/repos/{REPO}")
+        request.method == "PATCH"
+        and request.path == f"/repos/{REPO}"
+        and (request.body or {}).get("allow_auto_merge") is True
+        for request in lachesis.github.requests[since:]
     )
 
 
@@ -309,6 +314,22 @@ async def test_setting_cannot_be_changed(lachesis: Lachesis) -> None:
         ),
     )
     assert faults, dashboard
+
+
+@scenario("repositories", "Already registered repositories")
+async def test_already_registered_repositories(lachesis: Lachesis) -> None:
+    _repository_needing_a_human(lachesis)
+    await _ok(lachesis, "register_repo", {"repo": REPO})
+    lachesis.github.on("PATCH", f"/repos/{REPO}", json={"full_name": REPO})
+    before_start = len(lachesis.github.requests)
+
+    await lachesis.restart()
+    await _ok(lachesis, "list_repos", {})
+
+    deadline = time.monotonic() + 10
+    while not _auto_merge_allowed(lachesis, since=before_start):
+        assert time.monotonic() < deadline, "auto-merge was not allowed after the restart"
+        await asyncio.sleep(0.05)
 
 
 @scenario("repositories", "Create with initial capabilities")
