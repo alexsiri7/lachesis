@@ -6,6 +6,8 @@ serves and check that each scenario's instruction is in it.
 
 from __future__ import annotations
 
+import pytest
+
 from harness import Lachesis, scenario
 
 
@@ -35,6 +37,13 @@ async def test_stale_escalation(lachesis: Lachesis) -> None:
     assert "escalation" in briefing
     assert "comment on it and close it" in briefing
     assert "say in one line what you fixed" in briefing
+
+
+@scenario("agent-guidance", "Nothing to fix")
+async def test_nothing_to_fix(lachesis: Lachesis) -> None:
+    briefing = await _briefing(lachesis)
+
+    assert "say in one line what you fixed, or nothing if you fixed nothing" in briefing
 
 
 @scenario("agent-guidance", "Fuel never reported")
@@ -129,3 +138,14 @@ async def test_more_security_items_than_fit(lachesis: Lachesis) -> None:
     assert "count toward the three items" in briefing
     assert "the most severe" in briefing
     assert "how many more wait" in briefing
+
+
+@pytest.mark.xfail(strict=True, reason="spec gap")
+@scenario("agent-guidance", "A decision waiting on the author")
+async def test_a_decision_waiting_on_the_author(lachesis: Lachesis) -> None:
+    briefing = await _briefing(lachesis)
+
+    assert "never identify work by a number alone" in briefing
+    assert "name the project in words" in briefing
+    assert "what follows from each answer" in briefing
+    assert "a link may follow the description" in briefing
