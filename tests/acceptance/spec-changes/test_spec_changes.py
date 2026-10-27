@@ -156,20 +156,29 @@ async def test_pending_edit_is_visible(lachesis: Lachesis) -> None:
                 "title": "Rank the backlog",
                 "html_url": f"https://github.com/{REPO}/pull/{PULL}",
                 "labels": [{"name": "spec-change"}],
-            }
+            },
+            {
+                "number": PULL + 1,
+                "title": "Count the issues",
+                "html_url": f"https://github.com/{REPO}/pull/{PULL + 1}",
+                "labels": [{"name": "spec-change"}],
+            },
         ],
     )
-    github.on(
-        "GET",
-        f"/repos/{REPO}/pulls/{PULL}/files",
-        json=[{"filename": "openspec/specs/backlog/spec.md", "status": "modified"}],
-    )
+    for number, name in ((PULL, "backlog"), (PULL + 1, "issues")):
+        github.on(
+            "GET",
+            f"/repos/{REPO}/pulls/{number}/files",
+            json=[{"filename": f"openspec/specs/{name}/spec.md", "status": "modified"}],
+        )
 
     result = await lachesis.call_tool("get_capability", {"repo": REPO, "capability": "backlog"})
 
     assert not result.is_error, result.text
     capability = result.json()
     assert capability["spec"] == spec
+    [read] = github.requests_to("GET", _spec_path("backlog"))
+    assert "ref" not in read.params
     assert [change["number"] for change in capability["spec_changes"]] == [PULL]
 
 
