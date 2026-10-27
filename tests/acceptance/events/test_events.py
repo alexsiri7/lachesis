@@ -54,6 +54,7 @@ async def test_answer_recorded(lachesis: Lachesis) -> None:
     github.on("POST", f"/repos/{REPO}/labels", json={"name": "needs-author"}, status=201)
     github.on("POST", f"/repos/{REPO}/issues/{ISSUE}/labels", json=[{"name": "needs-author"}])
     github.on("DELETE", f"/repos/{REPO}/issues/{ISSUE}/labels/needs-author", json=[])
+    cursor = (await _events_after(lachesis, 0))["cursor"]
     asked = await lachesis.call_tool(
         "ask_question",
         {
@@ -66,7 +67,6 @@ async def test_answer_recorded(lachesis: Lachesis) -> None:
     )
     assert not asked.is_error, asked.text
     question_id = int(asked.json()["id"])
-    cursor = (await _events_after(lachesis, 0))["cursor"]
 
     answered = await lachesis.call_tool(
         "answer_question",
