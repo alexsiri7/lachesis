@@ -10,7 +10,7 @@ import db
 import github
 import notify
 
-from .repos import _require_user_id
+from .repos import _require_user_id, normalize_repo
 from .requirements import _NEEDS_AUTHOR_COLOR, _NEEDS_AUTHOR_LABEL, _resolve_repo
 
 logger = logging.getLogger(__name__)
@@ -62,12 +62,27 @@ async def _tell_author(
     )
 
 
+def _waits_on(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return *entries* as ``{"repo": "owner/repo", "issue": n}``, duplicates dropped."""
+    waiting: dict[tuple[str, int], dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or "repo" not in entry or "issue" not in entry:
+            raise ValueError(f"each waits_on entry must be {{repo, issue}}, got {entry!r}")
+        number = entry["issue"]
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise ValueError(f"waits_on issue must be a positive integer, got {number!r}")
+        repo = normalize_repo(str(entry["repo"]))
+        waiting.setdefault((repo.lower(), number), {"repo": repo, "issue": number})
+    return list(waiting.values())
+
+
 async def ask_question(
     repo: str,
     question: str,
     kind: db.QuestionKind,
     asker: str,
     blocks: list[int] | None = None,
+    waits_on: list[dict[str, Any]] | None = None,
     context: str = "",
     options: list[str] | None = None,
     capability: str | None = None,
@@ -94,6 +109,12 @@ async def ask_question(
     cap: it is refused with *blocks*, and its *context* must say what the extra
     spend would deliver.
 
+    *waits_on* names issues in other repositories, as ``{"repo", "issue"}``, the
+    question waits on: once every one is closed, ``settle_closed_questions``
+    answers it and releases the issues it blocks. Each must exist, checked before
+    anything is posted. An issue in the question's own repository is refused: that
+    is a dependency, recorded with ``add_dependency``.
+
     Returns ``{"id", "comments": [{"issue", "url"}, ...]}``.
     """
     question = question.strip()
@@ -101,6 +122,7 @@ async def ask_question(
     context = context.strip()
     options = [option.strip() for option in options or [] if option.strip()]
     blocked = list(dict.fromkeys(blocks or []))
+    waiting = _waits_on(waits_on or [])
     if not question:
         raise ValueError("question must not be empty")
     if not asker:
@@ -127,6 +149,15 @@ async def ask_question(
             raise ValueError(f"wait_days must be positive, got {wait_days!r}")
     user_id = _require_user_id()
     repo = await _resolve_repo(repo, require_registered=True)
+    for waited in waiting:
+        if waited["repo"].lower() == repo.lower():
+            raise ValueError(
+                f"a question waits on issues in other repositories; #{waited['issue']} is in "
+                f"{repo!r}, so record it with add_dependency instead of asking"
+            )
+    for waited in waiting:
+        if await github.get_issue(waited["repo"], waited["issue"]) is None:
+            raise FileNotFoundError(f"Issue #{waited['issue']} not found in {waited['repo']!r}")
 
     body = _comment_body(question, context, options)
     if default is not None:
@@ -151,6 +182,7 @@ async def ask_question(
         milestone=milestone,
         issue=issue,
         blocks=blocked,
+        waits_on=waiting,
         default_answer=default,
         wait=timedelta(days=wait_days) if default is not None else None,
     )
@@ -297,8 +329,14 @@ def _closed_note(blocks: list[int]) -> str:
     )
 
 
-async def _all_closed(repo: str, blocks: list[int]) -> bool:
-    for number in blocks:
+def _waited_note(waits_on: list[dict[str, Any]]) -> str:
+    return "Every issue this question waited on was closed: " + ", ".join(
+        f"{waited['repo']}#{waited['issue']}" for waited in waits_on
+    )
+
+
+async def _all_closed(issues: list[tuple[str, int]]) -> bool:
+    for repo, number in issues:
         issue = await github.get_issue(repo, number)
         if issue is None or issue["state"] != "closed":
             return False
@@ -306,35 +344,45 @@ async def _all_closed(repo: str, blocks: list[int]) -> bool:
 
 
 async def settle_closed_questions(user_id: str) -> list[dict[str, Any]]:
-    """Answer each open question whose blocked issues are all closed.
+    """Answer each open question whose blocked, or waited-on, issues are all closed.
 
-    The answer says those issues were closed, with answerer ``system`` and outcome
-    ``none``, and ``needs-author`` is removed from each issue no other open question
-    still blocks, as ``answer_question`` does; nothing is posted on the closed issues.
-    A question that blocks no issue, or one still open or not found, stays open.
-    Called on every read of the open questions, so it never raises: a question that
-    fails is logged and left for the next read.
+    When every issue it blocks is closed, the answer says so and nothing is posted
+    on them. Otherwise, when every issue it waits on is closed, the answer says that
+    and is first posted on each issue it blocks, as ``settle_expired_defaults`` does.
+    Either answer has answerer ``system`` and outcome ``none``, and ``needs-author``
+    is removed from each issue no other open question still blocks, as
+    ``answer_question`` does. A question that blocks no issue and waits on none, or
+    one whose issues are still open or not found, stays open. Called on every read
+    of the open questions, so it never raises: a question that fails is logged and
+    left for the next read.
 
     Returns the questions answered, each with ``released``.
     """
     try:
-        waiting = [question for question in db.list_open_questions(user_id) if question["blocks"]]
+        waiting = [
+            question
+            for question in db.list_open_questions(user_id)
+            if question["blocks"] or question["waits_on"]
+        ]
     except Exception:
         logger.warning("settle_closed_questions: could not read the questions", exc_info=True)
         return []
     settled: list[dict[str, Any]] = []
     for question in waiting:
         repo = question["repo_name"]
+        blocks = question["blocks"]
+        waits_on = question["waits_on"]
         try:
-            if not await _all_closed(repo, question["blocks"]):
+            if blocks and await _all_closed([(repo, number) for number in blocks]):
+                note = _closed_note(blocks)
+            elif waits_on and await _all_closed([(w["repo"], w["issue"]) for w in waits_on]):
+                note = _waited_note(waits_on)
+                for number in blocks:
+                    await github.create_issue_comment(repo, number, note)
+            else:
                 continue
             answered = db.answer_question(
-                user_id,
-                repo,
-                question["id"],
-                _closed_note(question["blocks"]),
-                CLOSED_ANSWERER,
-                "none",
+                user_id, repo, question["id"], note, CLOSED_ANSWERER, "none"
             )
             for number in answered["released"]:
                 await github.remove_label(repo, number, _NEEDS_AUTHOR_LABEL)
@@ -452,10 +500,10 @@ async def list_open_questions() -> list[dict[str, Any]]:
     """Return the open questions across every registered repository, oldest first.
 
     Questions the author has answered on an issue they block, those whose blocked
-    issues are all closed, and those whose wait for a default has passed, are settled
-    first, so they are not listed. Each is its
-    record — kind, what it is about, the issues it ``blocks``, any ``default_answer``
-    and ``default_after`` — with ``waiting_hours``: whole hours since it was asked.
+    or waited-on issues are all closed, and those whose wait for a default has passed,
+    are settled first, so they are not listed. Each is its record — kind, what it is
+    about, the issues it ``blocks`` and ``waits_on``, any ``default_answer`` and
+    ``default_after`` — with ``waiting_hours``: whole hours since it was asked.
     """
     user_id = _require_user_id()
     await settle_open_questions(user_id)

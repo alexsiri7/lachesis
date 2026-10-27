@@ -409,6 +409,7 @@ def test_record_question_stores_the_question_and_its_event_in_one_transaction() 
         "milestone": None,
         "issue": None,
         "blocks": [160],
+        "waits_on": "[]",
         "default_answer": None,
         "wait": None,
     }

@@ -12,7 +12,8 @@ Tables (all namespaced lachesis_):
   lachesis_ntfy_config    — per-account ntfy server, topic and token
   lachesis_notifications  — one row per requirement already notified (dedupe)
   lachesis_events         — append-only log of changes to the factory's records
-  lachesis_questions      — questions for the author and the issues each one blocks
+  lachesis_questions      — questions for the author, the issues each one blocks and
+                            the issues in other repositories it waits on
   lachesis_milestones     — milestones and when the author started or dropped them
   lachesis_milestone_spec_changes — the spec changes each milestone groups, one milestone each
   lachesis_accounts       — the Claude accounts the factory may use: share, five-hour
@@ -693,6 +694,7 @@ def record_question(
     milestone: str | None = None,
     issue: int | None = None,
     blocks: list[int] | None = None,
+    waits_on: list[dict[str, Any]] | None = None,
     default_answer: str | None = None,
     wait: timedelta | None = None,
 ) -> dict[str, Any]:
@@ -706,16 +708,16 @@ def record_question(
         """
         INSERT INTO lachesis_questions (
             user_id, repo_name, question, context, options, kind, asker,
-            capability, spec_change, milestone, issue, blocks,
+            capability, spec_change, milestone, issue, blocks, waits_on,
             default_answer, default_after
         )
         VALUES (
             :user_id, :repo_name, :question, :context, :options, :kind, :asker,
-            :capability, :spec_change, :milestone, :issue, :blocks,
+            :capability, :spec_change, :milestone, :issue, :blocks, CAST(:waits_on AS jsonb),
             :default_answer, now() + :wait
         )
         RETURNING id, repo_name, question, context, options, kind, asker,
-                  capability, spec_change, milestone, issue, blocks, created_at,
+                  capability, spec_change, milestone, issue, blocks, waits_on, created_at,
                   default_answer, default_after
         """
     )
@@ -732,6 +734,7 @@ def record_question(
         "milestone": milestone,
         "issue": issue,
         "blocks": blocks or [],
+        "waits_on": json.dumps(waits_on or []),
         "default_answer": default_answer,
         "wait": wait if default_answer is not None else None,
     }
@@ -747,7 +750,7 @@ OutcomeKind = Literal["none", "standing_rule", "spec_change", "new_project", "de
 DEFAULTED: OutcomeKind = "defaulted"
 
 _QUESTION_COLUMNS = """id, repo_name, question, context, options, kind, asker,
-                  capability, spec_change, milestone, issue, blocks, created_at,
+                  capability, spec_change, milestone, issue, blocks, waits_on, created_at,
                   answer, answerer, answered_at, outcome, default_answer, default_after"""
 
 

@@ -23,7 +23,7 @@ The system SHALL store each question as a record of its own holding: the questio
 
 ### Requirement: A question settles when every issue it blocks closes
 
-When every issue an open question blocks is closed, the system SHALL record an answer saying those issues were closed, with outcome none, so the question leaves the queue. A question that still blocks an open issue, or that blocks no issue, SHALL stay open. The issues SHALL be checked whenever the open questions are read: when they are listed, when the next issue is chosen, and on the dashboard and the web view.
+When an open question blocks at least one issue and every one is closed, the system SHALL record an answer saying those issues were closed, with outcome none, so the question leaves the queue. A question SHALL stay open unless it blocks at least one issue and every one is closed, or it waits on at least one issue and every one is closed. The issues SHALL be checked whenever the open questions are read: when they are listed, when the next issue is chosen, and on the dashboard and the web view.
 
 #### Scenario: Every blocked issue closed
 - GIVEN an open question blocking issues 160 and 161
@@ -37,6 +37,29 @@ When every issue an open question blocks is closed, the system SHALL record an a
 - WHEN issue 160 is closed and issue 161 stays open
 - AND open questions are listed
 - THEN the question is still listed
+
+### Requirement: A question waiting on another repository's issues settles when they close
+
+A question MAY name issues in other repositories it waits on. When a question waits on at least one issue and every one is closed, the system SHALL record an answer naming those issues as closed, with outcome none, note it on each issue the question blocks, and release them as an answer would. A question SHALL NOT wait on an issue in its own repository: that is a dependency. The issues SHALL be checked whenever the open questions are read.
+
+#### Scenario: Waited-on issue closed
+- GIVEN an open question in owner/repo blocking issue 161 and waiting on issue 301 in other/repo
+- WHEN issue 301 in other/repo is closed
+- AND open questions are listed
+- THEN the question is no longer listed
+- AND issue 161 is no longer waiting on the author
+- AND searching answered questions returns it with an answer naming other/repo#301 as closed
+
+#### Scenario: Waited-on issue still open
+- GIVEN an open question in owner/repo blocking issue 161 and waiting on issue 301 in other/repo
+- WHEN issue 301 stays open
+- AND open questions are listed
+- THEN the question is still listed
+
+#### Scenario: Waiting in the same repository
+- GIVEN issue 161 in owner/repo cannot continue until issue 160 in owner/repo closes
+- WHEN a question is asked in owner/repo waiting on issue 160
+- THEN it is refused, naming add_dependency
 
 ### Requirement: Author tasks ask for something only the author can do
 
@@ -75,6 +98,15 @@ A run that cannot continue without something only the author can do or provide S
 - GIVEN a run on issue 160 discovers it has no access to the DNS provider
 - WHEN the run ends
 - THEN an author task asking for the DNS record is open and blocks issue 160
+
+### Requirement: A run blocked on another issue records a dependency
+
+The agent guidance SHALL tell a run that cannot continue until another issue in the same repository closes to record that with add_dependency and ask the author nothing, and a run waiting on an issue in another repository to ask a question that waits on it.
+
+#### Scenario: Guidance says record a dependency
+- GIVEN any agent
+- WHEN it reads the agent guidance
+- THEN the guidance tells it to call add_dependency, not ask the author, when blocked on another issue in the same repository
 
 ### Requirement: Small questions settle by default while the author is away
 
