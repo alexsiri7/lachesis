@@ -101,6 +101,11 @@ comment after the question was asked is taken as its answer. Every comment Lache
 other than an answer it posts for the author, ends with the hidden marker
 <!-- lachesis:automated -->, and no comment carrying it is an answer; put it in any comment
 you post on GitHub yourself, since it comes from the author's account.
+When a run cannot continue until another issue closes, do not ask the author. If that
+issue is in the same repository, call add_dependency on the stalled issue and move on
+— next_issue passes it over until its blocker closes. If it is in another repository,
+call ask_question with the stalled issue in blocks and the other issue in waits_on — the
+question settles itself, releasing the stalled issue, once every issue it waits on closes.
 For any other decision only the author can make — a spec contradiction, large work,
 maturity or an improvement — or one that blocks several issues, call ask_question.
 answer_question records the author's answer to a question by id, with its outcome, and

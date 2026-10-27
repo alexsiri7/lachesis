@@ -1062,6 +1062,7 @@ _GUIDANCE_FIELDS = {
     "uses_specs",
     "wait_days",
     "waiting_on_author",
+    "waits_on",
 }
 
 

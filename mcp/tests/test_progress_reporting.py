@@ -1565,6 +1565,7 @@ async def test_the_web_view_lists_open_questions_then_issues_no_question_blocks(
         "milestone": None,
         "issue": None,
         "blocks": [160],
+        "waits_on": [],
         "created_at": datetime.now(UTC) - timedelta(hours=30),
     }
     page = await _web_dashboard(
@@ -1608,6 +1609,7 @@ async def test_the_web_view_keeps_an_issue_whose_number_a_question_blocks_in_ano
         "milestone": None,
         "issue": None,
         "blocks": [160],
+        "waits_on": [],
         "created_at": datetime.now(UTC) - timedelta(hours=30),
     }
     page = await _web_dashboard(

@@ -374,6 +374,10 @@ mcp.tool(
         "default as the answer with outcome defaulted and releases the blocked issues "
         "with a note that the default was taken. Every other kind decides what a "
         "project should be, so a default for it is refused and it waits for the author. "
+        "`waits_on` lists issues in other repositories, each {repo, issue}, the question "
+        "waits on: once every one is closed, the next read of the open questions answers "
+        "it as closed and releases the blocked issues with a note saying so. An issue in "
+        "the question's own repository is refused: record it with add_dependency. "
         "Returns the question id and the url of each comment."
     ),
 )(question_tools.ask_question)

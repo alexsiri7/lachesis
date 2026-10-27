@@ -31,6 +31,8 @@ _REAL_SEND = notify.send
 _REGISTERED = [{"id": "r1", "repo_name": "alexsiri7/lachesis", "created_at": "t"}]
 _ISSUES_URL = "https://api.github.com/repos/alexsiri7/lachesis/issues"
 _LABELS_URL = "https://api.github.com/repos/alexsiri7/lachesis/labels"
+_OTHER_ISSUES_URL = "https://api.github.com/repos/other/repo/issues"
+_WAITS_ON_301 = [{"repo": "other/repo", "issue": 301}]
 _MARKED = "\n\n<!-- lachesis:automated -->"
 
 
@@ -82,6 +84,20 @@ def _requests(httpx_mock: HTTPXMock) -> list[tuple[str, str]]:
     return [(r.method, str(r.url)) for r in httpx_mock.get_requests()]
 
 
+def _mock_other_issue(httpx_mock: HTTPXMock, number: int, state: str) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{_OTHER_ISSUES_URL}/{number}",
+        json={
+            "number": number,
+            "id": 3000 + number,
+            "title": f"Issue {number}",
+            "state": state,
+            "html_url": f"https://github.com/other/repo/issues/{number}",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # ask_question
 # ---------------------------------------------------------------------------
@@ -119,6 +135,7 @@ async def test_asking_with_options(
         milestone=None,
         issue=None,
         blocks=[160],
+        waits_on=[],
         default_answer=None,
         wait=None,
     )
@@ -364,6 +381,76 @@ async def test_a_labelling_failure_part_way_leaves_earlier_labels(
         ("POST", f"{_ISSUES_URL}/161/labels"),
     ]
     record_question.assert_called_once()
+
+
+async def test_a_question_waits_on_issues_in_other_repositories(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question
+) -> None:
+    _mock_other_issue(httpx_mock, 301, "open")
+
+    await ask_question(
+        "alexsiri7/lachesis",
+        "Ship before other/repo#301?",
+        "clarification",
+        "agent",
+        waits_on=[
+            {"repo": "https://github.com/other/repo", "issue": 301},
+            {"repo": "other/repo", "issue": 301},
+        ],
+    )
+
+    assert record_question.call_args.kwargs["waits_on"] == _WAITS_ON_301
+
+
+async def test_waiting_on_an_issue_in_the_same_repository_is_refused_before_anything_happens(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question
+) -> None:
+    with pytest.raises(ValueError, match="add_dependency"):
+        await ask_question(
+            "alexsiri7/lachesis",
+            "Ship before #160?",
+            "clarification",
+            "agent",
+            blocks=[161],
+            waits_on=[{"repo": "Alexsiri7/Lachesis", "issue": 160}],
+        )
+
+    assert httpx_mock.get_requests() == []
+    record_question.assert_not_called()
+
+
+async def test_waiting_on_a_missing_issue_is_refused_before_anything_is_posted(
+    httpx_mock: HTTPXMock, set_user_id: str, registered: None, record_question
+) -> None:
+    httpx_mock.add_response(method="GET", url=f"{_OTHER_ISSUES_URL}/301", status_code=404)
+
+    with pytest.raises(FileNotFoundError, match="#301"):
+        await ask_question(
+            "alexsiri7/lachesis",
+            "Ship before other/repo#301?",
+            "clarification",
+            "agent",
+            blocks=[161],
+            waits_on=_WAITS_ON_301,
+        )
+
+    assert [method for method, _ in _requests(httpx_mock)] == ["GET"]
+    record_question.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [{"repo": "other/repo"}, {"repo": "other/repo", "issue": 0}, {"repo": "other", "issue": 1}],
+)
+async def test_a_malformed_waits_on_entry_is_refused(
+    set_user_id: str, record_question, entry: dict
+) -> None:
+    with pytest.raises(ValueError):
+        await ask_question(
+            "alexsiri7/lachesis", "Ship?", "clarification", "agent", waits_on=[entry]
+        )
+
+    record_question.assert_not_called()
 
 
 async def test_asking_raises_when_issue_missing(
@@ -1019,8 +1106,13 @@ def _mock_issue(httpx_mock: HTTPXMock, number: int, state: str) -> None:
     )
 
 
-def _blocking(question_id: int, blocks: list[int]) -> dict:
-    return {"id": question_id, "repo_name": "alexsiri7/lachesis", "blocks": blocks}
+def _blocking(question_id: int, blocks: list[int], waits_on: list[dict] | None = None) -> dict:
+    return {
+        "id": question_id,
+        "repo_name": "alexsiri7/lachesis",
+        "blocks": blocks,
+        "waits_on": waits_on or [],
+    }
 
 
 async def test_a_question_whose_issues_all_closed_is_answered_and_its_issues_released(
@@ -1089,6 +1181,86 @@ async def test_a_question_whose_issues_cannot_be_read_is_left_for_the_next_read(
 
     answer.assert_called_once()
     assert [q["id"] for q in settled] == [8]
+
+
+async def test_a_question_whose_waited_on_issues_closed_is_noted_answered_and_released(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_issue(httpx_mock, 161, "open")
+    _mock_other_issue(httpx_mock, 301, "closed")
+    _mock_comment(httpx_mock, 161)
+    _mock_unlabel(httpx_mock, 161)
+    note = "Every issue this question waited on was closed: other/repo#301"
+    question = _blocking(7, [161], _WAITS_ON_301)
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=[question]),
+        patch(
+            "tools.questions.db.answer_question",
+            return_value={**question, "released": [161]},
+        ) as answer,
+    ):
+        settled = await settle_closed_questions("test-uid")
+
+    answer.assert_called_once_with("test-uid", "alexsiri7/lachesis", 7, note, "system", "none")
+    assert [q["id"] for q in settled] == [7]
+    assert _requests(httpx_mock) == [
+        ("GET", f"{_ISSUES_URL}/161"),
+        ("GET", f"{_OTHER_ISSUES_URL}/301"),
+        ("POST", f"{_ISSUES_URL}/161/comments"),
+        ("DELETE", f"{_ISSUES_URL}/161/labels/needs-author"),
+    ]
+    assert json.loads(httpx_mock.get_requests()[2].content)["body"] == note + _MARKED
+
+
+async def test_a_question_waiting_on_an_open_issue_stays_open(httpx_mock: HTTPXMock) -> None:
+    _mock_issue(httpx_mock, 161, "open")
+    _mock_other_issue(httpx_mock, 301, "open")
+    with (
+        patch(
+            "tools.questions.db.list_open_questions",
+            return_value=[_blocking(7, [161], _WAITS_ON_301)],
+        ),
+        patch("tools.questions.db.answer_question") as answer,
+    ):
+        assert await settle_closed_questions("test-uid") == []
+
+    answer.assert_not_called()
+
+
+async def test_a_question_waiting_on_a_closed_issue_and_blocking_none_is_only_answered(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_other_issue(httpx_mock, 301, "closed")
+    question = _blocking(7, [], _WAITS_ON_301)
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=[question]),
+        patch(
+            "tools.questions.db.answer_question", return_value={**question, "released": []}
+        ) as answer,
+    ):
+        settled = await settle_closed_questions("test-uid")
+
+    answer.assert_called_once()
+    assert [q["id"] for q in settled] == [7]
+    assert [method for method, _ in _requests(httpx_mock)] == ["GET"]
+
+
+async def test_closed_blocked_issues_settle_a_question_before_its_waited_on_issues_are_read(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _mock_issue(httpx_mock, 161, "closed")
+    _mock_unlabel(httpx_mock, 161)
+    question = _blocking(7, [161], _WAITS_ON_301)
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=[question]),
+        patch(
+            "tools.questions.db.answer_question", return_value={**question, "released": [161]}
+        ) as answer,
+    ):
+        await settle_closed_questions("test-uid")
+
+    assert answer.call_args.args[3] == "Every issue this question blocked was closed: #161"
+    assert [method for method, _ in _requests(httpx_mock)] == ["GET", "DELETE"]
 
 
 async def test_settling_closed_questions_never_raises_when_the_questions_cannot_be_read() -> None:
