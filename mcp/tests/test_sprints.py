@@ -113,11 +113,11 @@ def test_the_budget_is_the_allowance_outside_the_reserve_and_the_overflow_cap() 
     assert budget is not None
     assert budget["start"] == _RESETS_AT - timedelta(days=7)
     assert budget["end"] == _RESETS_AT
-    assert budget["allowance"]["budget_tokens"] == 800_000
+    assert budget["allowance"]["budget_tokens"] == 900_000
     assert budget["overflow"]["budget_tokens"] == 200_000
-    assert budget["budget_tokens"] == 1_000_000
+    assert budget["budget_tokens"] == 1_100_000
     assert budget["spent_tokens"] == 500_000
-    assert budget["left_tokens"] == 500_000
+    assert budget["left_tokens"] == 600_000
     assert budget["within_pace"] is True
 
 
@@ -250,7 +250,7 @@ def _two_repos(
         patch("db.list_focus", return_value=focus or []),
         patch("github.list_open_issues", AsyncMock(side_effect=list_open_issues)),
         patch("github.list_all_issues", AsyncMock(side_effect=list_all_issues)),
-        patch.object(settings, "claude_weekly_allowance_tokens", 125),
+        patch.object(settings, "claude_weekly_allowance_tokens", 111),
         patch.object(settings, "claude_usd_per_million_tokens", 0.0),
     ):
         yield
@@ -974,7 +974,8 @@ def test_the_budget_counts_every_accounts_share_less_its_reserve() -> None:
         {
             "name": "factory",
             "share_percent": 100.0,
-            "reserve_percent": 20.0,
+            "reserve_percent": 10.0,
+            "reserve_released": False,
             "used_percent": 10.0,
             "within_pace": False,
             "usable_percent": 70.0,
@@ -983,7 +984,8 @@ def test_the_budget_counts_every_accounts_share_less_its_reserve() -> None:
         {
             "name": "main",
             "share_percent": 65.0,
-            "reserve_percent": 13.0,
+            "reserve_percent": 6.5,
+            "reserve_released": False,
             "used_percent": 60.0,
             "within_pace": True,
             "usable_percent": 0.0,
@@ -993,11 +995,19 @@ def test_the_budget_counts_every_accounts_share_less_its_reserve() -> None:
 
     budget = sprint_budget(_fuel(resets_at=_END), now, 1_000, 5.0, accounts)
 
-    # factory 80 + main 52 of 1000 tokens; main's 60 used counts only up to its 52.
-    assert budget["allowance"]["budget_tokens"] == 800 + 520
-    assert budget["allowance"]["spent_tokens"] == 100 + 520
+    # factory 90 + main 58.5 of 1000 tokens; main's 60 used counts only up to its 58.5.
+    assert budget["allowance"]["budget_tokens"] == 900 + 585
+    assert budget["allowance"]["spent_tokens"] == 100 + 585
     # factory is behind pace and main has nothing usable left: nothing is within pace.
     assert budget["within_pace"] is False
+
+    main_released = {**accounts[1], "reserve_released": True, "usable_percent": 5.0}
+    released = sprint_budget(_fuel(resets_at=_END), now, 1_000, 5.0, [accounts[0], main_released])
+
+    # main's reserve is released in its last 24 hours: its whole 65 counts, 60 of it spent.
+    assert released["allowance"]["budget_tokens"] == 900 + 650
+    assert released["allowance"]["spent_tokens"] == 100 + 600
+    assert released["within_pace"] is True
 
 
 def test_plan_offers_splitting_an_issue_too_big_to_plan() -> None:

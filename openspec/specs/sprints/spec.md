@@ -42,7 +42,7 @@ The system SHALL measure, from the issues closed in past sprints, the tokens a p
 
 ### Requirement: The factory plans the sprint
 
-At the start of each sprint the factory SHALL plan it: take the computed backlog in order, together with the due audits, and include work until its estimates fill the sprint budget, which is the factory share of every registered account's weekly allowance less its reserve, plus the overflow cap. The plan SHALL never wait on the author.
+At the start of each sprint the factory SHALL plan it: take the computed backlog in order, together with the due audits, and include work until its estimates fill the sprint budget, which is the factory share of every registered account's weekly allowance less its reserve, unless that reserve is released in the last 24 hours before its account's reset, plus the overflow cap. The plan SHALL never wait on the author.
 
 #### Scenario: Plan fills the budget
 - GIVEN a sprint budget of 100 units and backlog estimates of 40, 40 and 30
