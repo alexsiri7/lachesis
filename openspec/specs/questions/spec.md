@@ -23,7 +23,7 @@ The system SHALL store each question as a record of its own holding: the questio
 
 ### Requirement: A question settles when every issue it blocks closes
 
-When every issue an open question blocks is closed, the system SHALL record an answer saying those issues were closed, with outcome none, so the question leaves the queue. A question SHALL stay open unless it blocks at least one issue and every one is closed, or it waits on at least one issue and every one is closed. The issues SHALL be checked whenever the open questions are read: when they are listed, when the next issue is chosen, and on the dashboard and the web view.
+When an open question blocks at least one issue and every one is closed, the system SHALL record an answer saying those issues were closed, with outcome none, so the question leaves the queue. A question SHALL stay open unless it blocks at least one issue and every one is closed, or it waits on at least one issue and every one is closed. The issues SHALL be checked whenever the open questions are read: when they are listed, when the next issue is chosen, and on the dashboard and the web view.
 
 #### Scenario: Every blocked issue closed
 - GIVEN an open question blocking issues 160 and 161
@@ -40,7 +40,7 @@ When every issue an open question blocks is closed, the system SHALL record an a
 
 ### Requirement: A question waiting on another repository's issues settles when they close
 
-A question MAY name issues in other repositories it waits on. When every issue an open question waits on is closed, the system SHALL record an answer naming those issues as closed, with outcome none, note it on each issue the question blocks, and release them as an answer would. A question SHALL NOT wait on an issue in its own repository: that is a dependency. The issues SHALL be checked whenever the open questions are read.
+A question MAY name issues in other repositories it waits on. When a question waits on at least one issue and every one is closed, the system SHALL record an answer naming those issues as closed, with outcome none, note it on each issue the question blocks, and release them as an answer would. A question SHALL NOT wait on an issue in its own repository: that is a dependency. The issues SHALL be checked whenever the open questions are read.
 
 #### Scenario: Waited-on issue closed
 - GIVEN an open question in owner/repo blocking issue 161 and waiting on issue 301 in other/repo
