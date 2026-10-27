@@ -29,6 +29,7 @@ class FakeGitHub:
     """Answers each request with the latest responses registered for its method and path.
 
     The query string plays no part in matching. Anything unregistered gets GitHub's 404.
+    A ``bytes`` body is answered as it is, as GitHub answers for a file's raw content.
     A GraphQL request answered by :meth:`on_graphql`, or a request a :meth:`serve` handler
     answers, is not matched by its path.
     """
@@ -100,13 +101,13 @@ class FakeGitHub:
             handler = next((h for p, h in reversed(self._handlers) if path.startswith(p)), None)
             if handler is not None:
                 status, payload = handler(recorded)
-                return httpx.Response(status, json=payload)
+                return _response(status, payload)
             graphql = self._graphql_answer(request.method, path, body)
             if graphql is not None:
                 return httpx.Response(200, json=graphql)
             queued = self._responses.get((request.method, path), deque([(404, NOT_FOUND)]))
             status, payload = queued.popleft() if len(queued) > 1 else queued[0]
-        return httpx.Response(status, json=payload)
+        return _response(status, payload)
 
     def _graphql_answer(self, method: str, path: str, body: Any) -> Any:
         if method != "POST" or path != "/graphql" or not isinstance(body, dict):
@@ -118,3 +119,9 @@ class FakeGitHub:
             if registered == repo and containing in query:
                 return payload
         return None
+
+
+def _response(status: int, payload: Any) -> httpx.Response:
+    if isinstance(payload, bytes):
+        return httpx.Response(status, content=payload)
+    return httpx.Response(status, json=payload)
