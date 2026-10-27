@@ -126,6 +126,17 @@ def test_github_hands_requests_under_a_served_prefix_to_its_handler() -> None:
     assert answer("/repos/owner/repo/pulls").status_code == 404
 
 
+def test_github_answers_a_bytes_body_as_it_is() -> None:
+    github = FakeGitHub()
+    github.on("GET", "/repos/owner/repo/contents/README.md", json=b"# Read me\n")
+
+    response = github.handle(
+        httpx.Request("GET", "https://api.github.com/repos/owner/repo/contents/README.md")
+    )
+
+    assert response.content == b"# Read me\n"
+
+
 def test_find_matching_searches_every_nested_dict() -> None:
     answer = {"a": {"hit": 1, "b": [{"hit": 2}, {"miss": 3}]}, "c": [[{"hit": 4}]]}
 
