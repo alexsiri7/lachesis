@@ -261,6 +261,22 @@ async def test_failure_after_registration_drops_the_registration(
     assert len(_requests(httpx_mock, "DELETE")) == 1
 
 
+async def test_failed_delete_still_drops_the_registration(
+    httpx_mock: HTTPXMock, unregister: MagicMock
+) -> None:
+    _mock_created(httpx_mock)
+    _mock_seeded(httpx_mock, _NAME)
+    httpx_mock.add_response(method="DELETE", url=_API, status_code=403)
+
+    with (
+        patch("tools.repos.prepare_for_unattended_merges", side_effect=RuntimeError("lost")),
+        pytest.raises(RuntimeError, match=f"Delete https://github.com/{_REPO} by hand"),
+    ):
+        await create_project(_NAME, _PURPOSE)
+
+    unregister.assert_called_once_with("test-uid", _REPO)
+
+
 async def test_database_outage_still_deletes_the_repository(
     httpx_mock: HTTPXMock, register: MagicMock, unregister: MagicMock
 ) -> None:

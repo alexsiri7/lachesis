@@ -658,10 +658,18 @@ def _merge_faults(repo: str, prs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _merge_setup_faults(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Report each setting a registered repo could not be configured with for unattended merges."""
+    """Report each setting a registered repo could not be configured with for unattended merges.
+
+    A repo stored under more than one row carries the same refusals on each, so it is
+    reported once.
+    """
+    refusals_by_repo = {
+        normalize_repo(repo_row["repo_name"]): repo_row.get("merge_setup_refusals") or {}
+        for repo_row in repos
+    }
     return [
         {
-            "repo": normalize_repo(repo_row["repo_name"]),
+            "repo": repo,
             "setting": setting,
             "fault": (
                 f"Lachesis fault: {setting} could not be configured ({reason}), so pull "
@@ -669,8 +677,8 @@ def _merge_setup_faults(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "author's to merge them: fix the cause, then register the repository again."
             ),
         }
-        for repo_row in repos
-        for setting, reason in (repo_row.get("merge_setup_refusals") or {}).items()
+        for repo, refusals in refusals_by_repo.items()
+        for setting, reason in refusals.items()
     ]
 
 
