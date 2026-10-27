@@ -56,11 +56,11 @@ At the start of each sprint the factory SHALL plan it: take the computed backlog
 - AND the audit's planned tokens count against the budget like an issue's
 
 #### Scenario: Shared account adds to the budget
-- GIVEN the factory account's usable allowance is 80 units
-- AND the account main's 65 percent share less its reserve is 52 units
+- GIVEN the factory account's usable allowance is 90 units
+- AND the account main's 65 percent share less its reserve is 58.5 units
 - AND no overflow cap
 - WHEN the sprint budget is read
-- THEN it is 132 units
+- THEN it is 148.5 units
 
 ### Requirement: The sprint states its capacity in points
 
