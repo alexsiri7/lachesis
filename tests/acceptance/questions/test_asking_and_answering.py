@@ -156,6 +156,7 @@ async def test_asking_with_options(lachesis: Lachesis) -> None:
 @scenario("questions", "Asking for more budget")
 async def test_asking_for_more_budget(lachesis: Lachesis) -> None:
     repo = await _registered(lachesis, REPO, 160)
+    await _ok(lachesis, "report_overflow", {"spent_usd": 50, "cap_usd": 50})
     delivers = "Another $20 of overflow would deliver issue 160 this sprint."
     await _ask(
         lachesis,
