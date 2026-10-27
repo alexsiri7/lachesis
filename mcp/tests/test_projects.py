@@ -261,6 +261,21 @@ async def test_failure_after_registration_drops_the_registration(
     assert len(_requests(httpx_mock, "DELETE")) == 1
 
 
+async def test_database_outage_still_deletes_the_repository(
+    httpx_mock: HTTPXMock, register: MagicMock, unregister: MagicMock
+) -> None:
+    _mock_created(httpx_mock)
+    _mock_seeded(httpx_mock, _NAME)
+    httpx_mock.add_response(method="DELETE", url=_API, status_code=204)
+    register.side_effect = RuntimeError("database unreachable")
+    unregister.side_effect = RuntimeError("database unreachable")
+
+    with pytest.raises(RuntimeError, match=f"Unregister {_REPO} if list_repos still shows it"):
+        await create_project(_NAME, _PURPOSE)
+
+    assert len(_requests(httpx_mock, "DELETE")) == 1
+
+
 async def test_failed_rollback_says_what_is_left(httpx_mock: HTTPXMock) -> None:
     _mock_created(httpx_mock)
     _mock_seeded(httpx_mock, _NAME, status_code=500)

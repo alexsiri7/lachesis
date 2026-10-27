@@ -183,13 +183,22 @@ def list_all_repos() -> list[dict[str, Any]]:
         return [dict(row) for row in conn.execute(sql).mappings().all()]
 
 
+# A repository registered before register_repo normalized its input is stored as the
+# URL it was given (https://github.com/owner/repo), and registering it again adds an
+# owner/repo row beside it. Mirrors tools.repos.normalize_repo.
+_NORMALIZED_REPO_NAME = r"""regexp_replace(
+                regexp_replace(repo_name, '^(https?://)?github\.com/', ''), '(\.git)?/?$', ''
+            )"""
+
+
 def record_merge_setup_refusals(user_id: str, repo_name: str, refusals: dict[str, str]) -> None:
-    """Replace the settings recorded as refused for the repo, each mapped to its reason."""
+    """Replace the settings recorded as refused for owner/repo *repo_name*, each mapped to
+    its reason, on every row the repo is registered under."""
     sql = text(
-        """
+        f"""
         UPDATE lachesis_repos
         SET merge_setup_refusals = CAST(:refusals AS jsonb)
-        WHERE user_id = :user_id AND repo_name = :repo_name
+        WHERE user_id = :user_id AND {_NORMALIZED_REPO_NAME} = :repo_name
         """
     )
     params = {"user_id": user_id, "repo_name": repo_name, "refusals": json.dumps(refusals)}
@@ -792,11 +801,8 @@ def answers_on_issue(user_id: str, repo_name: str, issue: int) -> set[str]:
 # register_repo normalized its input is stored as the URL it was given
 # (https://github.com/owner/repo). Matching the stored names as they stand hid every
 # question in such a repository from the author, and its defaults never settled.
-# Mirrors tools.repos.normalize_repo.
-_IN_REGISTERED_REPO = r"""repo_name IN (
-            SELECT regexp_replace(
-                regexp_replace(repo_name, '^(https?://)?github\.com/', ''), '(\.git)?/?$', ''
-            )
+_IN_REGISTERED_REPO = f"""repo_name IN (
+            SELECT {_NORMALIZED_REPO_NAME}
             FROM lachesis_repos WHERE user_id = :user_id
           )"""
 

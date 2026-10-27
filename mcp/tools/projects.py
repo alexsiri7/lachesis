@@ -53,14 +53,19 @@ async def create_project(
             )
         registered = await register_repo(repo)
     except Exception as exc:
+        leftovers = []
         try:
-            db.unregister_repo(user_id, repo)
             await github.delete_repo(repo)
         except Exception as cleanup_exc:
+            leftovers.append(f"Delete {created['html_url']} by hand ({cleanup_exc!r}).")
+        try:
+            db.unregister_repo(user_id, repo)
+        except Exception as cleanup_exc:
+            leftovers.append(f"Unregister {repo} if list_repos still shows it ({cleanup_exc!r}).")
+        if leftovers:
             raise RuntimeError(
-                f"Could not create project {repo!r} ({exc!r}), and could not undo it "
-                f"({cleanup_exc!r}). Delete {created['html_url']} by hand, and unregister "
-                f"{repo} if list_repos still shows it."
+                f"Could not create project {repo!r} ({exc!r}), and could not undo it. "
+                + " ".join(leftovers)
             ) from exc
         raise RuntimeError(
             f"Could not create project {repo!r} ({exc!r}). The repository was deleted "

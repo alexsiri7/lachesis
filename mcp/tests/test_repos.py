@@ -153,4 +153,4 @@ async def test_prepare_registered_repos_carries_on_past_a_repo_that_fails(
     ):
         await prepare_registered_repos()
     configured.assert_called_with("owner/fine")
-    record.assert_called_once_with("uid", "https://github.com/owner/fine", {})
+    record.assert_called_once_with("uid", "owner/fine", {})

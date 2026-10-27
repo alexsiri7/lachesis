@@ -65,9 +65,10 @@ async def register_repo(repo: str, landing_signal: str | None = None) -> dict[st
 
 async def prepare_for_unattended_merges(user_id: str, repo_name: str) -> dict[str, str]:
     """Configure the repo registered as *repo_name* for unattended merges and record what
-    GitHub refused against that row, whichever form its name is stored in."""
-    refusals = await unattended_merges.configure(normalize_repo(repo_name))
-    db.record_merge_setup_refusals(user_id, repo_name, refusals)
+    GitHub refused against it, whichever form its name is stored in."""
+    repo = normalize_repo(repo_name)
+    refusals = await unattended_merges.configure(repo)
+    db.record_merge_setup_refusals(user_id, repo, refusals)
     return refusals
 
 

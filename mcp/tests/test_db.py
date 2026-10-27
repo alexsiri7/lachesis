@@ -148,6 +148,19 @@ def test_list_all_repos_selects_every_users_repo_with_its_owner() -> None:
     assert "WHERE" not in sql
 
 
+def test_record_merge_setup_refusals_updates_every_row_the_repo_is_stored_under() -> None:
+    mock = _mock_engine([])
+    with patch("db._engine", return_value=mock):
+        db.record_merge_setup_refusals("uid", "owner/repo", {"allow_auto_merge": "forbidden"})
+    call = mock.begin.return_value.__enter__.return_value.execute.call_args
+    assert f"{db._NORMALIZED_REPO_NAME} = :repo_name" in str(call[0][0])
+    assert call[0][1] == {
+        "user_id": "uid",
+        "repo_name": "owner/repo",
+        "refusals": '{"allow_auto_merge": "forbidden"}',
+    }
+
+
 def test_unregister_repo_no_exception() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock):
