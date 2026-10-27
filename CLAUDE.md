@@ -37,6 +37,7 @@ mcp/               FastMCP app (mirrors kindred/mcp/)
   notify.py        Best-effort ntfy delivery (never raises into a caller)
   landing.py       Detects landed requirements and spec changes on read, and fires their notification
   spec_reference.py Writes and parses the spec reference block at the end of an issue body
+  unattended_merges.py Configures a repo so its pull requests merge without a human (auto-merge, branch deletion, no required approving review), returning what GitHub refused; register_repo, create_project and each start run it and record the refusals for get_dashboard's lachesis_faults
   tools/
     __init__.py
     notifications.py ntfy configuration and test-notification tools

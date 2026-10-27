@@ -1137,7 +1137,7 @@ async def get_repo_settings(repo: str) -> dict[str, Any]:
 
     Returned keys: ``allow_auto_merge`` (bool), ``allow_squash_merge`` (bool),
     ``allow_merge_commit`` (bool), ``allow_rebase_merge`` (bool),
-    ``delete_branch_on_merge`` (bool).
+    ``delete_branch_on_merge`` (bool), ``default_branch`` (str).
     """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.get(
@@ -1158,7 +1158,84 @@ async def get_repo_settings(repo: str) -> dict[str, Any]:
         "allow_merge_commit": data.get("allow_merge_commit", True),
         "allow_rebase_merge": data.get("allow_rebase_merge", True),
         "delete_branch_on_merge": data.get("delete_branch_on_merge", False),
+        "default_branch": data.get("default_branch", "main"),
     }
+
+
+def _raise_logged(resp: httpx.Response, action: str, repo: str) -> None:
+    if not resp.is_success:
+        logger.warning(
+            "github.%s failed repo=%s status=%s body=%s",
+            action,
+            repo,
+            resp.status_code,
+            resp.text[:_ERROR_BODY_CHARS],
+        )
+    resp.raise_for_status()
+
+
+async def update_repo_settings(repo: str, changes: dict[str, bool]) -> None:
+    """Change the repository settings named in *changes*, such as ``allow_auto_merge``."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.patch(f"{_BASE_URL}/repos/{repo}", headers=_headers(), json=changes)
+    _raise_logged(resp, "update_repo_settings", repo)
+
+
+async def get_branch_protection(repo: str, branch: str) -> dict[str, Any] | None:
+    """Return *branch*'s classic branch protection, or ``None`` when it has none."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/branches/{quote(branch, safe='')}/protection",
+            headers=_headers(),
+        )
+    if resp.status_code == 404:
+        return None
+    _raise_logged(resp, "get_branch_protection", repo)
+    return resp.json()  # type: ignore[no-any-return]
+
+
+async def update_required_reviews(repo: str, branch: str, reviews: dict[str, Any]) -> None:
+    """Change the pull request reviews *branch*'s classic branch protection requires."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.patch(
+            f"{_BASE_URL}/repos/{repo}/branches/{quote(branch, safe='')}"
+            "/protection/required_pull_request_reviews",
+            headers=_headers(),
+            json=reviews,
+        )
+    _raise_logged(resp, "update_required_reviews", repo)
+
+
+async def list_branch_rules(repo: str, branch: str) -> list[dict[str, Any]]:
+    """Return every ruleset rule in force on *branch*, each naming the ruleset it is from."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(
+            f"{_BASE_URL}/repos/{repo}/rules/branches/{quote(branch, safe='')}",
+            headers=_headers(),
+            params={"per_page": 100},
+        )
+    if resp.status_code == 404:
+        return []
+    _raise_logged(resp, "list_branch_rules", repo)
+    return resp.json()  # type: ignore[no-any-return]
+
+
+async def get_ruleset(repo: str, ruleset_id: int) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(f"{_BASE_URL}/repos/{repo}/rulesets/{ruleset_id}", headers=_headers())
+    _raise_logged(resp, "get_ruleset", repo)
+    return resp.json()  # type: ignore[no-any-return]
+
+
+async def update_ruleset_rules(repo: str, ruleset_id: int, rules: list[dict[str, Any]]) -> None:
+    """Replace the rules of the repository's ruleset *ruleset_id*, leaving the rest of it."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.put(
+            f"{_BASE_URL}/repos/{repo}/rulesets/{ruleset_id}",
+            headers=_headers(),
+            json={"rules": rules},
+        )
+    _raise_logged(resp, "update_ruleset_rules", repo)
 
 
 async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> None:

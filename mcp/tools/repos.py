@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 import db
+import unattended_merges
 from auth import current_db_user_id
 
 logger = logging.getLogger(__name__)
@@ -47,13 +48,37 @@ LANDING_SIGNALS = ("merge", "deployment")
 
 
 async def register_repo(repo: str, landing_signal: str | None = None) -> dict[str, Any]:
-    """Register a repo so Lachesis tracks it. Omitting *landing_signal* leaves it alone."""
+    """Register a repo so Lachesis tracks it. Omitting *landing_signal* leaves it alone.
+
+    The repo is then configured for unattended merges; the registration stands whatever
+    GitHub refuses, and ``merge_setup_refusals`` maps each setting it refused to why.
+    """
     user_id = _require_user_id()
     if landing_signal is not None and landing_signal not in LANDING_SIGNALS:
         raise ValueError(
             f"landing_signal must be one of {', '.join(LANDING_SIGNALS)}, got {landing_signal!r}"
         )
-    return db.register_repo(user_id, normalize_repo(repo), landing_signal)
+    normalized = normalize_repo(repo)
+    row = db.register_repo(user_id, normalized, landing_signal)
+    return {**row, "merge_setup_refusals": await prepare_for_unattended_merges(user_id, normalized)}
+
+
+async def prepare_for_unattended_merges(user_id: str, repo: str) -> dict[str, str]:
+    """Configure *repo* for unattended merges and record what GitHub refused."""
+    refusals = await unattended_merges.configure(repo)
+    db.record_merge_setup_refusals(user_id, repo, refusals)
+    return refusals
+
+
+async def prepare_registered_repos() -> None:
+    """Configure every registered repo for unattended merges, as each start does once."""
+    for row in db.list_all_repos():
+        try:
+            await prepare_for_unattended_merges(
+                str(row["user_id"]), normalize_repo(row["repo_name"])
+            )
+        except Exception:
+            logger.exception("could not prepare repo=%s for unattended merges", row["repo_name"])
 
 
 async def unregister_repo(repo: str) -> dict[str, Any]:

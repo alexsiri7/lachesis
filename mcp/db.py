@@ -3,7 +3,8 @@
 Tables (all namespaced lachesis_):
   lachesis_users          — one row per authenticated Google identity
   lachesis_repos          — per-user repo registry, with the landing_signal that
-                            decides when its requirements count as in production
+                            decides when its requirements count as in production and the
+                            settings that could not be configured for unattended merges
   lachesis_oauth_clients  — persisted OAuth client registrations
   lachesis_refresh_tokens — persisted refresh tokens (with expiry)
   lachesis_backlog        — per-repo backlog flags (ready, interrupt, when last unparked)
@@ -164,7 +165,7 @@ def list_repos(user_id: str) -> list[dict[str, Any]]:
     """Return all repos registered by user_id, ordered by repo_name."""
     sql = text(
         """
-        SELECT id, repo_name, landing_signal, created_at
+        SELECT id, repo_name, landing_signal, merge_setup_refusals, created_at
         FROM lachesis_repos
         WHERE user_id = :user_id
         ORDER BY repo_name
@@ -173,6 +174,27 @@ def list_repos(user_id: str) -> list[dict[str, Any]]:
     with _engine().connect() as conn:
         result = conn.execute(sql, {"user_id": user_id})
         return [dict(row) for row in result.mappings().all()]
+
+
+def list_all_repos() -> list[dict[str, Any]]:
+    """Return every registered repo of every user, ``{"user_id", "repo_name"}`` each."""
+    sql = text("SELECT user_id, repo_name FROM lachesis_repos ORDER BY user_id, repo_name")
+    with _engine().connect() as conn:
+        return [dict(row) for row in conn.execute(sql).mappings().all()]
+
+
+def record_merge_setup_refusals(user_id: str, repo_name: str, refusals: dict[str, str]) -> None:
+    """Replace the settings recorded as refused for the repo, each mapped to its reason."""
+    sql = text(
+        """
+        UPDATE lachesis_repos
+        SET merge_setup_refusals = CAST(:refusals AS jsonb)
+        WHERE user_id = :user_id AND repo_name = :repo_name
+        """
+    )
+    params = {"user_id": user_id, "repo_name": repo_name, "refusals": json.dumps(refusals)}
+    with _engine().begin() as conn:
+        conn.execute(sql, params)
 
 
 def get_landing_signal(user_id: str, repo_name: str) -> str:

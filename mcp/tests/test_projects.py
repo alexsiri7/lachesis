@@ -63,7 +63,10 @@ The system SHALL report one row per registry.
 @pytest.fixture(autouse=True)
 def register() -> Iterator[MagicMock]:
     token = current_db_user_id.set("test-uid")
-    with patch("tools.repos.db.register_repo", return_value={}) as mock_register:
+    with (
+        patch("tools.repos.db.register_repo", return_value={}) as mock_register,
+        patch("tools.repos.prepare_for_unattended_merges", return_value={}),
+    ):
         yield mock_register
     current_db_user_id.reset(token)
 
@@ -114,6 +117,7 @@ async def test_create_with_initial_capabilities(httpx_mock: HTTPXMock, register:
         "url": f"https://github.com/{_REPO}",
         "private": True,
         "capabilities": ["lookup", "report"],
+        "merge_setup_refusals": {},
     }
     [create] = _requests(httpx_mock, "POST")
     assert json.loads(create.content) == {

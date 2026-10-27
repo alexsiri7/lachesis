@@ -28,7 +28,9 @@ async def create_project(
     name's availability is settled before anything is created.  A failure after
     the repository exists deletes it again.
 
-    Returns ``{"repo", "url", "private", "capabilities"}``.
+    The repository is configured for unattended merges as :func:`register_repo` does.
+
+    Returns ``{"repo", "url", "private", "capabilities", "merge_setup_refusals"}``.
     """
     if not purpose.strip():
         raise ValueError("A project needs a purpose")
@@ -47,7 +49,7 @@ async def create_project(
             await _write_capability(
                 repo, created["default_branch"], capability, spec, f"spec: seed {capability}"
             )
-        await register_repo(repo)
+        registered = await register_repo(repo)
     except Exception as exc:
         try:
             await github.delete_repo(repo)
@@ -66,4 +68,5 @@ async def create_project(
         "url": created["html_url"],
         "private": created["private"],
         "capabilities": sorted(specs),
+        "merge_setup_refusals": registered["merge_setup_refusals"],
     }
