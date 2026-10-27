@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import db
 import github
 
-from .repos import register_repo
+from .repos import _require_user_id, register_repo
 from .specs import _check_capabilities, _write_capability
 
 
@@ -26,12 +27,13 @@ async def create_project(
     content; without any, one capability named after the repository is seeded
     with *purpose* as its Purpose.  Every capability is format-checked and the
     name's availability is settled before anything is created.  A failure after
-    the repository exists deletes it again.
+    the repository exists deletes it again and drops its registration.
 
     The repository is configured for unattended merges as :func:`register_repo` does.
 
     Returns ``{"repo", "url", "private", "capabilities", "merge_setup_refusals"}``.
     """
+    user_id = _require_user_id()
     if not purpose.strip():
         raise ValueError("A project needs a purpose")
     specs = capabilities or {name: _purpose_only_spec(name, purpose)}
@@ -52,12 +54,13 @@ async def create_project(
         registered = await register_repo(repo)
     except Exception as exc:
         try:
+            db.unregister_repo(user_id, repo)
             await github.delete_repo(repo)
         except Exception as cleanup_exc:
             raise RuntimeError(
-                f"Could not create project {repo!r} ({exc!r}), and could not delete the "
-                f"half-created repository ({cleanup_exc!r}). Delete {created['html_url']} "
-                "by hand; it is not registered with Lachesis."
+                f"Could not create project {repo!r} ({exc!r}), and could not undo it "
+                f"({cleanup_exc!r}). Delete {created['html_url']} by hand, and unregister "
+                f"{repo} if list_repos still shows it."
             ) from exc
         raise RuntimeError(
             f"Could not create project {repo!r} ({exc!r}). The repository was deleted "

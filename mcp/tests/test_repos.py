@@ -152,4 +152,5 @@ async def test_prepare_registered_repos_carries_on_past_a_repo_that_fails(
         patch("tools.repos.db.record_merge_setup_refusals") as record,
     ):
         await prepare_registered_repos()
-    record.assert_called_once_with("uid", "owner/fine", {})
+    configured.assert_called_with("owner/fine")
+    record.assert_called_once_with("uid", "https://github.com/owner/fine", {})

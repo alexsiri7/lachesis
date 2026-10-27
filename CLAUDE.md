@@ -78,7 +78,7 @@ railway.toml
 ## Environment variables
 
 See `.env.example`. Key ones:
-- `GITHUB_PAT` — server-side GitHub token with `repo` scope, plus `delete_repo` so a failed `create_project` can delete the repository it created; a fine-grained token also needs Checks (read), without which a private repository's scenario results cannot be read
+- `GITHUB_PAT` — server-side GitHub token with `repo` scope, plus `delete_repo` so a failed `create_project` can delete the repository it created; a fine-grained token also needs Checks (read), without which a private repository's scenario results cannot be read, and Administration (read and write), without which a repository's settings, branch protection and rulesets cannot be configured for unattended merges
 - `ALLOWED_EMAIL` — the single authorized Google account email
 - `SECRET_KEY` — JWT signing key
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth app credentials (**both required**; register `{MCP_BASE_URL}/oauth/callback` as an authorized redirect URI in the Google OAuth Console)

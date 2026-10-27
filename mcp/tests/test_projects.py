@@ -71,6 +71,12 @@ def register() -> Iterator[MagicMock]:
     current_db_user_id.reset(token)
 
 
+@pytest.fixture(autouse=True)
+def unregister() -> Iterator[MagicMock]:
+    with patch("tools.projects.db.unregister_repo") as mock_unregister:
+        yield mock_unregister
+
+
 def _mock_created(httpx_mock: HTTPXMock, *, private: bool = True) -> None:
     httpx_mock.add_response(
         method="POST",
@@ -235,6 +241,23 @@ async def test_failed_registration_deletes_the_repository(
     with pytest.raises(RuntimeError, match="deleted again"):
         await create_project(_NAME, _PURPOSE)
 
+    assert len(_requests(httpx_mock, "DELETE")) == 1
+
+
+async def test_failure_after_registration_drops_the_registration(
+    httpx_mock: HTTPXMock, unregister: MagicMock
+) -> None:
+    _mock_created(httpx_mock)
+    _mock_seeded(httpx_mock, _NAME)
+    httpx_mock.add_response(method="DELETE", url=_API, status_code=204)
+
+    with (
+        patch("tools.repos.prepare_for_unattended_merges", side_effect=RuntimeError("lost")),
+        pytest.raises(RuntimeError, match="deleted again and nothing was registered"),
+    ):
+        await create_project(_NAME, _PURPOSE)
+
+    unregister.assert_called_once_with("test-uid", _REPO)
     assert len(_requests(httpx_mock, "DELETE")) == 1
 
 

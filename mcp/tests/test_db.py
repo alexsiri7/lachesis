@@ -137,6 +137,17 @@ def test_list_repos_returns_list() -> None:
     assert result == rows
 
 
+def test_list_all_repos_selects_every_users_repo_with_its_owner() -> None:
+    rows = [{"user_id": "uid-1", "repo_name": "a/b"}, {"user_id": "uid-2", "repo_name": "c/d"}]
+    mock = _mock_engine(rows)
+    with patch("db._engine", return_value=mock):
+        result = db.list_all_repos()
+    assert result == rows
+    sql = str(mock.connect.return_value.execute.call_args[0][0])
+    assert "SELECT user_id, repo_name FROM lachesis_repos" in sql
+    assert "WHERE" not in sql
+
+
 def test_unregister_repo_no_exception() -> None:
     mock = _mock_engine([])
     with patch("db._engine", return_value=mock):

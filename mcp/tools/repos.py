@@ -63,10 +63,11 @@ async def register_repo(repo: str, landing_signal: str | None = None) -> dict[st
     return {**row, "merge_setup_refusals": await prepare_for_unattended_merges(user_id, normalized)}
 
 
-async def prepare_for_unattended_merges(user_id: str, repo: str) -> dict[str, str]:
-    """Configure *repo* for unattended merges and record what GitHub refused."""
-    refusals = await unattended_merges.configure(repo)
-    db.record_merge_setup_refusals(user_id, repo, refusals)
+async def prepare_for_unattended_merges(user_id: str, repo_name: str) -> dict[str, str]:
+    """Configure the repo registered as *repo_name* for unattended merges and record what
+    GitHub refused against that row, whichever form its name is stored in."""
+    refusals = await unattended_merges.configure(normalize_repo(repo_name))
+    db.record_merge_setup_refusals(user_id, repo_name, refusals)
     return refusals
 
 
@@ -74,9 +75,7 @@ async def prepare_registered_repos() -> None:
     """Configure every registered repo for unattended merges, as each start does once."""
     for row in db.list_all_repos():
         try:
-            await prepare_for_unattended_merges(
-                str(row["user_id"]), normalize_repo(row["repo_name"])
-            )
+            await prepare_for_unattended_merges(str(row["user_id"]), row["repo_name"])
         except Exception:
             logger.exception("could not prepare repo=%s for unattended merges", row["repo_name"])
 
