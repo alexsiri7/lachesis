@@ -506,6 +506,8 @@ async def test_signed_out_visit(lachesis: Lachesis) -> None:
     _requirement_files(
         lachesis.github, REPO, _requirement("001", "idea", [], title="Secret widget plan")
     )
+    # Only the visit's own requests count: registering the repo may call GitHub.
+    before_visit = len(lachesis.github.requests)
 
     async with httpx.AsyncClient(base_url=lachesis.base_url, follow_redirects=True) as http:
         response = await http.get("/web/")
@@ -515,4 +517,4 @@ async def test_signed_out_visit(lachesis: Lachesis) -> None:
     assert "https://accounts.google.com/" in response.text
     assert "Secret widget plan" not in response.text
     assert REPO not in response.text
-    assert lachesis.github.requests == []
+    assert lachesis.github.requests[before_visit:] == []
