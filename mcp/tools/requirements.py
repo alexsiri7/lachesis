@@ -132,8 +132,9 @@ as list_accounts names it): its allowance used this week, when it resets, its fi
 window's use and any shorter limit in force. If you can see Requesty, call report_overflow
 with the money spent there this sprint and the cap the author set; nothing is routed to
 overflow until it has been reported. read_fuel returns what is left on every account: its
-reserve, 20 percent of the share the factory may use of it, kept for security work and
-production incidents, whether its five-hour window has paused it, and its pace for today;
+reserve, 10 percent of the share the factory may use of it, kept for security work and
+production incidents until it is released for any work in the last 24 hours before the
+account's reset, whether its five-hour window has paused it, and its pace for today;
 and the overflow figures.
 Then call route_run with the kind of work, the issue's size, the repo and issue the run is
 for, and emergency true only for security work or a production incident, and run the model

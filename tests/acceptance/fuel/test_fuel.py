@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
@@ -152,7 +150,6 @@ async def test_run_on_a_shared_account(lachesis: Lachesis) -> None:
     assert unknown.is_error
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #357")
 @scenario("fuel", "Reading fuel")
 async def test_reading_fuel(lachesis: Lachesis) -> None:
     await _two_accounts(lachesis)
@@ -197,7 +194,6 @@ async def test_only_emergencies_use_the_reserve(lachesis: Lachesis) -> None:
     assert emergency["account"] in {"factory", "main"}
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #357")
 @scenario("fuel", "Unused reserve released before the reset")
 async def test_unused_reserve_released_before_the_reset(lachesis: Lachesis) -> None:
     await lachesis.call_tool("register_repo", {"repo": REPO})

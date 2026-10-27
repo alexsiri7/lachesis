@@ -9,8 +9,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, elements_in, scenario, section_of, with_attribute
 
 REPO = "owner/repo"
@@ -48,7 +46,6 @@ def _issue(
     }
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #357")
 @scenario("progress-reporting", "Two accounts on the page")
 async def test_two_accounts_on_the_page(lachesis: Lachesis) -> None:
     await _ok(lachesis, "register_account", {"name": "factory", "share_percent": 100})

@@ -142,7 +142,7 @@ def test_a_trusted_model_pricier_than_claude_is_chosen_only_once_the_allowance_i
 
     assert _route(runs)["model"] == "claude"
 
-    result = _route(runs, fuel=_fuel(used=85.0))
+    result = _route(runs, fuel=_fuel(used=95.0))
     assert result["model"] == _DEEPSEEK
     assert result["via"] == "requesty"
     assert result["claude_available"] is False
@@ -168,7 +168,7 @@ def test_a_shorter_limit_overflows_to_the_cheapest_trusted_model() -> None:
 
 
 def test_with_the_allowance_spent_and_overflow_at_the_cap_no_model_is_chosen() -> None:
-    result = _route(_trusted(cost_usd=_PRICEY), fuel=_fuel(used=85.0, spent=40.0))
+    result = _route(_trusted(cost_usd=_PRICEY), fuel=_fuel(used=95.0, spent=40.0))
 
     assert result["model"] is None
     assert result["via"] is None
@@ -177,7 +177,7 @@ def test_with_the_allowance_spent_and_overflow_at_the_cap_no_model_is_chosen() -
 
 
 def test_only_an_emergency_draws_on_the_reserve_when_no_overflow_model_is_trusted() -> None:
-    fuel = _fuel(used=85.0)
+    fuel = _fuel(used=95.0)
 
     emergency = _route([], kind="implementation", fuel=fuel, emergency=True)
     assert emergency["model"] == "claude"

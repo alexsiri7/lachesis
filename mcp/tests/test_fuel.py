@@ -193,8 +193,9 @@ def test_reading_fuel_returns_both_figures_with_the_reset_time_and_the_reserve()
     allowance = result["allowance"]
     assert allowance["used_percent"] == 60
     assert allowance["resets_at"] == _RESETS_AT
-    assert allowance["reserve_percent"] == 20
-    assert allowance["left_outside_reserve_percent"] == 20
+    assert allowance["reserve_percent"] == 10
+    assert allowance["reserve_released"] is False
+    assert allowance["left_outside_reserve_percent"] == 30
     assert allowance["only_reserve_left"] is False
     assert result["overflow"] == {
         "reported": True,
@@ -209,20 +210,32 @@ def test_an_early_burst_is_outside_the_pace() -> None:
     """Two days in, 70 percent of the allowance outside the reserve is over the day's share."""
     now = _WEEK_START + timedelta(days=2, hours=3)
 
-    assert fuel_status(_fuel(used=56), now)["pace"] == {
+    assert fuel_status(_fuel(used=63), now)["pace"] == {
         "day": 3,
         "days": 7,
-        "limit_percent": 34.29,
+        "limit_percent": 38.57,
         "within_pace": False,
     }
     assert fuel_status(_fuel(used=30), now)["pace"]["within_pace"] is True
 
 
 def test_only_the_reserve_left() -> None:
-    allowance = fuel_status(_fuel(used=80), _WEEK_START + timedelta(days=6))["allowance"]
+    allowance = fuel_status(_fuel(used=90), _WEEK_START + timedelta(days=5))["allowance"]
 
     assert allowance["only_reserve_left"] is True
     assert allowance["left_outside_reserve_percent"] == 0
+
+
+def test_the_reserve_is_released_in_the_last_24_hours_before_the_reset() -> None:
+    held = fuel_status(_fuel(used=90), _RESETS_AT - timedelta(hours=25))
+    released = fuel_status(_fuel(used=90), _RESETS_AT - timedelta(hours=20))
+
+    assert held["allowance"]["reserve_released"] is False
+    assert held["allowance"]["only_reserve_left"] is True
+    assert released["allowance"]["reserve_released"] is True
+    assert released["allowance"]["only_reserve_left"] is False
+    assert released["allowance"]["left_outside_reserve_percent"] == 10
+    assert released["pace"]["limit_percent"] == 100
 
 
 def test_the_overflow_cap_reached() -> None:
@@ -250,14 +263,14 @@ def test_a_report_from_a_past_week_is_not_current() -> None:
 
 
 async def test_nothing_reported(set_user_id: str) -> None:
-    assert fuel_status(None, _WEEK_START) == {"reported": False, "reserve_percent": 20.0}
+    assert fuel_status(None, _WEEK_START) == {"reported": False, "reserve_percent": 10.0}
     with (
         patch("tools.fuel.db.get_fuel", return_value=None) as get,
         patch("tools.fuel.db.list_fuel", return_value=[]),
     ):
         assert await read_fuel() == {
             "reported": False,
-            "reserve_percent": 20.0,
+            "reserve_percent": 10.0,
             "overflow": {
                 "reported": False,
                 "spent_usd": None,
@@ -399,7 +412,7 @@ def _account(**overrides: object) -> dict:
     return {
         **_MAIN,
         "weekly_used_percent": 20.0,
-        "weekly_resets_at": now + timedelta(hours=12),
+        "weekly_resets_at": now + timedelta(days=3),
         "shorter_limit_until": None,
         "five_hour_used_percent": 10.0,
         "overflow_spent_usd": 0.0,
@@ -412,10 +425,26 @@ def _account(**overrides: object) -> dict:
 def test_an_accounts_reserve_and_usable_allowance_follow_its_share() -> None:
     status = account_status(_account(), datetime.now(UTC))
 
-    assert status["reserve_percent"] == 13
-    assert status["usable_percent"] == 32
+    assert status["reserve_percent"] == 6.5
+    assert status["reserve_released"] is False
+    assert status["usable_percent"] == 38.5
     assert status["emergency_usable_percent"] == 45
     assert status["paused"] is False
+    assert status["within_pace"] is True
+
+
+def test_an_accounts_reserve_is_usable_for_any_work_in_its_last_24_hours() -> None:
+    now = datetime.now(UTC)
+    status = account_status(
+        _account(weekly_used_percent=60.0, weekly_resets_at=now + timedelta(hours=20)), now
+    )
+
+    assert status["reserve_released"] is True
+    assert status["usable_percent"] == 5
+    assert status["emergency_usable_percent"] == 5
+    assert status["only_reserve_left"] is False
+    # Never beyond the share: the whole 65 percent by the last day.
+    assert status["pace"]["limit_percent"] == 65
     assert status["within_pace"] is True
 
 
@@ -429,8 +458,8 @@ def test_an_accounts_pace_is_over_its_own_week_and_share() -> None:
     now = datetime.now(UTC)
     status = account_status(_account(weekly_resets_at=now + timedelta(days=6, hours=12)), now)
 
-    # Day 1 of 7: a seventh of the 52 percent outside main's reserve.
-    assert status["pace"]["limit_percent"] == round(52 / 7, 2)
+    # Day 1 of 7: a seventh of the 58.5 percent outside main's reserve.
+    assert status["pace"]["limit_percent"] == round(58.5 / 7, 2)
     assert status["within_pace"] is False
 
 
@@ -447,7 +476,7 @@ def test_an_account_never_reported_or_reset_counts_as_unused() -> None:
     )
     reset = account_status(_account(weekly_resets_at=now - timedelta(hours=1)), now)
 
-    assert never["used_percent"] == 0 and never["usable_percent"] == 52
+    assert never["used_percent"] == 0 and never["usable_percent"] == 58.5
     assert reset["used_percent"] == 0 and reset["current"] is False
 
 

@@ -4594,7 +4594,7 @@ async def test_next_issue_says_when_the_sprint_budget_is_spent(
 ) -> None:
     """Scenario: Budget spent — allowance outside the reserve used and overflow at its cap."""
     _mock_open_issues(httpx_mock, [1], created=_recent(1))
-    fuel = _sprint_fuel(used=80.0, overflow_spent=1.0)
+    fuel = _sprint_fuel(used=90.0, overflow_spent=1.0)
 
     with _patch_backlog(_FakeBacklog(), fuel=fuel):
         result = await next_issue("owner/repo")
@@ -4609,7 +4609,7 @@ async def test_next_issue_holds_an_interrupt_once_the_sprint_budget_is_spent(
 ) -> None:
     """Only security work is exempt from the budget, not an interrupt."""
     _mock_open_issues(httpx_mock, [1], created=_recent(1))
-    fuel = _sprint_fuel(used=80.0, overflow_spent=1.0)
+    fuel = _sprint_fuel(used=90.0, overflow_spent=1.0)
     fake = _FakeBacklog([{"issue_number": 1, "interrupt": True}])
 
     with _patch_backlog(fake, fuel=fuel):
@@ -4625,7 +4625,7 @@ async def test_next_issue_offers_security_work_from_the_reserve(
     """Scenario: Only emergencies use the reserve — security work is offered past the budget."""
     _mock_open_issues(httpx_mock, [1, 2], {2: ["security"]}, created=_recent(1, 2))
     _mock_blocked_by(httpx_mock, 2, [])
-    fuel = _sprint_fuel(used=80.0, overflow_spent=1.0)
+    fuel = _sprint_fuel(used=90.0, overflow_spent=1.0)
 
     with _patch_backlog(_FakeBacklog(), fuel=fuel):
         result = await next_issue("owner/repo")
@@ -4705,7 +4705,7 @@ async def test_next_issue_with_nothing_that_fits_says_the_budget_is_spent(
     httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
 ) -> None:
     _mock_open_issues(httpx_mock, [1], created=_recent(1))
-    fuel = _sprint_fuel(used=50.0, overflow_spent=1.0)
+    fuel = _sprint_fuel(used=60.0, overflow_spent=1.0)
     estimates = [{"repo_name": "owner/repo", "issue": 1, "tokens": 500}]
 
     with _patch_backlog(_FakeBacklog(), fuel=fuel, estimates=estimates):

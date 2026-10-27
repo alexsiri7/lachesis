@@ -10,9 +10,10 @@ import db
 from .repos import _require_user_id
 from .requirements import _resolve_repo
 
-RESERVE_PERCENT = 20.0
+RESERVE_PERCENT = 10.0
 DEFAULT_ACCOUNT = "factory"
 _WEEK = timedelta(days=7)
+_RESERVE_RELEASE = timedelta(hours=24)
 
 
 async def report_usage(
@@ -198,19 +199,27 @@ def overflow_status(spent: float | None, cap: float | None) -> dict[str, Any]:
     }
 
 
+def reserve_released(resets_at: datetime, now: datetime) -> bool:
+    """Whether the reserve of a week resetting at *resets_at* is released for any work at
+    *now*: in the last 24 hours before the reset, so none of it is lost there."""
+    return now < resets_at <= now + _RESERVE_RELEASE
+
+
 def fuel_status(row: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
     """Return what fuel is left at *now*, from the primary account's latest fuel report *row*.
 
     The reported week is the 7 days up to ``weekly_resets_at``. The pace is the share
     of the allowance outside the reserve that may be used by the end of today when
-    it is spread evenly over the week.
+    it is spread evenly over the week. In the last 24 hours before the reset the
+    reserve is released, and the whole allowance is outside it.
     """
     if row is None:
         return {"reported": False, "reserve_percent": RESERVE_PERCENT}
     used = row["weekly_used_percent"]
     resets_at = row["weekly_resets_at"]
     limit_until = row["shorter_limit_until"]
-    outside_reserve = 100 - RESERVE_PERCENT
+    released = reserve_released(resets_at, now)
+    outside_reserve = 100 - (0 if released else RESERVE_PERCENT)
     current = now < resets_at
     pace = None
     if current:
@@ -227,6 +236,7 @@ def fuel_status(row: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
             "shorter_limit_until": limit_until,
             "shorter_limit_in_force": limit_until is not None and now < limit_until,
             "reserve_percent": RESERVE_PERCENT,
+            "reserve_released": released,
             "left_outside_reserve_percent": round(max(0.0, outside_reserve - used), 2),
             "only_reserve_left": used >= outside_reserve,
         },
@@ -239,7 +249,8 @@ def account_status(row: dict[str, Any], now: datetime) -> dict[str, Any]:
     """Return what the factory may still use of one account at *now*, from a
     :func:`db.list_fuel` row: its reserve (the reserve percent of its share), what is
     usable outside the reserve and in an emergency, whether its five-hour window has
-    paused it, and its pace over its own week.
+    paused it, and its pace over its own week. In the last 24 hours before its reset
+    the reserve is released: usable for any work, and counted in its pace.
 
     An account never reported, or whose reported week has reset, counts as unused.
     """
@@ -247,6 +258,8 @@ def account_status(row: dict[str, Any], now: datetime) -> dict[str, Any]:
     reserve = round(share * RESERVE_PERCENT / 100, 2)
     reported = row["reported_at"] is not None
     current = reported and now < row["weekly_resets_at"]
+    released = current and reserve_released(row["weekly_resets_at"], now)
+    held = 0.0 if released else reserve
     used = row["weekly_used_percent"] if current else 0.0
     limit_until = row["shorter_limit_until"] if reported else None
     limit_in_force = limit_until is not None and now < limit_until
@@ -257,7 +270,7 @@ def account_status(row: dict[str, Any], now: datetime) -> dict[str, Any]:
     if current:
         resets_at = row["weekly_resets_at"]
         day = min(max((now - (resets_at - _WEEK)) // timedelta(days=1) + 1, 1), 7)
-        limit = round((share - reserve) * day / 7, 2)
+        limit = round((share - held) * day / 7, 2)
         pace = {"day": day, "days": 7, "limit_percent": limit, "within_pace": used <= limit}
     return {
         "name": row["name"],
@@ -274,9 +287,10 @@ def account_status(row: dict[str, Any], now: datetime) -> dict[str, Any]:
         "five_hour_used_percent": five_hour,
         "paused": paused,
         "reserve_percent": reserve,
-        "usable_percent": round(max(0.0, share - reserve - used), 2),
+        "reserve_released": released,
+        "usable_percent": round(max(0.0, share - held - used), 2),
         "emergency_usable_percent": round(max(0.0, share - used), 2),
-        "only_reserve_left": used >= share - reserve,
+        "only_reserve_left": used >= share - held,
         "pace": pace,
         "within_pace": pace["within_pace"] if pace else True,
     }

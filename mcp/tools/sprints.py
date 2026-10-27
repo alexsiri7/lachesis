@@ -42,15 +42,18 @@ def sprint_budget(
     The budget is what the factory may use of every account outside its reserve, plus
     the overflow cap converted at the Claude price. With *accounts*
     (:func:`accounts_status`) every account counts, each at its share less its reserve;
-    without, the primary alone at its whole allowance. An account whose reported week
-    has reset counts nothing spent. ``None`` when the primary account was never reported.
+    without, the primary alone at its whole allowance less the reserve. A reserve
+    released in the last 24 hours before its account's reset counts in the budget. An
+    account whose reported week has reset counts nothing spent. ``None`` when the primary
+    account was never reported.
     """
     if row is None:
         return None
     fuel = fuel_status(row, now)
     start = _sprint_start(row["weekly_resets_at"], now)
-    outside_reserve = 100 - RESERVE_PERCENT
     current = fuel["current"]
+    released = fuel["allowance"]["reserve_released"]
+    outside_reserve = 100 - (0 if released else RESERVE_PERCENT)
     used = row["weekly_used_percent"]
     cap = row["overflow_cap_usd"] or 0.0
     spent_usd = row["overflow_spent_usd"] or 0.0
@@ -58,7 +61,9 @@ def sprint_budget(
     by_account: list[dict[str, Any]] = []
     if accounts:
         for account in accounts:
-            usable = account["share_percent"] - account["reserve_percent"]
+            usable = account["share_percent"] - (
+                0 if account["reserve_released"] else account["reserve_percent"]
+            )
             account_used = min(account["used_percent"], usable)
             by_account.append(
                 {
