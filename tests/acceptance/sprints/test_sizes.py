@@ -173,12 +173,11 @@ async def test_too_big_to_plan(lachesis: Lachesis) -> None:
     assert entries == [{**entries[0], "split": True}]
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #303")
 @scenario("sprints", "Estimate from points")
 async def test_estimate_from_points(lachesis: Lachesis) -> None:
     repo = await Repo(lachesis).register()
-    await _history(repo, issues=range(10, 18), size=5, tokens=10)  # 2 per point, eight closed
     await _new_sprint(lachesis, first=True)
+    await _history(repo, issues=range(10, 18), size=5, tokens=10)  # 2 per point, eight closed
     repo.open(30)
     await repo.size(30, 5)
 
