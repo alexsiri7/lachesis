@@ -399,3 +399,10 @@ test('prorated guard: a weekly cap that is not a number counts as 100%', async (
   expect(r.result).toContain('7-day cap 60% now (100% paced over the week, at least 15%, plus 10 points)')
   expect(r.result).toContain('within budget, under pace by 20 points: spare capacity available')
 })
+
+test('prorated guard: a 5-hour cap that is not a number counts as 100%', async ($, on) => {
+  prorated(on, '2026-10-07T03:00:00Z', 30, { fiveHourCapPercent: 'low' })
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('5-hour cap 100%')
+  expect(r.result).not.toContain('NaN')
+})
