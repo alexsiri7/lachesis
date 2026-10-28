@@ -204,19 +204,23 @@ function capFor(
   }
   const t = guard.pace ? windowTiming(w, now) : undefined
   if (!t) return guard.weeklyCapPercent
-  const linear = (guard.weeklyCapPercent * t.elapsedExact) / 100
+  const linear = linearPace(guard, t)
   // Floor and slack only ever raise the cap, and never past 100%.
   const raised = Math.min(100, Math.max(guard.paceFloor, linear + guard.paceSlack))
   return Math.round(Math.max(linear, raised) * 100) / 100
 }
 
-// Points the week's use is over (positive) or under (negative) pace: the linear
-// share of weeklyCapPercent for the week elapsed. Only a paced weekly cap has a
-// pace, and only with a reset time.
+// The pace: the linear share of weeklyCapPercent for the week elapsed.
+function linearPace(guard: GuardConfig, t: { elapsedExact: number }): number {
+  return (guard.weeklyCapPercent * t.elapsedExact) / 100
+}
+
+// Points the week's use is over (positive) or under (negative) pace. Only a paced
+// weekly cap has a pace, and only with a reset time.
 function paceGap(guard: GuardConfig, w: SessionRateLimit, now: number): number | undefined {
   if (w.kind !== 'seven_day' || !guard.pace || guard.weeklySteps) return undefined
   const t = windowTiming(w, now)
-  return t ? Math.round(w.percentUsed - (guard.weeklyCapPercent * t.elapsedExact) / 100) : undefined
+  return t ? Math.round(w.percentUsed - linearPace(guard, t)) : undefined
 }
 
 function pointsText(n: number): string {
