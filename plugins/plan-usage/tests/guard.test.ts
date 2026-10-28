@@ -293,3 +293,90 @@ test('5-hour lift: the status line shows the lifted cap in the last hours of the
   expect(shown.at(-1)).toStartWith('budget guard on · ')
   expect(shown.at(-1)).toContain('5h 70% · 70% of 100% cap')
 })
+
+// Week resets 2026-10-10T15:00Z: 1h in at 2026-10-03T16:00Z, half way at 2026-10-07T03:00Z,
+// 12h left at 2026-10-10T03:00Z.
+function prorated(on: any, now: string, sevenDay: number) {
+  on('clock.now', () => ({ value: Date.parse(now) }))
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({
+    value: JSON.stringify({ enabled: true, fiveHourCapPercent: 60, pace: true, paceFloor: 15, paceSlack: 10, mode: 'stop' }),
+  }))
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { window: 200000 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 5 },
+        { kind: 'seven_day', percentUsed: sevenDay, resetsAt: '2026-10-10T15:00:00Z' },
+      ],
+    },
+  }))
+  on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }))
+}
+
+test('prorated guard: at the window start the floor holds', async ($, on) => {
+  prorated(on, '2026-10-03T16:00:00Z', 16)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny ?? r.text).toContain('7-day window at 16% (cap 15%)')
+})
+
+test('prorated guard: half way through the week the cap is linear plus the slack', async ($, on) => {
+  prorated(on, '2026-10-07T03:00:00Z', 61)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny ?? r.text).toContain('7-day window at 61% (cap 60%)')
+})
+
+test('prorated guard: at the window end the cap reaches 100%', async ($, on) => {
+  prorated(on, '2026-10-10T03:00:00Z', 99)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny).toBeUndefined()
+})
+
+test('prorated guard: the usage tool names the cap, its floor and slack, and the pace', async ($, on) => {
+  prorated(on, '2026-10-07T03:00:00Z', 30)
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('7-day cap 60% now (100% paced over the week, at least 15%, plus 10 points)')
+  expect(r.result).toContain('; under pace by 20 points')
+  expect(r.result).toContain('within budget, under pace by 20 points: spare capacity available')
+})
+
+test('prorated guard: over pace is reported but offers no spare capacity', async ($, on) => {
+  prorated(on, '2026-10-07T03:00:00Z', 55)
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('; over pace by 5 points')
+  expect(r.result).toContain('- within budget')
+  expect(r.result).not.toContain('spare capacity')
+})
+
+test('prorated guard: the status line says when the week is under pace', async ($, on) => {
+  const shown: (string | undefined)[] = []
+  prorated(on, '2026-10-07T03:00:00Z', 30)
+  on('fs.write', () => ({ value: undefined }))
+  on('session.measure', (_$: any, e: any) => ({ changed: e.changed }))
+  on('ui.status', (_$: any, e: any) => {
+    shown.push(e.text ?? e.value)
+    return { value: undefined }
+  })
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 5 },
+      { kind: 'seven_day', percentUsed: 30, resetsAt: '2026-10-10T15:00:00Z' },
+    ],
+    changed: ['rateLimits'],
+  } as any)
+  expect(shown.at(-1)).toStartWith('budget guard on, under pace by 20 points · ')
+})
+
+test('stepped guard: at the window start the first step holds', async ($, on) => {
+  stepped(on, '2026-10-03T16:00:00Z', 66)
+  const r = await $.tool.call({ tool: 'Bash', input: { command: 'ls' } })
+  expect(r.deny ?? r.text).toContain('7-day window at 66% (cap 65%)')
+})
+
+test('stepped guard: no pace is reported', async ($, on) => {
+  stepped(on, '2026-10-07T03:00:00Z', 10)
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).not.toContain('pace by')
+})

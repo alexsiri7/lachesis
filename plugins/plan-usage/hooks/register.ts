@@ -25,6 +25,10 @@ type GuardConfig = {
   // When true the weekly cap grows with the week: weeklyCapPercent times the
   // share of the 7-day window elapsed, so the cap is not spent on day one.
   pace: boolean
+  // With pace on, the weekly cap is never below paceFloor early in the week, and
+  // is paceSlack points over the linear cap after that, up to 100%.
+  paceFloor: number
+  paceSlack: number
   // Optional stepped weekly cap: [elapsedPercent, capPercent] pairs, e.g.
   // [[0, 65], [90, 90], [95, 100]] holds the week to 65% until 90% of it has
   // passed, then 90%, then 100% for the last 5%. Spare capacity most of the
@@ -85,14 +89,15 @@ export function shareOfCap(used: number, cap: number | undefined): number | unde
   return Math.round((used / cap) * 100)
 }
 
-function describeWindow(w: SessionRateLimit, now: number, cap?: number): string {
+function describeWindow(w: SessionRateLimit, now: number, cap?: number, pace?: number): string {
   const label = LABELS[w.kind] ?? w.kind
   const resets = w.resetsAt ? `, resets ${w.resetsAt}` : ''
   const t = windowTiming(w, now)
   const timing = t ? ` (in ${t.left}; ${t.elapsed}% of the window elapsed)` : ''
   const share = shareOfCap(w.percentUsed, cap)
   const ofCap = share !== undefined ? `; ${share}% of the ${cap}% cap` : ''
-  return `${label}: ${w.percentUsed}% used${resets}${timing}${ofCap}`
+  const paceText = pace !== undefined ? `; ${describePace(pace)}` : ''
+  return `${label}: ${w.percentUsed}% used${resets}${timing}${ofCap}${paceText}`
 }
 
 // "7d 38%/67% ↺2d 7h · 58% of 65% cap": used / elapsed, the time to the reset,
@@ -111,7 +116,7 @@ async function configDir($: EngineInterface): Promise<string> {
 
 // <config dir>/budget-guard.json, e.g.
 // { "enabled": true, "weeklyCapPercent": 65, "fiveHourCapPercent": 60, "pace": true,
-//   "fiveHourCapLastHours": { "hours": 5, "cap": 100 }, "mode": "wrap-up" }
+//   "paceFloor": 15, "paceSlack": 10, "fiveHourCapLastHours": { "hours": 5, "cap": 100 }, "mode": "wrap-up" }
 // Missing or unreadable means the guard is off.
 async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
   try {
@@ -122,6 +127,8 @@ async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
       weeklyCapPercent: Number(raw.weeklyCapPercent ?? 100),
       fiveHourCapPercent: Number(raw.fiveHourCapPercent ?? 100),
       pace: raw.pace === true,
+      paceFloor: points(raw.paceFloor),
+      paceSlack: points(raw.paceSlack),
       weeklySteps: parseSteps(raw.weeklySteps),
       fiveHourCapLastHours: parseLastHours(raw.fiveHourCapLastHours),
       mode: raw.mode === 'stop' ? 'stop' : 'wrap-up',
@@ -140,6 +147,12 @@ function parseSteps(raw: unknown): [number, number][] | undefined {
     .filter(([e, c]) => Number.isFinite(e) && Number.isFinite(c))
     .sort((a, b) => a[0] - b[0])
   return steps.length ? steps : undefined
+}
+
+// A number of points, 0 when absent or not a number: a NaN cap would never trip.
+function points(raw: unknown): number {
+  const n = Number(raw ?? 0)
+  return Number.isFinite(n) ? n : 0
 }
 
 // { hours, cap } when both are numbers, else undefined.
@@ -174,8 +187,9 @@ function fiveHourLift(
 // The cap in force for a window now, given every window read with it. The
 // 5-hour cap is fiveHourCapLastHours' cap while it is lifted. With weeklySteps,
 // the weekly cap is the step reached by the share of the week elapsed. With pace
-// on, the weekly cap is weeklyCapPercent times the share of the week elapsed, to
-// one decimal; a window with no reset time falls back to the full cap.
+// on, the weekly cap is weeklyCapPercent times the share of the week elapsed,
+// raised to paceFloor and by paceSlack up to 100%, to two decimals; a window
+// with no reset time falls back to the full cap.
 function capFor(
   guard: GuardConfig,
   w: SessionRateLimit,
@@ -190,7 +204,37 @@ function capFor(
   }
   const t = guard.pace ? windowTiming(w, now) : undefined
   if (!t) return guard.weeklyCapPercent
-  return Math.round(guard.weeklyCapPercent * t.elapsedExact) / 100
+  const linear = (guard.weeklyCapPercent * t.elapsedExact) / 100
+  // Floor and slack only ever raise the cap, and never past 100%.
+  const raised = Math.min(100, Math.max(guard.paceFloor, linear + guard.paceSlack))
+  return Math.round(Math.max(linear, raised) * 100) / 100
+}
+
+// Points the week's use is over (positive) or under (negative) pace: the linear
+// share of weeklyCapPercent for the week elapsed. Only a paced weekly cap has a
+// pace, and only with a reset time.
+function paceGap(guard: GuardConfig, w: SessionRateLimit, now: number): number | undefined {
+  if (w.kind !== 'seven_day' || !guard.pace || guard.weeklySteps) return undefined
+  const t = windowTiming(w, now)
+  return t ? Math.round(w.percentUsed - (guard.weeklyCapPercent * t.elapsedExact) / 100) : undefined
+}
+
+function pointsText(n: number): string {
+  return n === 1 ? '1 point' : `${n} points`
+}
+
+function describePace(gap: number): string {
+  if (gap > 0) return `over pace by ${pointsText(gap)}`
+  if (gap < 0) return `under pace by ${pointsText(-gap)}`
+  return 'on pace'
+}
+
+// "under pace by N points" when the week's use is behind pace: allowance another
+// session can spend. Undefined otherwise.
+function spareCapacity(guard: GuardConfig, windows: SessionRateLimit[], now: number): string | undefined {
+  const week = windows.find(w => w.kind === 'seven_day')
+  const gap = week && paceGap(guard, week, now)
+  return gap !== undefined && gap < 0 ? describePace(gap) : undefined
 }
 
 function describeCaps(guard: GuardConfig, windows: SessionRateLimit[], now: number): string {
@@ -207,9 +251,16 @@ function describeCaps(guard: GuardConfig, windows: SessionRateLimit[], now: numb
   const weekCap = week && guard.pace ? capFor(guard, week, windows, now) : undefined
   const weekly =
     weekCap !== undefined && weekCap !== guard.weeklyCapPercent
-      ? `7-day cap ${weekCap}% now (${guard.weeklyCapPercent}% paced over the week)`
+      ? `7-day cap ${weekCap}% now (${guard.weeklyCapPercent}% paced over the week${raisedBy(guard)})`
       : `7-day cap ${guard.weeklyCapPercent}%`
   return `${weekly}, ${fiveHour}`
+}
+
+// ", at least 15%, plus 10 points": what raises a paced cap, if anything.
+function raisedBy(guard: GuardConfig): string {
+  const floor = guard.paceFloor > 0 ? `, at least ${guard.paceFloor}%` : ''
+  const slack = guard.paceSlack > 0 ? `, plus ${pointsText(guard.paceSlack)}` : ''
+  return floor + slack
 }
 
 // The windows at or past their cap, as text; empty when within budget.
@@ -272,7 +323,11 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const guard = await readGuard($)
     const lines = usage.rateLimits.length
-      ? usage.rateLimits.map(w => describeWindow(w, now, guard && capFor(guard, w, usage.rateLimits, now)))
+      ? usage.rateLimits.map(w =>
+          guard
+            ? describeWindow(w, now, capFor(guard, w, usage.rateLimits, now), paceGap(guard, w, now))
+            : describeWindow(w, now),
+        )
       : ['No rate-limit reading yet (none reported by the last API response).']
     if (usage.cost) lines.push(`Session cost so far: $${usage.cost.usd.toFixed(2)}`)
     if (usage.context.percent !== undefined) {
@@ -282,13 +337,16 @@ export const register: Register = on => {
       lines.push('Budget guard: off')
     } else {
       const over = breaches(guard, usage.rateLimits, now)
+      const spare = spareCapacity(guard, usage.rateLimits, now)
       lines.push(
         `Budget guard: on, ${guard.mode} mode (${describeCaps(guard, usage.rateLimits, now)})` +
           (over.length
             ? guard.mode === 'stop'
               ? ` - TRIPPED: ${over.join('; ')}`
               : ` - WRAP UP: ${over.join('; ')}. Finish what is in hand; start nothing new.`
-            : ' - within budget'),
+            : spare
+              ? ` - within budget, ${spare}: spare capacity available`
+              : ' - within budget'),
       )
     }
     return { result: lines.join('\n') }
@@ -337,9 +395,10 @@ async function showStatus($: EngineInterface, windows: SessionRateLimit[]): Prom
   }
   const fig = windows.map(w => shortWindow(w, now, capFor(guard, w, windows, now))).join(' | ')
   const over = breaches(guard, windows, now)
+  const spare = spareCapacity(guard, windows, now)
   $.ui.status(
     !over.length
-      ? `budget guard on · ${fig}`
+      ? `budget guard on${spare ? `, ${spare}` : ''} · ${fig}`
       : guard.mode === 'stop'
         ? `⛔ budget guard tripped: ${fig}`
         : `⚠ wrap up, start nothing new: ${fig}`,
