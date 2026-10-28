@@ -214,6 +214,33 @@ async def test_park_and_unpark(lachesis: Lachesis) -> None:
     assert (backlog[0]["number"], backlog[0]["ready"]) == (1, True)
 
 
+@scenario("backlog", "Waiting on a decision")
+async def test_waiting_on_a_decision(lachesis: Lachesis) -> None:
+    await _repo_with(lachesis, _issue(1))
+    lachesis.github.on(
+        "POST",
+        f"/repos/{REPO}/issues/1/comments",
+        json={"html_url": f"https://github.com/{REPO}/issues/1#issuecomment-1"},
+        status=201,
+    )
+    lachesis.github.on("POST", f"/repos/{REPO}/labels", json={"name": "needs-author"}, status=201)
+    lachesis.github.on("POST", f"/repos/{REPO}/issues/1/labels", json=[])
+
+    asked = await lachesis.call_tool(
+        "ask_author", {"repo": REPO, "number": 1, "question": "Which colour?"}
+    )
+    assert not asked.is_error, asked.text
+    await _repo_with(lachesis, _issue(1, labels=("needs-author",)))
+    listed = await lachesis.call_tool("list_open_questions", {})
+    backlog = await _backlog(lachesis)
+
+    assert not listed.is_error, listed.text
+    [question] = listed.json()
+    assert question["question"] == "Which colour?"
+    assert question["blocks"] == [1]
+    assert (backlog[0]["number"], backlog[0]["ready"]) == (1, True)
+
+
 @scenario("backlog", "Interrupt wins over every tier")
 async def test_interrupt_wins_over_every_tier(lachesis: Lachesis) -> None:
     await _repo_with(
