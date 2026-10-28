@@ -124,8 +124,8 @@ async function readGuard($: EngineInterface): Promise<GuardConfig | undefined> {
     if (raw.enabled !== true) return undefined
     return {
       enabled: true,
-      weeklyCapPercent: Number(raw.weeklyCapPercent ?? 100),
-      fiveHourCapPercent: Number(raw.fiveHourCapPercent ?? 100),
+      weeklyCapPercent: points(raw.weeklyCapPercent, 100),
+      fiveHourCapPercent: points(raw.fiveHourCapPercent, 100),
       pace: raw.pace === true,
       paceFloor: points(raw.paceFloor),
       paceSlack: points(raw.paceSlack),
@@ -149,10 +149,10 @@ function parseSteps(raw: unknown): [number, number][] | undefined {
   return steps.length ? steps : undefined
 }
 
-// A number of points, 0 when absent or not a number: a NaN cap would never trip.
-function points(raw: unknown): number {
-  const n = Number(raw ?? 0)
-  return Number.isFinite(n) ? n : 0
+// A number of points, the fallback when absent or not a number: a NaN cap would never trip.
+function points(raw: unknown, fallback = 0): number {
+  const n = Number(raw ?? fallback)
+  return Number.isFinite(n) ? n : fallback
 }
 
 // { hours, cap } when both are numbers, else undefined.

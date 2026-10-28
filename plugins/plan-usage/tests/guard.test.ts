@@ -137,11 +137,13 @@ test('the guard file is read from the config dir', async ($, on) => {
   expect(paths).toContain('/factory-main/budget-guard.json')
 })
 
-function stepped(on: any, now: string, sevenDay: number) {
+function stepped(on: any, now: string, sevenDay: number, extra: object = {}) {
   on('clock.now', () => ({ value: Date.parse(now) }))
   on('env.get', () => ({ value: '/home/test' }))
   on('fs.read', () => ({
-    value: JSON.stringify({ enabled: true, fiveHourCapPercent: 60, weeklySteps: [[0, 65], [90, 90], [95, 100]], mode: 'stop' }),
+    value: JSON.stringify({
+      enabled: true, fiveHourCapPercent: 60, weeklySteps: [[0, 65], [90, 90], [95, 100]], mode: 'stop', ...extra,
+    }),
   }))
   on('session.usage', () => ({
     value: {
@@ -296,11 +298,13 @@ test('5-hour lift: the status line shows the lifted cap in the last hours of the
 
 // Week resets 2026-10-10T15:00Z: 1h in at 2026-10-03T16:00Z, half way at 2026-10-07T03:00Z,
 // 12h left at 2026-10-10T03:00Z.
-function prorated(on: any, now: string, sevenDay: number) {
+function prorated(on: any, now: string, sevenDay: number, extra: object = {}) {
   on('clock.now', () => ({ value: Date.parse(now) }))
   on('env.get', () => ({ value: '/home/test' }))
   on('fs.read', () => ({
-    value: JSON.stringify({ enabled: true, fiveHourCapPercent: 60, pace: true, paceFloor: 15, paceSlack: 10, mode: 'stop' }),
+    value: JSON.stringify({
+      enabled: true, fiveHourCapPercent: 60, pace: true, paceFloor: 15, paceSlack: 10, mode: 'stop', ...extra,
+    }),
   }))
   on('session.usage', () => ({
     value: {
@@ -379,4 +383,19 @@ test('stepped guard: no pace is reported', async ($, on) => {
   stepped(on, '2026-10-07T03:00:00Z', 10)
   const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
   expect(r.result).not.toContain('pace by')
+})
+
+test('stepped guard: steps override pace, so no pace is reported even with pace on', async ($, on) => {
+  stepped(on, '2026-10-07T03:00:00Z', 10, { pace: true, paceFloor: 15, paceSlack: 10 })
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('7-day cap 65% now (stepped by week elapsed')
+  expect(r.result).not.toContain('pace by')
+  expect(r.result).not.toContain('on pace')
+})
+
+test('prorated guard: a weekly cap that is not a number counts as 100%', async ($, on) => {
+  prorated(on, '2026-10-07T03:00:00Z', 30, { weeklyCapPercent: 'high' })
+  const r = await $.tool.call({ tool: 'mcp__plan-usage__usage', input: {} })
+  expect(r.result).toContain('7-day cap 60% now (100% paced over the week, at least 15%, plus 10 points)')
+  expect(r.result).toContain('within budget, under pace by 20 points: spare capacity available')
 })
