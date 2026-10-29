@@ -70,6 +70,20 @@ async def test_only_the_settings_that_differ_are_changed(httpx_mock: HTTPXMock) 
     assert json.loads(patched.content) == {"allow_auto_merge": True}
 
 
+async def test_a_setting_github_does_not_apply_is_reported(httpx_mock: HTTPXMock) -> None:
+    _settings(httpx_mock, allow_auto_merge=False, delete_branch_on_merge=False)
+    httpx_mock.add_response(
+        method="PATCH", url=_API, json={"allow_auto_merge": False, "delete_branch_on_merge": True}
+    )
+    _unprotected(httpx_mock)
+    _rules(httpx_mock, [])
+
+    refused = await configure(_REPO)
+
+    assert list(refused) == ["allow_auto_merge"]
+    assert "did not apply" in refused["allow_auto_merge"]
+
+
 async def test_a_repository_ruleset_stops_requiring_approval(httpx_mock: HTTPXMock) -> None:
     _settings(httpx_mock)
     _unprotected(httpx_mock)

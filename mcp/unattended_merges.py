@@ -45,9 +45,17 @@ async def configure(repo: str) -> dict[str, str]:
     changes = {key: value for key, value in REPO_SETTINGS.items() if current[key] != value}
     if changes:
         try:
-            await github.update_repo_settings(repo, changes)
+            applied = await github.update_repo_settings(repo, changes)
         except Exception as exc:
             refused.update(dict.fromkeys(changes, _reason(exc)))
+        else:
+            refused.update(
+                dict.fromkeys(
+                    (key for key, value in changes.items() if applied.get(key, value) != value),
+                    "GitHub accepted the change but did not apply it, as it does when the "
+                    "repository's plan lacks the feature",
+                )
+            )
     branch = current["default_branch"]
     try:
         await _drop_protection_approvals(repo, branch)
