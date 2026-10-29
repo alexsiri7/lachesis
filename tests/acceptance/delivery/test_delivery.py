@@ -114,7 +114,6 @@ def _pull_request(tmp_path: Path, test_before: str, test_after: str) -> tuple[Pa
     return repo, base, head
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #173")
 @scenario("delivery", "Scenario without a test")
 def test_scenario_without_a_test(tmp_path: Path) -> None:
     spec = SPEC + "\n#### Scenario: Widget lost\n- GIVEN a widget\n- WHEN it is lost\n- THEN no\n"
@@ -127,7 +126,6 @@ def test_scenario_without_a_test(tmp_path: Path) -> None:
     assert "Widget lost" in result.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #173")
 @scenario("delivery", "Test for a deleted scenario")
 def test_test_for_a_deleted_scenario(tmp_path: Path) -> None:
     orphan = KEPT_TEST + (
