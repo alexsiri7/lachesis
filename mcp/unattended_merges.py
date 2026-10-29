@@ -45,9 +45,17 @@ async def configure(repo: str) -> dict[str, str]:
     changes = {key: value for key, value in REPO_SETTINGS.items() if current[key] != value}
     if changes:
         try:
-            await github.update_repo_settings(repo, changes)
+            applied = await github.update_repo_settings(repo, changes)
         except Exception as exc:
             refused.update(dict.fromkeys(changes, _reason(exc)))
+        else:
+            refused.update(
+                dict.fromkeys(
+                    (key for key, value in changes.items() if applied.get(key, value) != value),
+                    "GitHub accepted the change but did not apply it, as it does when the "
+                    "repository's plan lacks the feature",
+                )
+            )
     branch = current["default_branch"]
     try:
         await _drop_protection_approvals(repo, branch)
@@ -63,7 +71,12 @@ async def configure(repo: str) -> dict[str, str]:
 
 
 async def _drop_protection_approvals(repo: str, branch: str) -> None:
-    protection = await github.get_branch_protection(repo, branch)
+    try:
+        protection = await github.get_branch_protection(repo, branch)
+    except httpx.HTTPStatusError as exc:
+        if _unavailable_on_plan(exc):
+            return
+        raise
     reviews = (protection or {}).get("required_pull_request_reviews")
     if reviews and _requires_approval(reviews, _PROTECTION_APPROVALS):
         await github.update_required_reviews(repo, branch, _PROTECTION_APPROVALS)
@@ -71,9 +84,15 @@ async def _drop_protection_approvals(repo: str, branch: str) -> None:
 
 async def _drop_ruleset_approvals(repo: str, branch: str) -> dict[str, str]:
     refused: dict[str, str] = {}
+    try:
+        rules = await github.list_branch_rules(repo, branch)
+    except httpx.HTTPStatusError as exc:
+        if _unavailable_on_plan(exc):
+            return refused
+        raise
     approving = {
         rule["ruleset_id"]: rule
-        for rule in await github.list_branch_rules(repo, branch)
+        for rule in rules
         if rule.get("type") == "pull_request"
         and _requires_approval(rule.get("parameters") or {}, _RULESET_APPROVALS)
     }
@@ -103,6 +122,22 @@ def _without_approvals(rule: dict[str, Any]) -> dict[str, Any]:
     if rule.get("type") != "pull_request":
         return rule
     return {**rule, "parameters": {**(rule.get("parameters") or {}), **_RULESET_APPROVALS}}
+
+
+def _unavailable_on_plan(exc: httpx.HTTPStatusError) -> bool:
+    """Whether GitHub refused because the repository's plan lacks the feature.
+
+    A private repository on GitHub's free plan can have neither branch protection nor
+    rulesets, so none can require an approving review.  A refusal for want of a token
+    permission is worded differently and is still reported.
+    """
+    if exc.response.status_code != 403:
+        return False
+    try:
+        message = exc.response.json().get("message") or ""
+    except ValueError:
+        return False
+    return message.startswith("Upgrade to GitHub Pro")
 
 
 def _reason(exc: Exception) -> str:

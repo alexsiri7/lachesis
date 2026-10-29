@@ -70,6 +70,20 @@ async def test_only_the_settings_that_differ_are_changed(httpx_mock: HTTPXMock) 
     assert json.loads(patched.content) == {"allow_auto_merge": True}
 
 
+async def test_a_setting_github_does_not_apply_is_reported(httpx_mock: HTTPXMock) -> None:
+    _settings(httpx_mock, allow_auto_merge=False, delete_branch_on_merge=False)
+    httpx_mock.add_response(
+        method="PATCH", url=_API, json={"allow_auto_merge": False, "delete_branch_on_merge": True}
+    )
+    _unprotected(httpx_mock)
+    _rules(httpx_mock, [])
+
+    refused = await configure(_REPO)
+
+    assert list(refused) == ["allow_auto_merge"]
+    assert "did not apply" in refused["allow_auto_merge"]
+
+
 async def test_a_repository_ruleset_stops_requiring_approval(httpx_mock: HTTPXMock) -> None:
     _settings(httpx_mock)
     _unprotected(httpx_mock)
@@ -103,6 +117,39 @@ async def test_an_organization_ruleset_is_reported_unchanged(httpx_mock: HTTPXMo
     assert list(refused) == ["ruleset 9 required_approving_review_count"]
     assert "owner" in refused["ruleset 9 required_approving_review_count"]
     assert not httpx_mock.get_requests(method="PUT")
+
+
+_PLAN_REFUSAL = {
+    "message": "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+    "status": "403",
+}
+
+
+async def test_a_plan_without_protection_or_rulesets_needs_neither(
+    httpx_mock: HTTPXMock,
+) -> None:
+    _settings(httpx_mock)
+    for path in ("branches/main/protection", "rules/branches/main?per_page=100"):
+        httpx_mock.add_response(
+            method="GET", url=f"{_API}/{path}", status_code=403, json=_PLAN_REFUSAL
+        )
+
+    assert await configure(_REPO) == {}
+
+
+async def test_a_token_without_administration_is_reported(httpx_mock: HTTPXMock) -> None:
+    _settings(httpx_mock)
+    refusal = {"message": "Resource not accessible by personal access token", "status": "403"}
+    for path in ("branches/main/protection", "rules/branches/main?per_page=100"):
+        httpx_mock.add_response(method="GET", url=f"{_API}/{path}", status_code=403, json=refusal)
+
+    refused = await configure(_REPO)
+
+    assert list(refused) == [
+        "branch protection required_approving_review_count",
+        "ruleset required_approving_review_count",
+    ]
+    assert "Resource not accessible" in refused["branch protection required_approving_review_count"]
 
 
 async def test_unreadable_settings_refuse_every_setting(httpx_mock: HTTPXMock) -> None:

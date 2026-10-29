@@ -1174,11 +1174,16 @@ def _raise_logged(resp: httpx.Response, action: str, repo: str) -> None:
     resp.raise_for_status()
 
 
-async def update_repo_settings(repo: str, changes: dict[str, bool]) -> None:
-    """Change the repository settings named in *changes*, such as ``allow_auto_merge``."""
+async def update_repo_settings(repo: str, changes: dict[str, bool]) -> dict[str, Any]:
+    """Change the repository settings named in *changes*, such as ``allow_auto_merge``.
+
+    Returns the repository as GitHub has it afterwards: GitHub accepts a setting the
+    repository's plan lacks without applying it.
+    """
     async with httpx.AsyncClient(timeout=10.0) as http:
         resp = await http.patch(f"{_BASE_URL}/repos/{repo}", headers=_headers(), json=changes)
     _raise_logged(resp, "update_repo_settings", repo)
+    return resp.json()  # type: ignore[no-any-return]
 
 
 async def get_branch_protection(repo: str, branch: str) -> dict[str, Any] | None:
