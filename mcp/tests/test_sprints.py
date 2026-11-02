@@ -28,6 +28,7 @@ from tools.sprints import (
     sprint_findings,
     sprint_spending,
     trial_issues,
+    trial_share,
 )
 
 
@@ -547,6 +548,67 @@ def _run(
         "retries": retries,
         "rework": rework,
     }
+
+
+def _ledger_run(run_id: int, model: str, tokens: int) -> dict[str, Any]:
+    return {
+        "id": run_id,
+        "repo_name": "owner/repo",
+        "issue": run_id,
+        "size": 1,
+        "model": model,
+        "kind": "tests",
+        "tokens_in": tokens,
+        "tokens_out": 0,
+        "cost_usd": None,
+        "rework": 0,
+        "retries": 0,
+        "audit_findings": 0,
+    }
+
+
+_TRIAL_BUDGET = {
+    "budget_tokens": 150_500_000,
+    "spent_tokens": 31_000_000,
+    "start": _START,
+    "end": _END,
+}
+
+
+def test_trial_spend_counts_only_this_sprints_trial_runs() -> None:
+    """Haiku's first five runs were trials this sprint; Sonnet's trial ran in an earlier
+    sprint and counts for nothing."""
+    earlier = _ledger_run(1, "claude-sonnet", 500_000_000)
+    in_sprint = [_ledger_run(n, "claude-haiku", 1_000_000) for n in range(2, 8)]
+    in_sprint.append(_ledger_run(8, "claude", 80_000_000))
+    closed = {"owner/repo": set(range(1, 9))}
+
+    with patch("db.list_runs", return_value=in_sprint):
+        share = trial_share("uid", _TRIAL_BUDGET, [earlier, *in_sprint], closed)
+
+    assert share == {
+        "budget_tokens": 15_050_000,
+        "spent_tokens": 5_000_000,
+        "left_tokens": 10_050_000,
+    }
+
+
+def test_trial_spend_is_never_more_than_the_sprints_spending() -> None:
+    """The issue's sprint: trial runs reported 220M tokens where the sprint spent 31M."""
+    in_sprint = [_ledger_run(n, "claude-haiku", 44_000_000) for n in range(1, 6)]
+    in_sprint.append(_ledger_run(6, "claude", 80_000_000))
+
+    with patch("db.list_runs", return_value=in_sprint):
+        share = trial_share("uid", _TRIAL_BUDGET, in_sprint, {"owner/repo": set(range(1, 7))})
+
+    assert share == {"budget_tokens": 15_050_000, "spent_tokens": 31_000_000, "left_tokens": 0}
+
+
+def test_trial_spend_is_zero_when_the_sprint_reported_no_run_tokens() -> None:
+    with patch("db.list_runs", return_value=[]):
+        share = trial_share("uid", _TRIAL_BUDGET, [], {})
+
+    assert share == {"budget_tokens": 15_050_000, "spent_tokens": 0, "left_tokens": 15_050_000}
 
 
 def test_spending_splits_claude_runs_from_overflow_runs() -> None:

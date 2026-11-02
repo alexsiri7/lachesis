@@ -129,10 +129,15 @@ def trial_share(
     user_id: str, budget: dict[str, Any], runs: list[dict[str, Any]], closed: dict[str, set[int]]
 ) -> dict[str, int]:
     """Return the trial share of the sprint with *budget*: TRIAL_SHARE_PERCENT of it, what
-    the sprint's trials among *runs* spent of it, and what is left."""
+    the sprint's trials among *runs* spent of it, and what is left.
+
+    Runs report tokens as their model counts them, while the budget counts the allowance and
+    overflow, so the trials' tokens are capped at what the sprint spent: trials are among its
+    runs and never spend more than it."""
     share = round(budget["budget_tokens"] * settings.trial_share_percent / 100)
     in_sprint = db.list_runs(user_id, start=budget["start"], end=budget["end"])
-    spent = routing.trial_tokens(runs, closed, {run["id"] for run in in_sprint})
+    trials = routing.trial_tokens(runs, closed, {run["id"] for run in in_sprint})
+    spent = min(trials, budget["spent_tokens"])
     return {"budget_tokens": share, "spent_tokens": spent, "left_tokens": max(0, share - spent)}
 
 

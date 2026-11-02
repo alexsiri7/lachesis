@@ -432,12 +432,13 @@ async def test_route_run_offers_no_trial_once_the_sprints_trials_spent_their_sha
     set_user_id: str, allowance_tokens: int, trial: bool
 ) -> None:
     """Scenario: Trial share respected — Haiku's first five runs, 550 tokens, were trials
-    this sprint: a share of 80 tokens is spent, one of 80,000 is not."""
+    this sprint, half of the allowance spent: a share of 90 tokens is spent, one of 90,000
+    is not."""
     haiku = "claude-haiku"
     runs = _sized(haiku, "tests", 1, 1)
     issues = [{"number": n, "state": "closed", "is_pull_request": False} for n in range(1, 6)]
     row = {
-        "weekly_used_percent": 0.0,
+        "weekly_used_percent": 50.0,
         "weekly_resets_at": datetime.now(UTC) + timedelta(days=2),
         "shorter_limit_until": None,
         "overflow_spent_usd": 0.0,
