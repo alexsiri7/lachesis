@@ -10,6 +10,7 @@ import pytest
 from harness import Lachesis, scenario
 
 REPO = "owner/repo"
+OTHER = "owner/other"
 NOW = datetime.now(UTC)
 
 
@@ -19,6 +20,7 @@ def _issue(
     age: timedelta = timedelta(hours=1),
     labels: tuple[str, ...] = (),
     body: str = "",
+    repo: str = REPO,
 ) -> dict[str, Any]:
     return {
         "number": number,
@@ -29,7 +31,7 @@ def _issue(
         "state": "open",
         "labels": [{"name": label} for label in labels],
         "assignees": [],
-        "html_url": f"https://github.com/{REPO}/issues/{number}",
+        "html_url": f"https://github.com/{repo}/issues/{number}",
         "created_at": (NOW - age).isoformat(),
         "updated_at": (NOW - age).isoformat(),
         "closed_at": None,
@@ -48,11 +50,11 @@ def _implementing(spec_change: int) -> str:
     return f"Build it.\n\n---\nSpec change: #{spec_change}\nCapability: widgets"
 
 
-async def _repo_with(lachesis: Lachesis, *items: dict[str, Any]) -> None:
-    await lachesis.call_tool("register_repo", {"repo": REPO})
-    lachesis.github.on("GET", f"/repos/{REPO}/issues", json=list(items))
+async def _repo_with(lachesis: Lachesis, *items: dict[str, Any], repo: str = REPO) -> None:
+    await lachesis.call_tool("register_repo", {"repo": repo})
+    lachesis.github.on("GET", f"/repos/{repo}/issues", json=list(items))
     for item in items:
-        lachesis.github.on("GET", f"/repos/{REPO}/issues/{item['number']}", json=item)
+        lachesis.github.on("GET", f"/repos/{repo}/issues/{item['number']}", json=item)
 
 
 async def _active_milestone(lachesis: Lachesis, title: str, spec_change: int) -> int:
@@ -75,10 +77,17 @@ def _uses_specs(lachesis: Lachesis) -> None:
     )
 
 
-def _blocked_by(lachesis: Lachesis, number: int, blocker: dict[str, Any]) -> None:
+def _blocked_by(
+    lachesis: Lachesis, number: int, blocker: dict[str, Any], *, repo: str = REPO
+) -> None:
     lachesis.github.on(
-        "GET", f"/repos/{REPO}/issues/{number}/dependencies/blocked_by", json=[blocker]
+        "GET", f"/repos/{repo}/issues/{number}/dependencies/blocked_by", json=[blocker]
     )
+
+
+def _closed(issue: dict[str, Any]) -> dict[str, Any]:
+    stamp = NOW.isoformat()
+    return {**issue, "state": "closed", "closed_at": stamp, "state_reason": "completed"}
 
 
 async def _report_fuel(
@@ -116,25 +125,36 @@ async def _set_flags(lachesis: Lachesis, number: int, **flags: bool) -> None:
 
 
 @scenario("backlog", "Reading the backlog")
+@pytest.mark.xfail(strict=True, reason="spec change #449")
 async def test_reading_the_backlog(lachesis: Lachesis) -> None:
+    blocker = _issue(4, age=timedelta(days=1), labels=("archon:in-progress",))
     await _repo_with(
         lachesis,
         _issue(1, age=timedelta(days=4)),
-        _issue(2, age=timedelta(days=3)),
+        _issue(2, age=timedelta(days=3), labels=("needs-author",)),
         _issue(3, age=timedelta(days=2)),
-        _issue(4, age=timedelta(days=1)),
+        blocker,
     )
+    _blocked_by(lachesis, 1, blocker)
     await _set_flags(lachesis, 3, interrupt=True)
 
     backlog = await _backlog(lachesis)
 
-    assert backlog[0]["number"] == 3
-    assert sorted(entry["number"] for entry in backlog) == [1, 2, 3, 4]
+    assert [entry["number"] for entry in backlog] == [3, 1, 2, 4]
     for entry in backlog:
-        assert {"position", "tier", "ready", "interrupt"} <= entry.keys()
+        assert {
+            "position",
+            "tier",
+            "interrupt",
+            "blocked",
+            "waiting_on_author",
+            "in_progress",
+        } <= entry.keys()
     assert [entry["position"] for entry in backlog] == [0, 1, 2, 3]
     assert [entry["interrupt"] for entry in backlog] == [True, False, False, False]
-    assert all(entry["ready"] for entry in backlog)
+    assert [entry["blocked"] for entry in backlog] == [False, True, False, False]
+    assert [entry["waiting_on_author"] for entry in backlog] == [False, False, True, False]
+    assert [entry["in_progress"] for entry in backlog] == [False, False, False, True]
 
 
 @scenario("backlog", "Security before milestone work")
@@ -199,19 +219,49 @@ async def test_focusing_a_milestone(lachesis: Lachesis) -> None:
     assert [entry["number"] for entry in backlog] == [11, 10]
 
 
-@scenario("backlog", "Park and unpark")
-async def test_park_and_unpark(lachesis: Lachesis) -> None:
-    await _repo_with(lachesis, _issue(1, age=timedelta(days=2)), _issue(2, age=timedelta(days=1)))
+def _argument_names(schema: Any) -> set[str]:
+    """Every property name anywhere in a tool's argument schema, nested items included."""
+    if isinstance(schema, list):
+        return {name for part in schema for name in _argument_names(part)}
+    if not isinstance(schema, dict):
+        return set()
+    names = set(schema.get("properties", {}))
+    return names | {name for value in schema.values() for name in _argument_names(value)}
 
-    await _set_flags(lachesis, 1, ready=False)
-    while_parked = await _next(lachesis)
-    await _set_flags(lachesis, 1, ready=True)
-    unparked = await _next(lachesis)
+
+@scenario("backlog", "No tool parks work")
+@pytest.mark.xfail(strict=True, reason="spec change #449")
+async def test_no_tool_parks_work(lachesis: Lachesis) -> None:
+    holding = {"park", "parked", "unpark", "pause", "paused", "hold", "ready"}
+    tools = await lachesis.list_tools()
+    assert tools
+    for name, schema in tools.items():
+        assert not holding & set(name.split("_")), name
+        arguments = _argument_names(schema)
+        if not arguments & {"issue", "issue_number", "number", "issues"}:
+            continue
+        for argument in arguments:
+            assert not holding & set(argument.split("_")), f"{name}({argument})"
+
+
+@scenario("backlog", "A dependency releases its dependant")
+@pytest.mark.xfail(strict=True, reason="spec change #449")
+async def test_a_dependency_releases_its_dependant(lachesis: Lachesis) -> None:
+    dependant, other = _issue(8, age=timedelta(days=3)), _issue(9, age=timedelta(days=2))
+    blocker = _issue(7, age=timedelta(days=1))
+    await _repo_with(lachesis, dependant, other, blocker)
+    _blocked_by(lachesis, 8, blocker)
+    while_blocked = await _backlog(lachesis)
+
+    await _repo_with(lachesis, dependant, other)
+    lachesis.github.on("GET", f"/repos/{REPO}/issues/7", json=_closed(blocker))
+    _blocked_by(lachesis, 8, _closed(blocker))
     backlog = await _backlog(lachesis)
+    offered = await _next(lachesis)
 
-    assert while_parked["issue"]["number"] == 2
-    assert unparked["issue"]["number"] == 1
-    assert (backlog[0]["number"], backlog[0]["ready"]) == (1, True)
+    assert (while_blocked[0]["number"], while_blocked[0]["blocked"]) == (8, True)
+    assert [(entry["number"], entry["blocked"]) for entry in backlog] == [(8, False), (9, False)]
+    assert offered["issue"]["number"] == 8
 
 
 @scenario("backlog", "Waiting on a decision")
@@ -226,19 +276,44 @@ async def test_waiting_on_a_decision(lachesis: Lachesis) -> None:
     lachesis.github.on("POST", f"/repos/{REPO}/labels", json={"name": "needs-author"}, status=201)
     lachesis.github.on("POST", f"/repos/{REPO}/issues/1/labels", json=[])
 
+    lachesis.github.on("DELETE", f"/repos/{REPO}/issues/1/labels/needs-author", json=[])
+
     asked = await lachesis.call_tool(
         "ask_author", {"repo": REPO, "number": 1, "question": "Which colour?"}
     )
     assert not asked.is_error, asked.text
     await _repo_with(lachesis, _issue(1, labels=("needs-author",)))
     listed = await lachesis.call_tool("list_open_questions", {})
-    backlog = await _backlog(lachesis)
+    while_waiting = await _next(lachesis)
+    answered = await lachesis.call_tool(
+        "answer_author", {"repo": REPO, "number": 1, "answer": "Blue."}
+    )
+    assert not answered.is_error, answered.text
+    await _repo_with(lachesis, _issue(1))
+    once_answered = await _next(lachesis)
 
     assert not listed.is_error, listed.text
     [question] = listed.json()
     assert question["question"] == "Which colour?"
     assert question["blocks"] == [1]
-    assert (backlog[0]["number"], backlog[0]["ready"]) == (1, True)
+    assert while_waiting["issue"] is None
+    assert once_answered["issue"]["number"] == 1
+
+
+@scenario("backlog", "Low-priority work still runs")
+async def test_low_priority_work_still_runs(lachesis: Lachesis) -> None:
+    claimed = _issue(2, age=timedelta(days=1), labels=("archon:in-progress",))
+    await _repo_with(lachesis, _issue(1, age=timedelta(days=2)), claimed)
+    _blocked_by(lachesis, 1, claimed)
+    await _repo_with(lachesis, _issue(5, age=timedelta(hours=1), repo=OTHER), repo=OTHER)
+    focused = await lachesis.call_tool("set_focus", {"repo": REPO})
+    assert not focused.is_error, focused.text
+
+    result = await lachesis.call_tool("next_issue", {})
+
+    assert not result.is_error, result.text
+    offered = result.json()["issue"]
+    assert (offered["repo"], offered["number"]) == (OTHER, 5)
 
 
 @scenario("backlog", "Interrupt wins over every tier")
@@ -258,13 +333,10 @@ async def test_interrupt_wins_over_every_tier(lachesis: Lachesis) -> None:
 
 @scenario("backlog", "Everything blocked")
 async def test_everything_blocked(lachesis: Lachesis) -> None:
-    blocker = _issue(3)
-    await _repo_with(
-        lachesis, _issue(1, age=timedelta(days=2)), _issue(2, age=timedelta(days=1)), blocker
-    )
-    await _set_flags(lachesis, 3, ready=False)
-    _blocked_by(lachesis, 1, blocker)
-    _blocked_by(lachesis, 2, blocker)
+    first, second = _issue(1, age=timedelta(days=2)), _issue(2, age=timedelta(days=1))
+    await _repo_with(lachesis, first, second)
+    _blocked_by(lachesis, 1, second)
+    _blocked_by(lachesis, 2, first)
 
     result = await _next(lachesis)
 
