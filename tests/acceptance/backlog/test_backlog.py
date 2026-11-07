@@ -77,11 +77,9 @@ def _uses_specs(lachesis: Lachesis) -> None:
     )
 
 
-def _blocked_by(
-    lachesis: Lachesis, number: int, blocker: dict[str, Any], *, repo: str = REPO
-) -> None:
+def _blocked_by(lachesis: Lachesis, number: int, blocker: dict[str, Any]) -> None:
     lachesis.github.on(
-        "GET", f"/repos/{repo}/issues/{number}/dependencies/blocked_by", json=[blocker]
+        "GET", f"/repos/{REPO}/issues/{number}/dependencies/blocked_by", json=[blocker]
     )
 
 
