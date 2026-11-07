@@ -233,6 +233,14 @@ def _argument_names(schema: Any) -> set[str]:
 @pytest.mark.xfail(strict=True, reason="spec change #449")
 async def test_no_tool_parks_work(lachesis: Lachesis) -> None:
     holding = {"park", "parked", "unpark", "pause", "paused", "hold", "ready"}
+    await _repo_with(lachesis, _issue(1))
+    lachesis.github.on("POST", f"/repos/{REPO}/issues", json=_issue(1), status=201)
+    # An issue's fields are free-form, so a field that holds it back shows only in what is offered.
+    await lachesis.call_tool(
+        "create_github_issues",
+        {"repo": REPO, "issues": [{"title": "Issue 1", "body": "", "ready": False}]},
+    )
+    offered = await _next(lachesis)
     tools = await lachesis.list_tools()
     assert tools
     for name, schema in tools.items():
@@ -242,6 +250,7 @@ async def test_no_tool_parks_work(lachesis: Lachesis) -> None:
             continue
         for argument in arguments:
             assert not holding & set(argument.split("_")), f"{name}({argument})"
+    assert (offered["issue"] or {}).get("number") == 1
 
 
 @scenario("backlog", "A dependency releases its dependant")
