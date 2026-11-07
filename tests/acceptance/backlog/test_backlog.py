@@ -236,10 +236,11 @@ async def test_no_tool_parks_work(lachesis: Lachesis) -> None:
     await _repo_with(lachesis, _issue(1))
     lachesis.github.on("POST", f"/repos/{REPO}/issues", json=_issue(1), status=201)
     # An issue's fields are free-form, so a field that holds it back shows only in what is offered.
-    await lachesis.call_tool(
+    created = await lachesis.call_tool(
         "create_github_issues",
         {"repo": REPO, "issues": [{"title": "Issue 1", "body": "", "ready": False}]},
     )
+    assert not created.is_error, created.text
     offered = await _next(lachesis)
     tools = await lachesis.list_tools()
     assert tools
