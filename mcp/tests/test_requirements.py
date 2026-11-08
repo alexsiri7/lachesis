@@ -32,6 +32,7 @@ from tools.requirements import (
     get_dependencies,
     get_github_issue,
     get_initial_instructions,
+    get_morning_briefing,
     get_pull_request,
     get_requirement,
     link_issues,
@@ -523,7 +524,6 @@ async def test_create_github_issues_single(httpx_mock: HTTPXMock) -> None:
             "url": "https://github.com/owner/repo/issues/42",
             "blocked_by": [],
             "added_to_project": False,
-            "ready": True,
             "size": None,
         }
     ]
@@ -755,7 +755,6 @@ async def test_create_github_issues_no_blocked_by_field_unchanged(httpx_mock: HT
             "url": "https://github.com/owner/repo/issues/7",
             "blocked_by": [],
             "added_to_project": False,
-            "ready": True,
             "size": None,
         }
     ]
@@ -3155,15 +3154,25 @@ async def test_get_initial_instructions_mentions_required_tools() -> None:
     assert "link_issues" in result
 
 
-async def test_get_initial_instructions_documents_parking() -> None:
-    """Archon reads these at session start, so parking has to be discoverable."""
+async def test_get_initial_instructions_documents_the_backlog() -> None:
+    """Archon reads these at session start: sequencing is a dependency, never a park."""
     result = await get_initial_instructions()
 
     assert "set_backlog_flags" in result
+    assert "add_dependency" in result
     assert "set_focus" in result
     assert "move_issue" not in result
     assert "next_issue" in result
-    assert "park" in result
+    assert "park" not in result
+
+
+async def test_get_morning_briefing_clears_a_waiting_issue_by_answering_it() -> None:
+    """The briefing's only route off needs-author is an answer, never a park."""
+    briefing = await get_morning_briefing()
+
+    assert "answer it with answer_author" in briefing
+    assert "set_backlog_flags" not in briefing
+    assert "park" not in briefing
 
 
 async def test_get_initial_instructions_says_a_budget_question_blocks_nothing() -> None:
@@ -3251,40 +3260,16 @@ class _FakeBacklog:
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.rows: dict[int, dict] = {}
         for row in rows or []:
-            self.rows[row["issue_number"]] = {
-                "ready": True,
-                "interrupt": False,
-                "ready_since": None,
-                **row,
-            }
-
-    def _row(self, issue_number: int) -> dict:
-        return self.rows.setdefault(
-            issue_number,
-            {
-                "issue_number": issue_number,
-                "ready": True,
-                "interrupt": False,
-                "ready_since": None,
-            },
-        )
+            self.rows[row["issue_number"]] = {"interrupt": False, **row}
 
     def list_backlog(self, user_id: str, repo_name: str) -> list[dict]:
         return [dict(row) for row in self.rows.values()]
 
     def upsert_backlog_flags(
-        self,
-        user_id: str,
-        repo_name: str,
-        issue_number: int,
-        ready: bool | None = None,
-        interrupt: bool | None = None,
+        self, user_id: str, repo_name: str, issue_number: int, interrupt: bool
     ) -> dict:
-        row = self._row(issue_number)
-        if ready is not None:
-            row["ready"] = ready
-        if interrupt is not None:
-            row["interrupt"] = interrupt
+        row = self.rows.setdefault(issue_number, {"issue_number": issue_number})
+        row["interrupt"] = interrupt
         return dict(row)
 
 
@@ -3297,17 +3282,23 @@ def _patch_backlog(
     fuel: dict | None = None,
     estimates: list[dict] | None = None,
     pulls: dict[int, dict] | None = None,
+    blockers: dict[int, list[dict]] | None = None,
 ):
     """Route the db accessors the backlog reads at fakes for the duration of the block.
 
     *pulls* are the spec changes' pull requests by number; any other reads as missing.
+    *blockers* are the issues' blocked_by listings by number; any other has none.
     """
 
     async def get_pull_request(repo: str, number: int) -> dict | None:
         return (pulls or {}).get(number)
 
+    async def list_blockers(repo: str, number: int) -> list[dict]:
+        return (blockers or {}).get(number, [])
+
     with (
         patch("github.get_pull_request", get_pull_request),
+        patch("github.list_blockers", list_blockers),
         patch("db.list_backlog", fake.list_backlog),
         patch("db.upsert_backlog_flags", fake.upsert_backlog_flags),
         patch("db.list_milestones", return_value=milestones or []),
@@ -3349,10 +3340,10 @@ def _mock_open_issues(
     )
 
 
-async def test_get_backlog_defaults_new_issues_to_ready(
+async def test_get_backlog_lists_an_issue_with_no_row(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """An issue with no row is ready — a row exists only to park or interrupt one."""
+    """An issue with no row is in the backlog — a row exists only to interrupt one."""
     _mock_open_issues(httpx_mock, [1])
 
     with _patch_backlog(_FakeBacklog()):
@@ -3365,8 +3356,8 @@ async def test_get_backlog_defaults_new_issues_to_ready(
             "position": 0,
             "tier": "other",
             "aged": False,
-            "ready": True,
             "interrupt": False,
+            "blocked": False,
             "in_progress": False,
             "waiting_on_author": False,
         }
@@ -3378,9 +3369,7 @@ async def test_get_backlog_omits_closed_issues_that_still_have_rows(
 ) -> None:
     """A row for an issue that is no longer open drops out of the backlog."""
     _mock_open_issues(httpx_mock, [1])
-    fake = _FakeBacklog(
-        [{"issue_number": 2, "ready": True}, {"issue_number": 1, "interrupt": True}]
-    )
+    fake = _FakeBacklog([{"issue_number": 2}, {"issue_number": 1, "interrupt": True}])
 
     with _patch_backlog(fake):
         result = await get_backlog("owner/repo")
@@ -3394,13 +3383,15 @@ async def test_get_backlog_lists_the_interrupt_first_with_every_entrys_flags(
     """Scenario: Reading the backlog — four open issues, one marked interrupt."""
     _mock_open_issues(httpx_mock, [1, 2, 3, 4])
     fake = _FakeBacklog([{"issue_number": 3, "interrupt": True}])
+    blockers = {1: [{"number": 4, "state": "open", "closed_at": None}]}
 
-    with _patch_backlog(fake):
+    with _patch_backlog(fake, blockers=blockers):
         result = await get_backlog("owner/repo")
 
     assert [i["number"] for i in result] == [3, 1, 2, 4]
     assert [i["position"] for i in result] == [0, 1, 2, 3]
     assert [i["tier"] for i in result] == ["interrupt", "other", "other", "other"]
+    assert [i["blocked"] for i in result] == [False, True, False, False]
     assert all(
         set(i)
         == {
@@ -3409,8 +3400,8 @@ async def test_get_backlog_lists_the_interrupt_first_with_every_entrys_flags(
             "position",
             "tier",
             "aged",
-            "ready",
             "interrupt",
+            "blocked",
             "in_progress",
             "waiting_on_author",
         }
@@ -3418,31 +3409,20 @@ async def test_get_backlog_lists_the_interrupt_first_with_every_entrys_flags(
     )
 
 
-async def test_set_backlog_flags_sets_ready_without_touching_interrupt(
+async def test_a_closed_dependency_no_longer_blocks(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    httpx_mock.add_response(
-        url="https://api.github.com/repos/owner/repo/issues/5",
-        json={
-            "number": 5,
-            "id": 500,
-            "title": "Five",
-            "state": "open",
-            "html_url": "https://github.com/owner/repo/issues/5",
-        },
-    )
-    fake = _FakeBacklog([{"issue_number": 5, "interrupt": True}])
+    """Scenario: A dependency releases its dependant — no other action is needed."""
+    _mock_open_issues(httpx_mock, [8])
+    closed = {"number": 7, "state": "closed", "closed_at": _BACKLOG_EPOCH.isoformat()}
 
-    with _patch_backlog(fake):
-        result = await set_backlog_flags("owner/repo", 5, ready=True)
+    with _patch_backlog(_FakeBacklog(), blockers={8: [closed]}):
+        result = await get_backlog("owner/repo")
 
-    assert result == {"number": 5, "ready": True, "interrupt": True}
+    assert result[0]["blocked"] is False
 
 
-async def test_set_backlog_flags_parks_an_existing_issue(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """Parking an already-filed issue is the flow the instructions direct Archon to."""
+async def test_set_backlog_flags_sets_interrupt(httpx_mock: HTTPXMock, set_user_id: str) -> None:
     httpx_mock.add_response(
         url="https://api.github.com/repos/owner/repo/issues/5",
         json={
@@ -3456,15 +3436,10 @@ async def test_set_backlog_flags_parks_an_existing_issue(
     fake = _FakeBacklog()
 
     with _patch_backlog(fake):
-        result = await set_backlog_flags("owner/repo", 5, ready=False)
+        result = await set_backlog_flags("owner/repo", 5, interrupt=True)
 
-    assert result["ready"] is False
-    assert fake.rows[5]["ready"] is False
-
-
-async def test_set_backlog_flags_requires_a_flag(set_user_id: str) -> None:
-    with pytest.raises(ValueError, match="at least one of ready/interrupt"):
-        await set_backlog_flags("owner/repo", 5)
+    assert result == {"number": 5, "interrupt": True}
+    assert fake.rows[5]["interrupt"] is True
 
 
 async def test_set_backlog_flags_unknown_issue_raises(
@@ -3474,13 +3449,13 @@ async def test_set_backlog_flags_unknown_issue_raises(
 
     with _patch_backlog(_FakeBacklog()):
         with pytest.raises(FileNotFoundError, match="#5"):
-            await set_backlog_flags("owner/repo", 5, ready=True)
+            await set_backlog_flags("owner/repo", 5, interrupt=True)
 
 
 async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """Interrupt and readiness live in Lachesis, so a GitHub-side edit cannot disturb them."""
+    """The interrupt flag lives in Lachesis, so a GitHub-side edit cannot disturb it."""
     _mock_open_issues(httpx_mock, [1, 2])
     httpx_mock.add_response(
         method="GET",
@@ -3505,7 +3480,7 @@ async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
     fake = _FakeBacklog()
 
     with _patch_backlog(fake):
-        await set_backlog_flags("owner/repo", 2, ready=True, interrupt=True)
+        await set_backlog_flags("owner/repo", 2, interrupt=True)
 
         await update_github_issue("owner/repo", 2, {"title": "Retitled elsewhere"})
 
@@ -3513,7 +3488,6 @@ async def test_backlog_state_survives_an_issue_edit_outside_lachesis(
 
     assert result[0]["number"] == 2
     assert result[0]["tier"] == "interrupt"
-    assert result[0]["ready"] is True
 
 
 def _implementing(spec_change: int) -> str:
@@ -3736,7 +3710,7 @@ async def _read_one_waiting_issue(
     """Read the backlog of one issue 1, the current sprint having started four days ago.
 
     Two whole sprints therefore lie behind anything that has waited 18 days or more.
-    *blockers* is mocked as issue 1's blocked_by listing; ``None`` expects no lookup.
+    *blockers* is issue 1's blocked_by listing.
     """
     _mock_open_issues(
         httpx_mock,
@@ -3745,21 +3719,18 @@ async def _read_one_waiting_issue(
         bodies={1: body},
         created={1: _days_ago(created_days_ago)},
     )
-    if blockers is not None:
-        httpx_mock.add_response(
-            url="https://api.github.com/repos/owner/repo/issues/1/dependencies/blocked_by",
-            json=blockers,
-        )
     report = {"weekly_resets_at": _days_ago(-3)} if fuel else None
     fake = _FakeBacklog([{"issue_number": 1, **row}] if row else [])
 
-    with _patch_backlog(fake, fuel=report, milestones=milestones, focus=focus):
+    with _patch_backlog(
+        fake, fuel=report, milestones=milestones, focus=focus, blockers={1: blockers or []}
+    ):
         result = await get_backlog("owner/repo")
     return result[0]
 
 
 async def test_starving_work_rises_a_tier(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    """Scenario: Starving work rises — two whole sprints ready and unblocked in the last tier."""
+    """Scenario: Starving work rises — two whole sprints unblocked in the last tier."""
     entry = await _read_one_waiting_issue(httpx_mock, blockers=[])
 
     assert (entry["tier"], entry["aged"]) == ("milestone", True)
@@ -3803,7 +3774,6 @@ async def test_a_blocker_closed_long_ago_does_not_stop_ageing(
     "waiting",
     [
         pytest.param({"created_days_ago": 10}, id="created-within-two-sprints"),
-        pytest.param({"row": {"ready_since": _days_ago(10)}}, id="unparked-recently"),
         pytest.param(
             {
                 "blockers": [
@@ -3818,7 +3788,6 @@ async def test_a_blocker_closed_long_ago_does_not_stop_ageing(
         pytest.param({"fuel": False}, id="no-sprint-known"),
         pytest.param({"labels": ["archon:in-progress"]}, id="picked-up"),
         pytest.param({"labels": ["needs-author"]}, id="waiting-on-the-author"),
-        pytest.param({"row": {"ready": False}}, id="parked"),
     ],
 )
 async def test_work_that_has_not_starved_keeps_its_tier(
@@ -3863,10 +3832,8 @@ def _mock_created_issue(httpx_mock: HTTPXMock, number: int) -> None:
     )
 
 
-async def test_create_github_issues_without_overrides_never_touches_the_db(
-    httpx_mock: HTTPXMock,
-) -> None:
-    """The default path is ready and last, which needs no row and so no DB call."""
+async def test_create_github_issues_cannot_park_an_issue(httpx_mock: HTTPXMock) -> None:
+    """Scenario: No tool parks work — a ready field is ignored and no backlog row written."""
     _mock_created_issue(httpx_mock, 1)
     backlog_db = MagicMock()
 
@@ -3874,60 +3841,12 @@ async def test_create_github_issues_without_overrides_never_touches_the_db(
         patch("db.list_backlog", backlog_db.list_backlog),
         patch("db.upsert_backlog_flags", backlog_db.upsert_backlog_flags),
     ):
-        result = await create_github_issues("owner/repo", [{"title": "One", "body": "b"}])
+        result = await create_github_issues(
+            "owner/repo", [{"title": "One", "body": "b", "ready": False}]
+        )
 
-    backlog_db.assert_not_called()
     assert backlog_db.mock_calls == []
-    assert result[0]["ready"] is True
-    assert "placed" not in result[0]
-
-
-async def test_create_github_issues_marks_ready_on_request(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    _mock_created_issue(httpx_mock, 1)
-    fake = _FakeBacklog()
-
-    with _patch_backlog(fake):
-        result = await create_github_issues(
-            "owner/repo", [{"title": "One", "body": "b", "ready": True}]
-        )
-
-    assert result[0]["ready"] is True
-    assert fake.rows[1]["ready"] is True
-
-
-async def test_create_github_issues_parks_on_explicit_false(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """Parking is the one thing creation cannot express by doing nothing."""
-    _mock_created_issue(httpx_mock, 1)
-    fake = _FakeBacklog()
-
-    with _patch_backlog(fake):
-        result = await create_github_issues(
-            "owner/repo", [{"title": "One", "body": "b", "ready": False}]
-        )
-
-    assert result[0]["ready"] is False
-    assert fake.rows[1]["ready"] is False
-
-
-async def test_create_github_issues_reports_a_failed_park(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """A dropped park must be visible: the reported flag disagrees with the request."""
-    _mock_created_issue(httpx_mock, 1)
-
-    with (
-        patch("db.list_backlog", return_value=[]),
-        patch("db.upsert_backlog_flags", side_effect=RuntimeError("no db")),
-    ):
-        result = await create_github_issues(
-            "owner/repo", [{"title": "One", "body": "b", "ready": False}]
-        )
-
-    assert result[0]["ready"] is True
+    assert "ready" not in result[0]
 
 
 @pytest.mark.parametrize("anchor", ["before", "after"])
@@ -3958,19 +3877,18 @@ def _mock_blocked_by(
     )
 
 
-async def test_next_issue_returns_the_top_ready_unblocked_issue(
+async def test_next_issue_returns_the_top_unblocked_issue(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """The first unparked issue in backlog order wins; parked ones are passed over."""
+    """The first issue in backlog order with no open blocker wins."""
     _mock_open_issues(httpx_mock, [1, 2, 3])
-    _mock_blocked_by(httpx_mock, 2, [])
-    fake = _FakeBacklog([{"issue_number": 1, "ready": False}])
+    _mock_blocked_by(httpx_mock, 1, [])
 
-    with _patch_backlog(fake):
+    with _patch_backlog(_FakeBacklog()):
         result = await next_issue("owner/repo")
 
     assert result["reason"] == "selected"
-    assert result["issue"]["number"] == 2
+    assert result["issue"]["number"] == 1
     assert result["issue"]["repo"] == "owner/repo"
     assert result["blocked"] == []
 
@@ -4032,7 +3950,7 @@ async def test_next_issue_returns_the_offered_issues_notes_oldest_first(
 async def test_next_issue_offers_an_interrupt_from_the_last_tier(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """Scenario: Interrupt wins over every tier — issue 30 is last, ready and unblocked."""
+    """Scenario: Interrupt wins over every tier — issue 30 is last and unblocked."""
     _mock_open_issues(httpx_mock, [10, 20, 30], labels={10: ["security"]})
     _mock_blocked_by(httpx_mock, 30, [])
     fake = _FakeBacklog([{"issue_number": 30, "interrupt": True}])
@@ -4048,13 +3966,12 @@ async def test_next_issue_offers_an_interrupt_from_the_last_tier(
 async def test_next_issue_never_returns_a_blocked_issue(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """A ready issue with an open blocker is passed over and reported, not returned."""
-    _mock_open_issues(httpx_mock, [1, 2, 3])
+    """An issue with an open blocker is passed over and reported, not returned."""
+    _mock_open_issues(httpx_mock, [1, 2, 3], {2: ["archon:in-progress"]})
     _mock_blocked_by(httpx_mock, 1, [2])
     _mock_blocked_by(httpx_mock, 3, [])
-    fake = _FakeBacklog([{"issue_number": 2, "ready": False}])
 
-    with _patch_backlog(fake):
+    with _patch_backlog(_FakeBacklog()):
         result = await next_issue("owner/repo")
 
     assert result["issue"]["number"] == 3
@@ -4079,7 +3996,7 @@ async def test_next_issue_closed_blocker_does_not_block(
             "html_url": "https://github.com/owner/repo/issues/99",
         },
     )
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}])
 
     with _patch_backlog(fake):
         result = await next_issue("owner/repo")
@@ -4104,7 +4021,7 @@ async def test_next_issue_open_blocker_outside_the_open_set_still_blocks(
             "html_url": "https://github.com/owner/repo/issues/99",
         },
     )
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}])
 
     with _patch_backlog(fake):
         result = await next_issue("owner/repo")
@@ -4123,8 +4040,8 @@ async def test_next_issue_reports_a_blocked_interrupt_rather_than_skipping_it(
     _mock_blocked_by(httpx_mock, 2, [3])
     fake = _FakeBacklog(
         [
-            {"issue_number": 1, "ready": True, "interrupt": True},
-            {"issue_number": 2, "ready": True, "interrupt": True},
+            {"issue_number": 1, "interrupt": True},
+            {"issue_number": 2, "interrupt": True},
         ]
     )
 
@@ -4139,27 +4056,14 @@ async def test_everything_blocked(httpx_mock: HTTPXMock, set_user_id: str) -> No
     """Scenario: Everything blocked — the explanation names what is doing the blocking."""
     _mock_open_issues(httpx_mock, [1, 2])
     _mock_blocked_by(httpx_mock, 1, [2])
-    fake = _FakeBacklog([{"issue_number": 2, "ready": False}])
+    _mock_blocked_by(httpx_mock, 2, [1])
 
-    with _patch_backlog(fake):
+    with _patch_backlog(_FakeBacklog()):
         result = await next_issue("owner/repo")
 
     assert result["issue"] is None
     assert result["reason"] == "all_blocked"
     assert "#2" in result["explanation"]
-
-
-async def test_next_issue_everything_parked(httpx_mock: HTTPXMock, set_user_id: str) -> None:
-    """Open issues exist but every one is parked — unparking, not unblocking."""
-    _mock_open_issues(httpx_mock, [1, 2])
-    fake = _FakeBacklog([{"issue_number": 1, "ready": False}, {"issue_number": 2, "ready": False}])
-
-    with _patch_backlog(fake):
-        result = await next_issue("owner/repo")
-
-    assert result["issue"] is None
-    assert result["reason"] == "none_ready"
-    assert "parked" in result["explanation"]
 
 
 async def test_next_issue_returns_a_freshly_created_issue_with_no_backlog_row(
@@ -4191,7 +4095,7 @@ async def test_next_issue_empty_backlog(httpx_mock: HTTPXMock, set_user_id: str)
 async def test_next_issue_all_in_progress(httpx_mock: HTTPXMock, set_user_id: str) -> None:
     """A ready, unblocked issue someone is already building is not work to hand out."""
     _mock_open_issues(httpx_mock, [1], {1: ["archon:in-progress"]})
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}])
 
     with _patch_backlog(fake):
         result = await next_issue("owner/repo")
@@ -4204,7 +4108,7 @@ async def test_skip_work_already_in_progress(httpx_mock: HTTPXMock, set_user_id:
     """Scenario: Skip work already in progress — it does not stop the walk."""
     _mock_open_issues(httpx_mock, [1, 2], {1: ["archon:in-progress"]})
     _mock_blocked_by(httpx_mock, 2, [])
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 2, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}, {"issue_number": 2}])
 
     with _patch_backlog(fake):
         result = await next_issue("owner/repo")
@@ -4214,7 +4118,7 @@ async def test_skip_work_already_in_progress(httpx_mock: HTTPXMock, set_user_id:
 
 async def test_waiting_on_the_author(httpx_mock: HTTPXMock, set_user_id: str) -> None:
     """Scenario: Waiting on the author — skipped, then eligible again in its place."""
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 2, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}, {"issue_number": 2}])
 
     _mock_open_issues(httpx_mock, [1, 2], {1: ["needs-author"]})
     _mock_blocked_by(httpx_mock, 2, [])
@@ -4234,9 +4138,9 @@ async def test_waiting_on_the_author(httpx_mock: HTTPXMock, set_user_id: str) ->
 async def test_next_issue_all_waiting_on_the_author(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """Everything eligible waiting on the author is its own reason, not 'parked'."""
+    """Everything eligible waiting on the author is its own reason."""
     _mock_open_issues(httpx_mock, [1, 2], {1: ["needs-author"], 2: ["archon:in-progress"]})
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 2, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}, {"issue_number": 2}])
 
     with _patch_backlog(fake):
         result = await next_issue("owner/repo")
@@ -4256,8 +4160,8 @@ async def test_next_issue_interrupt_wins_across_repos(
     _mock_blocked_by(httpx_mock, 5, [], repo="owner/other")
     fake = _FakeBacklog(
         [
-            {"issue_number": 1, "ready": True},
-            {"issue_number": 5, "ready": True, "interrupt": True},
+            {"issue_number": 1},
+            {"issue_number": 5, "interrupt": True},
         ]
     )
     registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
@@ -4298,7 +4202,7 @@ async def test_next_issue_names_the_runners_up_it_passed_over(
     _mock_open_issues(httpx_mock, [5], repo="owner/other")
     _mock_blocked_by(httpx_mock, 1, [])
     _mock_blocked_by(httpx_mock, 5, [], repo="owner/other")
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}, {"issue_number": 5, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}, {"issue_number": 5}])
     registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
 
     with _patch_backlog(fake), patch("tools.requirements.db.list_repos", return_value=registered):
@@ -4308,75 +4212,42 @@ async def test_next_issue_names_the_runners_up_it_passed_over(
     assert result["also_eligible"] == [{"repo": "owner/other", "number": 5, "title": "Issue 5"}]
 
 
-def _backlog_by_repo(rows: dict[str, list[dict]]):
-    """A db.list_backlog that, unlike _FakeBacklog, gives each repo its own rows."""
-
-    def list_backlog(user_id: str, repo_name: str) -> list[dict]:
-        return [
-            {"ready": True, "interrupt": False, "ready_since": None, **row}
-            for row in rows.get(repo_name, [])
-        ]
-
-    return list_backlog
-
-
-async def test_next_issue_a_blocked_or_parked_repo_never_holds_back_another(
+async def test_next_issue_a_blocked_or_busy_repo_never_holds_back_another(
     httpx_mock: HTTPXMock, set_user_id: str
 ) -> None:
-    """Scenario: skip the blocked things and work on others.
+    """Scenario: Low-priority work still runs.
 
-    One repo is wholly parked and the focused one holds only a blocked issue (its
-    blocker waits on the author); the third repo's ready issue is still offered, and
-    each repo says why it has nothing rather than repeating the whole answer's reason.
+    One repo's issues are all in progress and the focused one holds only a blocked issue
+    (its blocker waits on the author); the third repo's issue is still offered, and each
+    repo says why it has nothing rather than repeating the whole answer's reason.
     """
-    _mock_open_issues(httpx_mock, [1, 2], repo="owner/parked")
+    in_progress = {1: ["archon:in-progress"], 2: ["archon:in-progress"]}
+    _mock_open_issues(httpx_mock, [1, 2], in_progress, repo="owner/busy")
     _mock_open_issues(httpx_mock, [3, 4], {4: ["needs-author"]}, repo="owner/blocked")
-    _mock_open_issues(httpx_mock, [5], repo="owner/ready")
+    _mock_open_issues(httpx_mock, [5], repo="owner/free")
     _mock_blocked_by(httpx_mock, 3, [4], repo="owner/blocked")
-    _mock_blocked_by(httpx_mock, 5, [], repo="owner/ready")
-    rows = {
-        "owner/parked": [{"issue_number": 1, "ready": False}, {"issue_number": 2, "ready": False}]
-    }
+    _mock_blocked_by(httpx_mock, 5, [], repo="owner/free")
     registered = [
-        {"repo_name": "owner/parked"},
+        {"repo_name": "owner/busy"},
         {"repo_name": "owner/blocked"},
-        {"repo_name": "owner/ready"},
+        {"repo_name": "owner/free"},
     ]
 
     with (
         _patch_backlog(
             _FakeBacklog(), focus=[{"repo_name": "owner/blocked", "milestone_id": None}]
         ),
-        patch("db.list_backlog", _backlog_by_repo(rows)),
         patch("tools.requirements.db.list_repos", return_value=registered),
     ):
         result = await next_issue()
 
     assert result["reason"] == "selected"
-    assert (result["issue"]["repo"], result["issue"]["number"]) == ("owner/ready", 5)
+    assert (result["issue"]["repo"], result["issue"]["number"]) == ("owner/free", 5)
     assert [(e["repo"], e["number"]) for e in result["blocked"]] == [("owner/blocked", 3)]
-    assert result["repos"]["owner/ready"] == {"reason": "selected", "issue": 5}
+    assert result["repos"]["owner/free"] == {"reason": "selected", "issue": 5}
     assert result["repos"]["owner/blocked"]["reason"] == "all_blocked"
     assert "#4" in result["repos"]["owner/blocked"]["explanation"]
-    assert result["repos"]["owner/parked"]["reason"] == "none_ready"
-    assert "2 parked" in result["repos"]["owner/parked"]["explanation"]
-
-
-async def test_next_issue_counts_the_parked_issues_behind_another_reason(
-    httpx_mock: HTTPXMock, set_user_id: str
-) -> None:
-    """A repo with one issue waiting on the author and two parked says both."""
-    _mock_open_issues(httpx_mock, [1, 2, 3], {1: ["needs-author"]})
-    fake = _FakeBacklog([{"issue_number": 2, "ready": False}, {"issue_number": 3, "ready": False}])
-
-    with _patch_backlog(fake):
-        result = await next_issue("owner/repo")
-
-    assert result["reason"] == "all_waiting"
-    assert result["explanation"].endswith("Another 2 open issues are parked.")
-    assert result["repos"]["owner/repo"]["explanation"].endswith(
-        "Another 2 open issues are parked."
-    )
+    assert result["repos"]["owner/busy"]["reason"] == "all_in_progress"
 
 
 async def test_next_issue_names_each_repos_own_offer(
@@ -4430,7 +4301,7 @@ async def test_next_issue_scoped_call_omits_also_eligible(
     """Asking about one repo answers about one repo — no runners-up from elsewhere."""
     _mock_open_issues(httpx_mock, [1])
     _mock_blocked_by(httpx_mock, 1, [])
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}])
     registered = [{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}]
 
     with _patch_backlog(fake), patch("tools.requirements.db.list_repos", return_value=registered):
@@ -4478,7 +4349,7 @@ async def test_next_issue_reads_every_backlog_and_the_due_audits_at_once(
             "interrupt": False,
             "sort_key": (repo,),
         }
-        return await overlapping(_RepoScan(candidate, [], True, False, False, False, False))
+        return await overlapping(_RepoScan(candidate, [], False, False, False, False))
 
     async def audit(*args):
         return await overlapping(None)
@@ -4535,7 +4406,7 @@ async def test_next_issue_skips_a_repo_it_cannot_read(
     )
     _mock_open_issues(httpx_mock, [1])
     _mock_blocked_by(httpx_mock, 1, [])
-    fake = _FakeBacklog([{"issue_number": 1, "ready": True}])
+    fake = _FakeBacklog([{"issue_number": 1}])
     registered = [{"repo_name": "owner/gone"}, {"repo_name": "owner/repo"}]
 
     with _patch_backlog(fake), patch("tools.requirements.db.list_repos", return_value=registered):
@@ -4638,7 +4509,7 @@ async def test_next_issue_keeps_offering_unplanned_work_while_budget_is_left(
     httpx_mock: HTTPXMock, set_user_id: str, _sprint_settings: None
 ) -> None:
     """The sprint plan is a forecast, not a gate: within pace and with budget left,
-    every repo's ready issue is offered, estimated or not, planned or not."""
+    every repo's unblocked issue is offered, estimated or not, planned or not."""
     _mock_open_issues(httpx_mock, [1], created=_recent(1))
     _mock_open_issues(httpx_mock, [5], created=_recent(5), repo="owner/other")
     _mock_blocked_by(httpx_mock, 1, [])

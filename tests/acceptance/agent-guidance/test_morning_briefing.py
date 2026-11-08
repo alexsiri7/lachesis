@@ -98,7 +98,6 @@ async def test_new_critical_finding(lachesis: Lachesis) -> None:
     assert "right after the health lines" in briefing
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #454")
 @scenario("agent-guidance", "Security fix held at a gate")
 async def test_security_fix_held_at_a_gate(lachesis: Lachesis) -> None:
     briefing = await _briefing(lachesis)

@@ -191,54 +191,27 @@ def test_sqlalchemy_database_url_keeps_explicit_driver(monkeypatch: pytest.Monke
 
 
 def test_list_backlog_returns_rows() -> None:
-    rows = [{"issue_number": 5, "ready": True, "interrupt": False, "ready_since": None}]
+    rows = [{"issue_number": 5, "interrupt": False}]
     mock = _mock_engine(rows)
     with patch("db._engine", return_value=mock):
         result = db.list_backlog("uid", "owner/repo")
     assert result == rows
     sql = str(mock.connect.return_value.execute.call_args[0][0])
-    assert "ready_since" in sql
+    assert "ready" not in sql
     assert "position" not in sql
 
 
-def test_upsert_backlog_flags_leaves_omitted_flag_null() -> None:
-    """An omitted flag binds NULL so COALESCE preserves the stored value."""
-    row = {"issue_number": 5, "ready": True, "interrupt": False}
+def test_upsert_backlog_flags_sets_interrupt() -> None:
+    row = {"issue_number": 5, "interrupt": True}
     mock = _mock_engine([row])
     with patch("db._engine", return_value=mock):
-        result = db.upsert_backlog_flags("uid", "owner/repo", 5, ready=True)
+        result = db.upsert_backlog_flags("uid", "owner/repo", 5, interrupt=True)
 
-    assert result["interrupt"] is False
+    assert result["interrupt"] is True
     params = mock.begin.return_value.execute.call_args[0][1]
-    assert params["ready"] is True
-    assert params["interrupt"] is None
+    assert params["interrupt"] is True
     sql = str(mock.begin.return_value.execute.call_args[0][0])
-    assert "COALESCE(:ready, lachesis_backlog.ready)" in sql
-    assert "COALESCE(:interrupt, lachesis_backlog.interrupt)" in sql
-
-
-def test_upsert_backlog_flags_inserts_ready_true_not_null() -> None:
-    """A row created to set one flag must not bind NULL, nor park the issue."""
-    row = {"issue_number": 9, "ready": True, "interrupt": False}
-    mock = _mock_engine([row])
-    with patch("db._engine", return_value=mock):
-        db.upsert_backlog_flags("uid", "owner/repo", 9, ready=True)
-
-    sql = str(mock.begin.return_value.execute.call_args[0][0])
-    assert "COALESCE(:ready, true), COALESCE(:interrupt, false)" in sql
-
-
-def test_upsert_backlog_flags_stamps_ready_since_only_when_unparking() -> None:
-    """Ageing counts from the last unpark, so re-marking a ready issue must not reset it."""
-    mock = _mock_engine([{"issue_number": 9, "ready": True, "interrupt": False}])
-    with patch("db._engine", return_value=mock):
-        db.upsert_backlog_flags("uid", "owner/repo", 9, ready=True)
-
-    sql = " ".join(str(mock.begin.return_value.execute.call_args[0][0]).split())
-    assert (
-        "ready_since = CASE WHEN COALESCE(:ready, false) AND NOT lachesis_backlog.ready "
-        "THEN now() ELSE lachesis_backlog.ready_since END"
-    ) in sql
+    assert "ready" not in sql
 
 
 def test_add_focus_ignores_a_focus_already_set() -> None:

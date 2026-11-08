@@ -171,7 +171,7 @@ def plan_sprint(
 ) -> tuple[list[dict[str, Any]], int]:
     """Walk *entries* in backlog order, planning each whose estimate fits what is left.
 
-    Parked work and work waiting on the author are not eligible. An entry that does
+    Work waiting on the author is not eligible. An entry that does
     not fit is skipped and the walk goes on, so smaller later work uses what is left.
     An issue sized larger than 13 is never planned itself: splitting it is, marked
     ``split``. Returns the planned entries and how many eligible entries were not planned.
@@ -180,7 +180,7 @@ def plan_sprint(
     planned: list[dict[str, Any]] = []
     not_planned = 0
     for entry in entries:
-        if not entry["ready"] or _NEEDS_AUTHOR_LABEL in entry["labels"]:
+        if _NEEDS_AUTHOR_LABEL in entry["labels"]:
             continue
         size = sizes.get((entry["repo"], entry["number"]))
         if size == db.TOO_BIG:

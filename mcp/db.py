@@ -7,7 +7,7 @@ Tables (all namespaced lachesis_):
                             settings that could not be configured for unattended merges
   lachesis_oauth_clients  — persisted OAuth client registrations
   lachesis_refresh_tokens — persisted refresh tokens (with expiry)
-  lachesis_backlog        — per-repo backlog flags (ready, interrupt, when last unparked)
+  lachesis_backlog        — per-repo backlog flags (interrupt)
   lachesis_focus          — the repositories and milestones the author has focused on
   lachesis_ntfy_config    — per-account ntfy server, topic and token
   lachesis_notifications  — one row per requirement already notified (dedupe)
@@ -350,7 +350,7 @@ def list_backlog(user_id: str, repo_name: str) -> list[dict[str, Any]]:
     """Return the backlog flag rows for a repo, by issue number."""
     sql = text(
         """
-        SELECT issue_number, ready, interrupt, ready_since
+        SELECT issue_number, interrupt
         FROM lachesis_backlog
         WHERE user_id = :user_id AND repo_name = :repo_name
         ORDER BY issue_number ASC
@@ -362,38 +362,15 @@ def list_backlog(user_id: str, repo_name: str) -> list[dict[str, Any]]:
 
 
 def upsert_backlog_flags(
-    user_id: str,
-    repo_name: str,
-    issue_number: int,
-    ready: bool | None = None,
-    interrupt: bool | None = None,
+    user_id: str, repo_name: str, issue_number: int, interrupt: bool
 ) -> dict[str, Any]:
-    """Set the ready and/or interrupt flags for an issue.
-
-    A flag passed as ``None`` keeps its current value; when the row is created here
-    it falls to the column default — ready true, interrupt false — so a row written
-    to set ``interrupt`` alone does not park the issue as a side effect. The
-    COALESCE is what supplies it: the columns are NOT NULL and a bound NULL would
-    violate that, since server defaults apply only to omitted columns.
-
-    Unparking an issue stamps ``ready_since``; setting ready on an issue already
-    ready leaves it, so ageing counts from the last unpark.
-    """
+    """Set the interrupt flag for an issue."""
     sql = text(
         """
-        INSERT INTO lachesis_backlog (user_id, repo_name, issue_number, ready, interrupt)
-        VALUES (
-            :user_id, :repo_name, :issue_number,
-            COALESCE(:ready, true), COALESCE(:interrupt, false)
-        )
+        INSERT INTO lachesis_backlog (user_id, repo_name, issue_number, interrupt)
+        VALUES (:user_id, :repo_name, :issue_number, :interrupt)
         ON CONFLICT (user_id, repo_name, issue_number) DO UPDATE
-            SET ready = COALESCE(:ready, lachesis_backlog.ready),
-                ready_since = CASE
-                    WHEN COALESCE(:ready, false) AND NOT lachesis_backlog.ready THEN now()
-                    ELSE lachesis_backlog.ready_since
-                END,
-                interrupt = COALESCE(:interrupt, lachesis_backlog.interrupt),
-                updated_at = now()
+            SET interrupt = :interrupt, updated_at = now()
         RETURNING *
         """
     )
@@ -401,7 +378,6 @@ def upsert_backlog_flags(
         "user_id": user_id,
         "repo_name": repo_name,
         "issue_number": issue_number,
-        "ready": ready,
         "interrupt": interrupt,
     }
     with _engine().begin() as conn:
