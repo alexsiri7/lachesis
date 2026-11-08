@@ -18,6 +18,7 @@ from tools.audits import (
     audit_history,
     file_audit_finding,
     next_audit,
+    start_audit,
 )
 
 NOW = datetime(2026, 10, 9, tzinfo=UTC)
@@ -204,14 +205,14 @@ async def test_audit_history_reads_every_repository_at_once() -> None:
 
 
 @pytest.mark.parametrize(
-    ("audit_title", "labels"),
+    ("audit_labels", "labels"),
     [
-        ("Audit (security): owner/a", ["spec-gap", "security"]),
-        ("Audit (architecture): owner/a", ["spec-gap"]),
+        (["audit", "security-audit"], ["spec-gap", "security"]),
+        (["audit"], ["spec-gap"]),
     ],
 )
 async def test_a_security_audits_finding_ranks_as_security_work(
-    audit_title: str, labels: list[str]
+    audit_labels: list[str], labels: list[str]
 ) -> None:
     """The backlog's security tier holds spec gaps found by a security audit."""
     create_issue = AsyncMock(return_value={"number": 41, "url": "u"})
@@ -219,9 +220,38 @@ async def test_a_security_audits_finding_ranks_as_security_work(
         patch("tools.audits._require_user_id", return_value="test-uid"),
         patch("tools.audits._resolve_repo", AsyncMock(return_value="owner/a")),
         patch("tools.audits._label", AsyncMock()),
-        patch("tools.audits.github.get_issue", AsyncMock(return_value={"title": audit_title})),
+        patch(
+            "tools.audits.github.get_issue",
+            AsyncMock(return_value={"title": "Renamed", "labels": audit_labels}),
+        ),
         patch("tools.audits.github.create_issue", create_issue),
     ):
         await file_audit_finding("owner/a", 40, "unmet_requirement", "auth", "Hole", "Body.")
+
+    assert create_issue.await_args.args[3] == labels
+
+
+@pytest.mark.parametrize(
+    ("kind", "labels"),
+    [("security", ["audit", "security-audit"]), ("architecture", ["audit"])],
+)
+async def test_a_security_audit_is_labelled_so_its_findings_are_security_work(
+    kind: str, labels: list[str]
+) -> None:
+    """The label, not the editable title, marks the audit whose findings are security work."""
+    history = {
+        "model": "claude",
+        "repos": [{"repo": "owner/a", "audits": [{"kind": kind, "due": True, "capability": None}]}],
+    }
+    create_issue = AsyncMock(return_value={"number": 40, "url": "u"})
+    with (
+        patch("tools.audits._require_user_id", return_value="test-uid"),
+        patch("tools.audits._resolve_repo", AsyncMock(return_value="owner/a")),
+        patch("tools.audits.github.list_all_issues", AsyncMock(return_value=[])),
+        patch("tools.audits.audit_history", AsyncMock(return_value=history)),
+        patch("tools.audits._label", AsyncMock()),
+        patch("tools.audits.github.create_issue", create_issue),
+    ):
+        await start_audit("owner/a", kind)
 
     assert create_issue.await_args.args[3] == labels

@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 AUDIT_LABEL = "audit"
 _AUDIT_COLOR = "5319e7"
+# Marks a security audit's issue, so its findings rank as security work even if retitled.
+SECURITY_AUDIT_LABEL = "security-audit"
+_SECURITY_COLOR = "b60205"
 
 # A security audit falls due this long after its last successful run, changes or not.
 SECURITY_INTERVAL = timedelta(days=60)
@@ -458,8 +461,12 @@ async def start_audit(repo: str, kind: db.AuditKind) -> dict[str, Any]:
         body = _north_star_body(repo, north_star)
     else:
         body = _audit_body(kind, capability, repo)
+    labels = [AUDIT_LABEL]
     await _label(repo, AUDIT_LABEL, _AUDIT_COLOR)
-    issue = await github.create_issue(repo, _audit_title(kind, subject), body, [AUDIT_LABEL])
+    if kind == "security":
+        labels.append(SECURITY_AUDIT_LABEL)
+        await _label(repo, SECURITY_AUDIT_LABEL, _SECURITY_COLOR)
+    issue = await github.create_issue(repo, _audit_title(kind, subject), body, labels)
     return {
         "repo": repo,
         "kind": kind,
@@ -507,8 +514,9 @@ async def file_audit_finding(
         labels.append(ACCEPTANCE_TESTS_LABEL)
         await _label(repo, ACCEPTANCE_TESTS_LABEL, ACCEPTANCE_TESTS_COLOR)
     audit = await github.get_issue(repo, audit_issue)
-    if audit is not None and audit["title"].startswith(_audit_title("security", "")):
+    if audit is not None and SECURITY_AUDIT_LABEL in audit["labels"]:
         labels.append(SECURITY_LABEL)
+        await _label(repo, SECURITY_LABEL, _SECURITY_COLOR)
     question = _QUESTIONS.get(finding, "").format(title=title.strip())
     text = f"{body.strip()}\n\nFound by audit #{audit_issue}."
     if question:
