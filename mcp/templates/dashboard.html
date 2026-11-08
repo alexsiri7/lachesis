@@ -131,7 +131,7 @@
         {{ i.title }}
         {%- if i.in_progress %} <span class="text-xs text-blue-700">in progress</span>{% endif %}
         {%- if i.waiting_on_author %} <span class="text-xs text-yellow-700">waiting on you</span>{% endif %}
-        {%- if not i.ready %} <span class="text-xs text-gray-400">parked</span>{% endif %}
+        {%- if i.blocked %} <span class="text-xs text-gray-400">blocked</span>{% endif %}
       </li>
       {% endfor %}
     </ol>

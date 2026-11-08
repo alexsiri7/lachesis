@@ -84,13 +84,12 @@ def _fuel(
     }
 
 
-def _entry(number: int, *, ready: bool = True, labels: list[str] | None = None) -> dict:
+def _entry(number: int, *, labels: list[str] | None = None) -> dict:
     return {
         "repo": "owner/repo",
         "number": number,
         "title": f"Issue {number}",
         "tier": "other",
-        "ready": ready,
         "labels": labels or [],
     }
 
@@ -168,7 +167,7 @@ def test_plan_goes_on_to_smaller_work_that_still_fits() -> None:
 
 
 def test_plan_includes_unestimated_work_and_never_waits_on_the_author() -> None:
-    entries = [_entry(1, ready=False), _entry(2, labels=["needs-author"]), _entry(3)]
+    entries = [_entry(2, labels=["needs-author"]), _entry(3)]
 
     plan, not_planned = plan_sprint(entries, {}, 100)
 

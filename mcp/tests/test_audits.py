@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from tools.audits import (
     _due,
     _last_audited,
@@ -14,6 +16,7 @@ from tools.audits import (
     _next_capability,
     _open_findings,
     audit_history,
+    file_audit_finding,
     next_audit,
 )
 
@@ -198,3 +201,27 @@ async def test_audit_history_reads_every_repository_at_once() -> None:
     assert most == 4
     assert [entry["repo"] for entry in history["repos"]] == ["owner/a", "owner/c", "owner/d"]
     assert history["unreadable"] == ["owner/b"]
+
+
+@pytest.mark.parametrize(
+    ("audit_title", "labels"),
+    [
+        ("Audit (security): owner/a", ["spec-gap", "security"]),
+        ("Audit (architecture): owner/a", ["spec-gap"]),
+    ],
+)
+async def test_a_security_audits_finding_ranks_as_security_work(
+    audit_title: str, labels: list[str]
+) -> None:
+    """The backlog's security tier holds spec gaps found by a security audit."""
+    create_issue = AsyncMock(return_value={"number": 41, "url": "u"})
+    with (
+        patch("tools.audits._require_user_id", return_value="test-uid"),
+        patch("tools.audits._resolve_repo", AsyncMock(return_value="owner/a")),
+        patch("tools.audits._label", AsyncMock()),
+        patch("tools.audits.github.get_issue", AsyncMock(return_value={"title": audit_title})),
+        patch("tools.audits.github.create_issue", create_issue),
+    ):
+        await file_audit_finding("owner/a", 40, "unmet_requirement", "auth", "Hole", "Body.")
+
+    assert create_issue.await_args.args[3] == labels

@@ -1022,7 +1022,7 @@ _BRIEFING_WRITES = {
     "update_requirement",
     "post_comment",
     "update_github_issue",
-    "set_backlog_flags",
+    "answer_author",
     "create_github_issues",
     "ask_question",
 }

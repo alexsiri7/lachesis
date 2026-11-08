@@ -178,8 +178,9 @@ mcp.tool(
     description=(
         "Create one or more GitHub issues capturing implementation work. "
         "Issues are the task layer — they break down *how* a requirement's "
-        "desired behaviour will be built. Issues are created ready and take their "
-        "computed place in the backlog; pass `ready: false` on one to park it instead. "
+        "desired behaviour will be built. Issues are eligible for pickup as soon as they "
+        "are created and take their computed place in the backlog; sequence them with "
+        "`blocked_by` or add_dependency. "
         "Give each issue a `size` in Fibonacci points (1, 2, 3, 5, 8 or 13; 21 for larger "
         "than 13, to be split), as size_issue takes it; an invalid size refuses the whole "
         "call before anything is created. "
@@ -642,8 +643,9 @@ mcp.tool(
         "is weak_test (also labelled acceptance-tests), unmet_requirement, "
         "undescribed_behaviour or ambiguous_wording. The last two wait on the author with "
         "a question framed as a decision: keep the behaviour and specify it or remove it; "
-        "which reading of the wording is intended. Audits file findings and never fix them. "
-        "Returns the new issue's number."
+        "which reading of the wording is intended. A finding of a security audit is also "
+        "labelled security, ranking it in the backlog's security tier. Audits file findings "
+        "and never fix them. Returns the new issue's number."
     ),
 )(audit_tools.file_audit_finding)
 
@@ -730,7 +732,7 @@ mcp.tool(
         "marked `improvement` true, as far as their estimates fit that share, then the due "
         "audits in read_audit_history's order, each naming its `repo`, `audit` kind, "
         "`capability` and estimate with its `confidence`, then the registered repositories' "
-        "backlogs in computed order; each issue ready and not waiting on the author, and "
+        "backlogs in computed order; each issue not waiting on the author, and "
         "included when its estimate fits what is left. A trial that does not fit its share "
         "is planned among them, for a trusted model; an experiment's issue that does not fit "
         "its share is not planned. An issue with no estimate is included, with "
@@ -897,21 +899,19 @@ mcp.tool(
         "`security`); the author's focus (set_focus); author_request, work on a spec change "
         "the author asked for (labelled author-request) for two sprints after it merges; work"
         " on an active milestone, nearest done first; everything else. Older issues come "
-        "first within a tier. A ready issue that has waited unblocked for two whole sprints "
+        "first within a tier. An issue that has waited unblocked for two whole sprints "
         "(counted from the fuel report's weekly reset) moves up one tier. Each entry reports "
-        "its `position`, `tier`, `aged`, `ready`, `interrupt`, `in_progress` (labelled "
-        "archon:in-progress) and `waiting_on_author` (labelled needs-author). An issue is "
-        "ready unless it has been parked; parked issues are skipped for autonomous pickup."
+        "its `position`, `tier`, `aged`, `interrupt`, `blocked` (an open dependency blocks "
+        "it), `in_progress` (labelled archon:in-progress) and `waiting_on_author` (labelled "
+        "needs-author)."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
 )(req_tools.get_backlog)
 
 mcp.tool(
     description=(
-        "Set an issue's backlog flags. `ready=false` parks the issue, holding it back "
-        "from autonomous pickup, and `ready=true` unparks it; `interrupt` jumps it to "
-        "the backlog's top tier. "
-        "An omitted flag is left as it is."
+        "Set an issue's interrupt flag: `interrupt` true jumps it to the backlog's top "
+        "tier, false returns it to its computed place."
     ),
 )(req_tools.set_backlog_flags)
 
@@ -936,7 +936,7 @@ mcp.tool(
 
 mcp.tool(
     description=(
-        "Return the issue to pick up next — the highest-ordered issue that is ready, "
+        "Return the issue to pick up next — the highest-ordered issue that "
         "has no open blocker, is not already in progress, and is not waiting on the "
         "author (labelled needs-author). Once fuel is reported, work other than security "
         "work must also fit the sprint budget left and spending must be within today's "
@@ -944,9 +944,9 @@ mcp.tool(
         "omitted. "
         "The offered issue's notes are returned with it under `notes`, oldest first. "
         "`repo` is optional: omit it to consider every registered repo. When nothing "
-        "qualifies the result explains which case it is — everything ready is blocked, "
+        "qualifies the result explains which case it is — everything open is blocked, "
         "the sprint budget is spent, spending is ahead of pace, everything eligible is "
-        "waiting on the author, everything is parked, or the backlog is empty. "
+        "waiting on the author or in progress, or the backlog is empty. "
         "A blocked issue never holds back another issue or another repo: the walk "
         "passes over it. `repos` gives each repo read its own outcome — `reason` (as "
         "above, or `unreadable`), its `issue` number when it has one, and otherwise its "

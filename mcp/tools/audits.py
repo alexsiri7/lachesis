@@ -21,6 +21,7 @@ from .requirements import (
     _NEEDS_AUTHOR_COLOR,
     _NEEDS_AUTHOR_LABEL,
     _SPEC_GAP_COLOR,
+    SECURITY_LABEL,
     SPEC_GAP_LABEL,
     _resolve_repo,
 )
@@ -410,6 +411,10 @@ def _north_star_body(repo: str, north_star: str) -> str:
     return "\n".join([*lines, "", _NORTH_STAR_GAPS, "", _FILING])
 
 
+def _audit_title(kind: str, subject: str) -> str:
+    return f"Audit ({kind}): {subject}"
+
+
 def _audit_body(kind: str, capability: str | None, repo: str) -> str:
     subject = f"the {capability} capability" if capability else repo
     checks = _CHECKS["spec"] if capability else _CHECKS[kind]
@@ -454,7 +459,7 @@ async def start_audit(repo: str, kind: db.AuditKind) -> dict[str, Any]:
     else:
         body = _audit_body(kind, capability, repo)
     await _label(repo, AUDIT_LABEL, _AUDIT_COLOR)
-    issue = await github.create_issue(repo, f"Audit ({kind}): {subject}", body, [AUDIT_LABEL])
+    issue = await github.create_issue(repo, _audit_title(kind, subject), body, [AUDIT_LABEL])
     return {
         "repo": repo,
         "kind": kind,
@@ -486,8 +491,9 @@ async def file_audit_finding(
 ) -> dict[str, Any]:
     """File one finding of audit issue *audit_issue* as a spec-gap issue.
 
-    A weak test is also labelled acceptance-tests. Undescribed behaviour and ambiguous
-    wording wait on the author with a question framed as a decision.
+    A weak test is also labelled acceptance-tests, and a finding of a security audit is
+    labelled security, so it ranks in the backlog's security tier. Undescribed behaviour
+    and ambiguous wording wait on the author with a question framed as a decision.
     """
     if finding not in get_args(Finding):
         raise ValueError(f"finding must be one of {', '.join(get_args(Finding))}, got {finding!r}")
@@ -500,6 +506,9 @@ async def file_audit_finding(
     if finding == "weak_test":
         labels.append(ACCEPTANCE_TESTS_LABEL)
         await _label(repo, ACCEPTANCE_TESTS_LABEL, ACCEPTANCE_TESTS_COLOR)
+    audit = await github.get_issue(repo, audit_issue)
+    if audit is not None and audit["title"].startswith(_audit_title("security", "")):
+        labels.append(SECURITY_LABEL)
     question = _QUESTIONS.get(finding, "").format(title=title.strip())
     text = f"{body.strip()}\n\nFound by audit #{audit_issue}."
     if question:

@@ -123,7 +123,6 @@ async def _set_flags(lachesis: Lachesis, number: int, **flags: bool) -> None:
 
 
 @scenario("backlog", "Reading the backlog")
-@pytest.mark.xfail(strict=True, reason="spec change #449")
 async def test_reading_the_backlog(lachesis: Lachesis) -> None:
     blocker = _issue(4, age=timedelta(days=1), labels=("archon:in-progress",))
     await _repo_with(
@@ -228,7 +227,6 @@ def _argument_names(schema: Any) -> set[str]:
 
 
 @scenario("backlog", "No tool parks work")
-@pytest.mark.xfail(strict=True, reason="spec change #449")
 async def test_no_tool_parks_work(lachesis: Lachesis) -> None:
     holding = {"park", "parked", "unpark", "pause", "paused", "hold", "ready"}
     await _repo_with(lachesis, _issue(1))
@@ -253,7 +251,6 @@ async def test_no_tool_parks_work(lachesis: Lachesis) -> None:
 
 
 @scenario("backlog", "A dependency releases its dependant")
-@pytest.mark.xfail(strict=True, reason="spec change #449")
 async def test_a_dependency_releases_its_dependant(lachesis: Lachesis) -> None:
     dependant, other = _issue(8, age=timedelta(days=3)), _issue(9, age=timedelta(days=2))
     blocker = _issue(7, age=timedelta(days=1))

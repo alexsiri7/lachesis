@@ -10,8 +10,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
-
 from harness import Lachesis, scenario
 
 SPEC_REPO = "owner/specs"
@@ -107,7 +105,6 @@ async def test_stuck_on_intent(lachesis: Lachesis) -> None:
         assert "move on to other work" in guidance
 
 
-@pytest.mark.xfail(strict=True, reason="spec change #454")
 @scenario("agent-guidance", "Behaviour changes")
 async def test_behaviour_changes(lachesis: Lachesis) -> None:
     await _register(lachesis)
