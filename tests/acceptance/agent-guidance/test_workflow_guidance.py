@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+
 from harness import Lachesis, scenario
 
 SPEC_REPO = "owner/specs"
@@ -105,22 +107,18 @@ async def test_stuck_on_intent(lachesis: Lachesis) -> None:
         assert "move on to other work" in guidance
 
 
+@pytest.mark.xfail(strict=True, reason="spec change #454")
 @scenario("agent-guidance", "Behaviour changes")
 async def test_behaviour_changes(lachesis: Lachesis) -> None:
     await _register(lachesis)
     created_now = _issue(1, timedelta(minutes=1))
-    parked = _issue(2, timedelta(days=2))
-    lachesis.github.on("GET", f"/repos/{PLAIN_REPO}/issues", json=[created_now, parked])
-    for item in (created_now, parked):
-        lachesis.github.on("GET", f"/repos/{PLAIN_REPO}/issues/{item['number']}", json=item)
-    flagged = await lachesis.call_tool(
-        "set_backlog_flags", {"repo": PLAIN_REPO, "issue_number": 2, "ready": False}
-    )
-    assert not flagged.is_error, flagged.text
+    lachesis.github.on("GET", f"/repos/{PLAIN_REPO}/issues", json=[created_now])
+    lachesis.github.on("GET", f"/repos/{PLAIN_REPO}/issues/1", json=created_now)
 
     offered = await _next(lachesis)
     guidance = await _guidance(lachesis, PLAIN_REPO)
 
     assert offered["issue"]["number"] == 1
     assert "eligible for autonomous pickup as soon as they are created" in guidance
-    assert "set_backlog_flags with ready=false to park" in guidance
+    assert "ready=false" not in guidance
+    assert "unpark" not in guidance

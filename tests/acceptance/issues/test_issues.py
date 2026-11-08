@@ -128,10 +128,10 @@ async def test_batch_creation(lachesis: Lachesis) -> None:
         status=201,
     )
 
-    await _create(
+    created = await _create(
         lachesis,
         {"title": "First", "body": "One."},
-        {"title": "Second", "body": "Two.", "ready": False},
+        {"title": "Second", "body": "Two."},
         {"title": "Third", "body": "Three."},
     )
     _holds(
@@ -146,7 +146,10 @@ async def test_batch_creation(lachesis: Lachesis) -> None:
     assert not result.is_error, result.text
     entries = {entry["number"]: entry for entry in result.json()}
     assert [entries[n]["position"] for n in (6, 7, 8)] == [5, 6, 7]
-    assert [entries[n]["ready"] for n in (6, 7, 8)] == [True, False, True]
+    assert [issue["blocked_by"] for issue in created] == [[], [], []]
+    for n in (6, 7, 8):
+        assert not entries[n]["waiting_on_author"]
+        assert not entries[n]["in_progress"]
 
 
 @scenario("issues", "Blocked at birth")
