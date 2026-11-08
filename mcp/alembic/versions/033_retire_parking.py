@@ -34,7 +34,7 @@ def upgrade() -> None:
         )
     )
     for repo_name, count in parked:
-        logger.info("Unparked %s issues in %s", count, repo_name)
+        logger.info("Dropped the parked flag from %s backlog rows in %s", count, repo_name)
     op.drop_column("lachesis_backlog", "ready_since")
     op.drop_column("lachesis_backlog", "ready")
 
