@@ -32,6 +32,7 @@ from tools.requirements import (
     get_dependencies,
     get_github_issue,
     get_initial_instructions,
+    get_morning_briefing,
     get_pull_request,
     get_requirement,
     link_issues,
@@ -3163,6 +3164,15 @@ async def test_get_initial_instructions_documents_the_backlog() -> None:
     assert "move_issue" not in result
     assert "next_issue" in result
     assert "park" not in result
+
+
+async def test_get_morning_briefing_clears_a_waiting_issue_by_answering_it() -> None:
+    """The briefing's only route off needs-author is an answer, never a park."""
+    briefing = await get_morning_briefing()
+
+    assert "answer it with answer_author" in briefing
+    assert "set_backlog_flags" not in briefing
+    assert "park" not in briefing
 
 
 async def test_get_initial_instructions_says_a_budget_question_blocks_nothing() -> None:
