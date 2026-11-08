@@ -8,13 +8,13 @@ GitHub issues are the task layer: they describe how a requirement's behaviour ge
 
 ### Requirement: Issues are created ready and last
 
-The system SHALL create one or more issues in a single call. Each new issue SHALL be ready for autonomous pickup and placed last in the repository's backlog, unless the caller marks it not ready, in which case it SHALL be created parked.
+The system SHALL create one or more issues in a single call. Each new issue SHALL be ready for autonomous pickup and placed last in the repository's backlog. Creation SHALL take no argument that parks an issue or marks it not ready.
 
 #### Scenario: Batch creation
 - GIVEN a backlog of five issues
-- WHEN three issues are created, the second marked not ready
+- WHEN three issues are created
 - THEN they occupy positions six, seven and eight in creation order
-- AND the second is parked and the others are ready
+- AND all three are ready for pickup
 
 ### Requirement: Dependencies declared at creation are honoured
 
