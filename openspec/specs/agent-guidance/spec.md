@@ -31,7 +31,7 @@ Every set of instructions an agent runs from, scheduled or not and the worker's 
 
 ### Requirement: The workflow is available on request
 
-The system SHALL return the standard workflow on request, and SHALL accept an optional repository so the answer can say which workflow applies there; without one it SHALL describe both workflows and how to tell which applies. Both SHALL cover that new issues are ready and last in the backlog, and how to park, order, interrupt and ask for the next issue.
+The system SHALL return the standard workflow on request, and SHALL accept an optional repository so the answer can say which workflow applies there; without one it SHALL describe both workflows and how to tell which applies. Both SHALL cover that new issues are ready and last in the backlog, and how to order, interrupt and ask for the next issue. Neither SHALL describe a way to park work.
 
 #### Scenario: Session start without a repository
 - GIVEN no repository is named
@@ -104,7 +104,7 @@ The system SHALL return, on request, the complete instructions for an unattended
 
 ### Requirement: The briefing fixes before it reports
 
-Before writing the message, the briefing SHALL tell the agent to make these fixes and only these: mark done a requirement that has landed but is still recorded as not done; comment on and close a factory escalation whose cause is resolved, because its pull request merged or closed or the default branch's checks pass at a later commit; and rewrite for an agent, and unpark, an issue parked for the author that an agent can do itself.
+Before writing the message, the briefing SHALL tell the agent to make these fixes and only these: mark done a requirement that has landed but is still recorded as not done; comment on and close a factory escalation whose cause is resolved, because its pull request merged or closed or the default branch's checks pass at a later commit; and rewrite for an agent, and remove needs-author from, an issue waiting on the author that an agent can do itself.
 
 #### Scenario: Stale escalation
 - GIVEN an open factory escalation about a pull request that has since merged
@@ -147,7 +147,7 @@ The message SHALL open with one line saying whether the factory is working, from
 
 ### Requirement: The briefing checks for critical security problems
 
-Every morning the briefing SHALL tell the agent to check every registered repository for critical security problems and report them right after the health lines. A critical security problem SHALL be any of: an issue labelled security and opened in the last 24 hours whose stated severity is critical or high, or an open issue labelled security that waits on the author because it is labelled needs-author, is parked, or its pull request is held by a check only the author can clear.
+Every morning the briefing SHALL tell the agent to check every registered repository for critical security problems and report them right after the health lines. A critical security problem SHALL be any of: an issue labelled security and opened in the last 24 hours whose stated severity is critical or high, or an open issue labelled security that waits on the author because it is labelled needs-author or its pull request is held by a check only the author can clear.
 
 #### Scenario: New critical finding
 - GIVEN an issue labelled security with severity critical was opened last night
