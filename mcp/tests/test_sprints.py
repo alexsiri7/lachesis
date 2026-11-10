@@ -604,6 +604,16 @@ def test_trial_spend_is_never_more_than_the_sprints_spending() -> None:
     assert share == {"budget_tokens": 15_050_000, "spent_tokens": 22_733_333, "left_tokens": 0}
 
 
+def test_trial_spend_reaches_the_sprints_spending_when_every_run_was_a_trial() -> None:
+    """Every run reported 220M where the sprint spent 31M: the trials spent all of it."""
+    in_sprint = [_ledger_run(n, "claude-haiku", 44_000_000) for n in range(1, 6)]
+
+    with patch("db.list_runs", return_value=in_sprint):
+        share = trial_share("uid", _TRIAL_BUDGET, in_sprint, {"owner/repo": set(range(1, 6))})
+
+    assert share["spent_tokens"] == _TRIAL_BUDGET["spent_tokens"]
+
+
 def test_trial_spend_is_the_trial_runs_tokens_when_runs_reported_less_than_was_spent() -> None:
     in_sprint = [_ledger_run(1, "claude-haiku", 1_000_000), _ledger_run(2, "claude", 1_000_000)]
 
