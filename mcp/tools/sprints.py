@@ -132,12 +132,18 @@ def trial_share(
     the sprint's trials among *runs* spent of it, and what is left.
 
     Runs report tokens as their model counts them, while the budget counts the allowance and
-    overflow, so the trials' tokens are capped at what the sprint spent: trials are among its
-    runs and never spend more than it."""
+    overflow. When the sprint's runs reported more tokens than it spent, the trials count their
+    share of what it spent, so the figure never exceeds the sprint's spending and reaches it only
+    when every run was a trial."""
     share = round(budget["budget_tokens"] * settings.trial_share_percent / 100)
     in_sprint = db.list_runs(user_id, start=budget["start"], end=budget["end"])
     trials = routing.trial_tokens(runs, closed, {run["id"] for run in in_sprint})
-    spent = min(trials, budget["spent_tokens"])
+    reported = sum(_tokens(run) for run in in_sprint)
+    spent = (
+        round(budget["spent_tokens"] * trials / reported)
+        if reported > budget["spent_tokens"]
+        else trials
+    )
     return {"budget_tokens": share, "spent_tokens": spent, "left_tokens": max(0, share - spent)}
 
 
