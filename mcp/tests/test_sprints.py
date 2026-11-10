@@ -575,8 +575,8 @@ _TRIAL_BUDGET = {
 
 
 def test_trial_spend_counts_only_this_sprints_trial_runs() -> None:
-    """Haiku's first five runs were trials this sprint; Sonnet's trial ran in an earlier
-    sprint and counts for nothing."""
+    """Haiku's first five runs were trials this sprint, their 5M of the 86M its runs reported;
+    Sonnet's trial ran in an earlier sprint and counts for nothing."""
     earlier = _ledger_run(1, "claude-sonnet", 500_000_000)
     in_sprint = [_ledger_run(n, "claude-haiku", 1_000_000) for n in range(2, 8)]
     in_sprint.append(_ledger_run(8, "claude", 80_000_000))
@@ -587,20 +587,34 @@ def test_trial_spend_counts_only_this_sprints_trial_runs() -> None:
 
     assert share == {
         "budget_tokens": 15_050_000,
-        "spent_tokens": 5_000_000,
-        "left_tokens": 10_050_000,
+        "spent_tokens": 1_802_326,
+        "left_tokens": 13_247_674,
     }
 
 
 def test_trial_spend_is_never_more_than_the_sprints_spending() -> None:
-    """The issue's sprint: trial runs reported 220M tokens where the sprint spent 31M."""
+    """The sprint of #447: trial runs reported 220M of the 300M tokens its runs reported where
+    it spent 31M, so the trials count 220/300 of the 31M."""
     in_sprint = [_ledger_run(n, "claude-haiku", 44_000_000) for n in range(1, 6)]
     in_sprint.append(_ledger_run(6, "claude", 80_000_000))
 
     with patch("db.list_runs", return_value=in_sprint):
         share = trial_share("uid", _TRIAL_BUDGET, in_sprint, {"owner/repo": set(range(1, 7))})
 
-    assert share == {"budget_tokens": 15_050_000, "spent_tokens": 31_000_000, "left_tokens": 0}
+    assert share == {"budget_tokens": 15_050_000, "spent_tokens": 22_733_333, "left_tokens": 0}
+
+
+def test_trial_spend_is_the_trial_runs_tokens_when_runs_reported_less_than_was_spent() -> None:
+    in_sprint = [_ledger_run(1, "claude-haiku", 1_000_000), _ledger_run(2, "claude", 1_000_000)]
+
+    with patch("db.list_runs", return_value=in_sprint):
+        share = trial_share("uid", _TRIAL_BUDGET, in_sprint, {"owner/repo": {1, 2}})
+
+    assert share == {
+        "budget_tokens": 15_050_000,
+        "spent_tokens": 1_000_000,
+        "left_tokens": 14_050_000,
+    }
 
 
 def test_trial_spend_is_zero_when_the_sprint_reported_no_run_tokens() -> None:
@@ -1078,3 +1092,28 @@ def test_plan_offers_splitting_an_issue_too_big_to_plan() -> None:
     plan, _ = plan_sprint(entries, {}, 100, {("owner/repo", 1): db.TOO_BIG})
 
     assert [(item["number"], item.get("split")) for item in plan] == [(1, True), (2, None)]
+
+
+async def test_read_sprint_counts_only_the_trial_runs_share_of_the_sprints_spending(
+    set_user_id: str,
+) -> None:
+    """A sprint of trusted and trial runs whose reported tokens exceed what it spent: the
+    trials' figure is their share of the spending, below it."""
+    now = datetime.now(UTC)
+    runs = [
+        {**_ledger_run(1, "claude", 200), "repo_name": "owner/a"},
+        {**_ledger_run(2, "claude-haiku", 100), "repo_name": "owner/a"},
+        {**_ledger_run(3, "claude-haiku", 100), "repo_name": "owner/a"},
+    ]
+    with (
+        _two_repos(),
+        patch("db.list_runs", return_value=runs),
+        patch(
+            "db.get_fuel",
+            return_value=_fuel(used=50.0, spent=0.0, resets_at=now + timedelta(days=3)),
+        ),
+    ):
+        result = await read_sprint()
+
+    assert result["spent_tokens"] == 56
+    assert result["trial_spent_tokens"] == 28
