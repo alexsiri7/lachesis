@@ -138,7 +138,7 @@ def trial_share(
     share = round(budget["budget_tokens"] * settings.trial_share_percent / 100)
     in_sprint = db.list_runs(user_id, start=budget["start"], end=budget["end"])
     trials = routing.trial_tokens(runs, closed, {run["id"] for run in in_sprint})
-    reported = sum(run["tokens_in"] + run["tokens_out"] for run in in_sprint)
+    reported = sum(_tokens(run) for run in in_sprint)
     spent = (
         round(budget["spent_tokens"] * trials / reported)
         if reported > budget["spent_tokens"]
