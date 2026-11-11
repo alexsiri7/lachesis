@@ -2246,7 +2246,9 @@ async def get_dashboard(
     the call's time limit is named here with cause ``transient``.
 
     The call reads GitHub for at most 25 seconds from when it starts and reports
-    what it did not finish by then, as above, instead of waiting for it.
+    what it did not finish by then, as above, instead of waiting for it.  Settling
+    the open questions comes first and counts against that time; when it runs past
+    it, it finishes after the call returns, and every repo is reported as not read.
 
     ``summary.lower_bound`` is true while either ``incomplete_repos`` or
     ``failed_repos`` is non-empty, saying in one field that the counts are floors.
@@ -2271,7 +2273,13 @@ async def get_dashboard(
     from .questions import settle_open_questions
 
     deadline = asyncio.get_running_loop().time() + _DASHBOARD_SECONDS
-    await settle_open_questions(user_id)
+    try:
+        # Shielded: it posts on issues before recording that it did, so cutting it
+        # midway would post again on the next read. It finishes after the call instead.
+        async with asyncio.timeout_at(deadline):
+            await asyncio.shield(settle_open_questions(user_id))
+    except TimeoutError:
+        logger.warning("get_dashboard: the open questions were not settled in time")
 
     repos = db.list_repos(user_id)
     registered = [normalize_repo(repo_row["repo_name"]) for repo_row in repos]

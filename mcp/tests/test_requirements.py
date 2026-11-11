@@ -5665,6 +5665,56 @@ async def test_get_dashboard_marks_a_repo_cut_after_listing_incomplete(
     assert summary["lower_bound"] is True
 
 
+async def test_get_dashboard_answers_in_time_while_questions_settle_after_it(
+    set_db_user_id: None,
+) -> None:
+    """Settling questions slowly costs the repos their reads, never the call or a settlement."""
+    settled = asyncio.Event()
+
+    async def settle(user_id: str) -> None:
+        await asyncio.sleep(0.4)
+        settled.set()
+
+    with (
+        patch("tools.requirements._DASHBOARD_SECONDS", 0.2),
+        patch("tools.questions.settle_open_questions", side_effect=settle),
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch(
+            "tools.requirements.waiting_on_author",
+            AsyncMock(return_value=MagicMock(issues=[], unreadable=[])),
+        ),
+    ):
+        result = await asyncio.wait_for(get_dashboard(), timeout=0.35)
+        assert not settled.is_set()
+        await asyncio.wait_for(settled.wait(), timeout=1)
+
+    assert result["repos"] == []
+    assert result["summary"]["failed_repos"] == [{"repo": "owner/repo", "cause": "transient"}]
+
+
+async def test_get_dashboard_sends_a_landing_notification_its_deadline_interrupts(
+    httpx_mock: HTTPXMock, set_db_user_id: None
+) -> None:
+    """A landed requirement already claimed is still announced when the call's time runs out."""
+    sent = asyncio.Event()
+
+    async def notify(repo: str, candidates: list) -> None:
+        await asyncio.sleep(0.4)
+        sent.set()
+
+    with (
+        patch("tools.requirements._DASHBOARD_SECONDS", 0.2),
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch("tools.requirements.landing.notify_landed", side_effect=notify),
+    ):
+        _mock_cancelled_dashboard(httpx_mock)
+        result = await get_dashboard()
+        assert not sent.is_set()
+        await asyncio.wait_for(sent.wait(), timeout=1)
+
+    assert result["summary"]["incomplete_repos"] == ["owner/repo"]
+
+
 async def test_waiting_on_author_names_a_repo_not_searched_in_time() -> None:
     import asyncio
 
