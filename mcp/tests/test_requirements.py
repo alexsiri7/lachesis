@@ -5692,20 +5692,28 @@ async def test_get_dashboard_answers_in_time_while_questions_settle_after_it(
     assert result["summary"]["failed_repos"] == [{"repo": "owner/repo", "cause": "transient"}]
 
 
+@pytest.mark.parametrize("slow_call", [0, 1], ids=["requirements", "spec_changes"])
 async def test_get_dashboard_sends_a_landing_notification_its_deadline_interrupts(
-    httpx_mock: HTTPXMock, set_db_user_id: None
+    httpx_mock: HTTPXMock, set_db_user_id: None, slow_call: int
 ) -> None:
-    """A landed requirement already claimed is still announced when the call's time runs out."""
+    """A landed requirement or spec change already claimed is still announced when time runs out."""
     sent = asyncio.Event()
+    calls: list[str] = []
 
     async def notify(repo: str, candidates: list) -> None:
-        await asyncio.sleep(0.4)
-        sent.set()
+        calls.append(repo)
+        if len(calls) - 1 == slow_call:
+            await asyncio.sleep(0.4)
+            sent.set()
 
+    progress = MagicMock(spec_gaps={}, landing_candidates=[])
     with (
         patch("tools.requirements._DASHBOARD_SECONDS", 0.2),
         patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
         patch("tools.requirements.landing.notify_landed", side_effect=notify),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
+        patch("tools.specs.read_spec_progress", AsyncMock(return_value=progress)),
+        patch("tools.specs.scenario_view", return_value={}),
     ):
         _mock_cancelled_dashboard(httpx_mock)
         result = await get_dashboard()
