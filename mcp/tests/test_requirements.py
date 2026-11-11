@@ -5677,7 +5677,9 @@ async def test_get_dashboard_answers_in_time_while_questions_settle_after_it(
 
     with (
         patch("tools.requirements._DASHBOARD_SECONDS", 0.2),
-        patch("tools.questions.settle_open_questions", side_effect=settle),
+        patch("tools.questions.take_answers_from_issues", side_effect=settle),
+        patch("tools.questions.settle_closed_questions", new_callable=AsyncMock),
+        patch("tools.questions.settle_expired_defaults", new_callable=AsyncMock),
         patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
         patch(
             "tools.requirements.waiting_on_author",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -1294,6 +1295,34 @@ async def test_the_authors_answer_is_taken_before_closed_issues_settle_a_questio
         await settle_open_questions("test-uid")
 
     assert order == ["answers test-uid", "closed test-uid", "defaults test-uid"]
+
+
+async def test_a_settlement_already_running_is_joined_not_run_again() -> None:
+    """Settling posts before it records, so a second run alongside would post twice."""
+    release = asyncio.Event()
+    runs: list[str] = []
+
+    async def answers(user_id: str) -> None:
+        runs.append(user_id)
+        await release.wait()
+
+    with (
+        patch("tools.questions.take_answers_from_issues", side_effect=answers),
+        patch("tools.questions.settle_closed_questions", new_callable=AsyncMock),
+        patch("tools.questions.settle_expired_defaults", new_callable=AsyncMock) as defaults,
+    ):
+        first = asyncio.create_task(settle_open_questions("test-uid"))
+        await asyncio.sleep(0)
+        first.cancel()
+        second = asyncio.create_task(settle_open_questions("test-uid"))
+        await asyncio.sleep(0)
+        release.set()
+        await second
+        await settle_open_questions("test-uid")
+
+    assert first.cancelled()
+    assert runs == ["test-uid", "test-uid"]
+    assert defaults.await_count == 2
 
 
 async def test_the_author_may_answer_a_defaulted_question(

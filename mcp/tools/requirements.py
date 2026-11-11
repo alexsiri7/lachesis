@@ -2245,8 +2245,9 @@ async def get_dashboard(
     listing is intact — and is reported in the logs only.  A repo not listed before
     the call's time limit is named here with cause ``transient``.
 
-    The call reads GitHub for at most 25 seconds from when it starts and reports
-    what it did not finish by then, as above, instead of waiting for it.  Settling
+    The call reads GitHub for at most ``_DASHBOARD_SECONDS`` seconds from when it
+    starts and reports what it did not finish by then, as above, instead of waiting
+    for it.  Settling
     the open questions comes first and counts against that time; when it runs past
     it, it finishes after the call returns, and every repo is reported as not read.
 
@@ -2274,10 +2275,8 @@ async def get_dashboard(
 
     deadline = asyncio.get_running_loop().time() + _DASHBOARD_SECONDS
     try:
-        # Shielded: it posts on issues before recording that it did, so cutting it
-        # midway would post again on the next read. It finishes after the call instead.
         async with asyncio.timeout_at(deadline):
-            await asyncio.shield(settle_open_questions(user_id))
+            await settle_open_questions(user_id)
     except TimeoutError:
         logger.warning("get_dashboard: the open questions were not settled in time")
 

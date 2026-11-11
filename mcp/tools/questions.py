@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, get_args
@@ -483,6 +484,9 @@ async def take_answers_from_issues(user_id: str) -> list[dict[str, Any]]:
     return answered
 
 
+_settling: dict[str, asyncio.Task[None]] = {}
+
+
 async def settle_open_questions(user_id: str) -> None:
     """Settle every open question that is due, before the queue is read.
 
@@ -490,7 +494,21 @@ async def settle_open_questions(user_id: str) -> None:
     never records the closed note over the author's own answer; questions whose
     issues are all closed settle before expired defaults, so no default is posted
     on a closed issue. Never raises.
+
+    Settling posts on issues before recording that it did, so a second settlement
+    running alongside the first would post again, and one cut midway would post
+    again on the next read: a caller joins the settlement already running for the
+    user, and a caller cancelled while waiting leaves it to finish.
     """
+    running = _settling.get(user_id)
+    if running is None:
+        running = asyncio.create_task(_settle(user_id))
+        _settling[user_id] = running
+        running.add_done_callback(lambda _: _settling.pop(user_id, None))
+    await asyncio.shield(running)
+
+
+async def _settle(user_id: str) -> None:
     await take_answers_from_issues(user_id)
     await settle_closed_questions(user_id)
     await settle_expired_defaults(user_id)
