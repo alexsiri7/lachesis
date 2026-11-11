@@ -4979,18 +4979,23 @@ def _quiet_since(days: int) -> str:
     return (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _mock_quiet_dashboard(httpx_mock: HTTPXMock, days: int) -> None:
-    """One requirement whose two linked issues last moved *days* ago."""
+def _quiet_issue_nodes(days: int) -> list[dict]:
+    """The two issues _IDEA_BULLETED_MD links, last moved *days* ago."""
     stamp = _quiet_since(days)
     nodes = []
     for number in (42, 43):
         node = _open_issue_node(number)
         node["updatedAt"] = stamp
         nodes.append(node)
+    return nodes
+
+
+def _mock_quiet_dashboard(httpx_mock: HTTPXMock, days: int) -> None:
+    """One requirement whose two linked issues last moved *days* ago."""
     httpx_mock.add_response(json=_LIST_RESP)
     httpx_mock.add_response(json=_make_file_response(_IDEA_BULLETED_MD, "sha1"))
     httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
-    _mock_issue_activity(httpx_mock, *nodes)
+    _mock_issue_activity(httpx_mock, *_quiet_issue_nodes(days))
 
 
 async def test_get_dashboard_reports_every_group_even_when_empty(
@@ -5081,10 +5086,21 @@ async def test_get_dashboard_groups_span_every_registered_repo(
         "tools.requirements.db.list_repos",
         return_value=[{"repo_name": "owner/repo"}, {"repo_name": "owner/other"}],
     ):
-        httpx_mock.add_response(json=_LIST_RESP)
-        httpx_mock.add_response(json=_make_file_response(_SAMPLE_MD, "sha1"))
-        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
-        _mock_quiet_dashboard(httpx_mock, days=100)
+        # The repos are read at the same time, so each answer is matched to its request.
+        files = {"owner/repo": _SAMPLE_MD, "owner/other": _IDEA_BULLETED_MD}
+        for repo, content in files.items():
+            contents = f"https://api.github.com/repos/{repo}/contents/requirements"
+            httpx_mock.add_response(url=contents, json=_LIST_RESP)
+            httpx_mock.add_response(
+                url=f"{contents}/{_NAME}", json=_make_file_response(content, "sha1")
+            )
+        httpx_mock.add_response(
+            url=re.compile(r"https://api\.github\.com/repos/owner/\w+/pulls\?.*"),
+            json=[],  # list_lachesis_prs → no PRs
+            is_reusable=True,
+        )
+        # Only owner/other links issues.
+        _mock_issue_activity(httpx_mock, *_quiet_issue_nodes(days=100))
         result = await get_dashboard()
 
     assert [repo_entry["repo"] for repo_entry in result["repos"]] == ["owner/repo", "owner/other"]
@@ -5567,15 +5583,15 @@ async def test_get_dashboard_reads_repos_concurrently_and_lists_them_in_order(
 
     second_started = asyncio.Event()
 
-    async def read(repo_name: str, status: str | None, include_inactive: bool) -> object:
-        if repo_name == "owner/first":
+    async def read(
+        read: req_tools._DashboardRepo, status: str | None, include_inactive: bool
+    ) -> None:
+        if read.repo == "owner/first":
             # Read one after another, the second repo would never start.
             await asyncio.wait_for(second_started.wait(), timeout=2)
         else:
             second_started.set()
-        result = req_tools._DashboardRepo(repo_name)
-        result.entry = {"repo": repo_name, "requirements": [], "spec_changes": []}
-        return result
+        read.entry = {"repo": read.repo, "requirements": [], "spec_changes": []}
 
     with (
         patch(
@@ -5591,6 +5607,169 @@ async def test_get_dashboard_reads_repos_concurrently_and_lists_them_in_order(
         result = await get_dashboard()
 
     assert [repo["repo"] for repo in result["repos"]] == ["owner/first", "owner/second"]
+
+
+async def _dashboard_with_a_slow_repo(*, listed_before_hanging: bool) -> dict:
+    """get_dashboard over owner/fast and owner/slow, whose read never finishes."""
+    import asyncio
+
+    from tools import requirements as req_tools
+
+    async def read(
+        read: req_tools._DashboardRepo, status: str | None, include_inactive: bool
+    ) -> None:
+        if read.repo == "owner/slow" and not listed_before_hanging:
+            await asyncio.Event().wait()
+        read.entry = {"repo": read.repo, "requirements": [], "spec_changes": []}
+        if read.repo == "owner/slow":
+            await asyncio.Event().wait()
+
+    with (
+        patch("tools.requirements._DASHBOARD_SECONDS", 0.2),
+        patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/slow"}, {"repo_name": "owner/fast"}],
+        ),
+        patch("tools.requirements._read_dashboard_repo", side_effect=read),
+        patch(
+            "tools.requirements.waiting_on_author",
+            AsyncMock(return_value=MagicMock(issues=[], unreadable=[])),
+        ),
+    ):
+        return await get_dashboard()
+
+
+async def test_get_dashboard_names_a_repo_not_read_in_time_as_failed(
+    set_db_user_id: None,
+) -> None:
+    """A repo GitHub is slow to answer costs only its own listing, not the whole call."""
+    result = await _dashboard_with_a_slow_repo(listed_before_hanging=False)
+
+    summary = result["summary"]
+    assert [repo["repo"] for repo in result["repos"]] == ["owner/fast"]
+    assert summary["failed_repos"] == [{"repo": "owner/slow", "cause": "transient"}]
+    assert summary["incomplete_repos"] == []
+    assert summary["lower_bound"] is True
+
+
+async def test_get_dashboard_marks_a_repo_cut_after_listing_incomplete(
+    set_db_user_id: None,
+) -> None:
+    """A repo cut after it was listed keeps its listing, and its counts are floors."""
+    result = await _dashboard_with_a_slow_repo(listed_before_hanging=True)
+
+    summary = result["summary"]
+    assert [repo["repo"] for repo in result["repos"]] == ["owner/slow", "owner/fast"]
+    assert summary["incomplete_repos"] == ["owner/slow"]
+    assert summary["failed_repos"] == []
+    assert summary["lower_bound"] is True
+
+
+async def test_get_dashboard_answers_in_time_while_questions_settle_after_it(
+    set_db_user_id: None,
+) -> None:
+    """Settling questions slowly costs the repos their reads, never the call or a settlement."""
+    settled = asyncio.Event()
+
+    async def settle(user_id: str) -> None:
+        await asyncio.sleep(0.4)
+        settled.set()
+
+    with (
+        patch("tools.requirements._DASHBOARD_SECONDS", 0.2),
+        patch("tools.questions.take_answers_from_issues", side_effect=settle),
+        patch("tools.questions.settle_closed_questions", new_callable=AsyncMock),
+        patch("tools.questions.settle_expired_defaults", new_callable=AsyncMock),
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch(
+            "tools.requirements.waiting_on_author",
+            AsyncMock(return_value=MagicMock(issues=[], unreadable=[])),
+        ),
+    ):
+        result = await asyncio.wait_for(get_dashboard(), timeout=0.35)
+        assert not settled.is_set()
+        await asyncio.wait_for(settled.wait(), timeout=1)
+
+    assert result["repos"] == []
+    assert result["summary"]["failed_repos"] == [{"repo": "owner/repo", "cause": "transient"}]
+
+
+@pytest.mark.parametrize("slow_call", [0, 1], ids=["requirements", "spec_changes"])
+async def test_get_dashboard_sends_a_landing_notification_its_deadline_interrupts(
+    httpx_mock: HTTPXMock, set_db_user_id: None, slow_call: int
+) -> None:
+    """A landed requirement or spec change already claimed is still announced when time runs out."""
+    sent = asyncio.Event()
+    calls: list[str] = []
+
+    async def notify(repo: str, candidates: list) -> None:
+        calls.append(repo)
+        if len(calls) - 1 == slow_call:
+            await asyncio.sleep(0.4)
+            sent.set()
+
+    progress = MagicMock(spec_gaps={}, landing_candidates=[])
+    with (
+        patch("tools.requirements._DASHBOARD_SECONDS", 0.2),
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch("tools.requirements.landing.notify_landed", side_effect=notify),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
+        patch("tools.specs.read_spec_progress", AsyncMock(return_value=progress)),
+        patch("tools.specs.scenario_view", return_value={}),
+    ):
+        _mock_cancelled_dashboard(httpx_mock)
+        result = await get_dashboard()
+        assert not sent.is_set()
+        await asyncio.wait_for(sent.wait(), timeout=1)
+
+    assert result["summary"]["incomplete_repos"] == ["owner/repo"]
+
+
+async def test_waiting_on_author_names_a_repo_not_searched_in_time() -> None:
+    import asyncio
+
+    from tools.requirements import waiting_on_author
+
+    issue = {"number": 7, "waiting_since": "2026-11-01T00:00:00Z"}
+
+    async def search(repo: str, label: str) -> list[dict]:
+        if repo == "owner/slow":
+            await asyncio.Event().wait()
+        return [issue]
+
+    deadline = asyncio.get_running_loop().time() + 0.1
+    with patch("tools.requirements.github.list_waiting_issues", side_effect=search):
+        waiting = await waiting_on_author(["owner/slow", "owner/fast"], deadline)
+
+    assert waiting.unreadable == ["owner/slow"]
+    assert waiting.issues == [{"repo": "owner/fast", **issue}]
+
+
+async def test_read_default_branch_reads_files_concurrently_in_listing_order() -> None:
+    import asyncio
+
+    from tools.requirements import _read_default_branch
+
+    second_started = asyncio.Event()
+
+    async def get_file(repo: str, path: str) -> tuple[str, str]:
+        if path == "requirements/001-a.md":
+            # Read one after another, the second file would never start.
+            await asyncio.wait_for(second_started.wait(), timeout=2)
+        else:
+            second_started.set()
+        return f"content of {path}", "sha"
+
+    files = [
+        {"name": "001-a.md", "path": "requirements/001-a.md"},
+        {"name": "README", "path": "requirements/README"},
+        {"name": "002-b.md", "path": "requirements/002-b.md"},
+    ]
+    with patch("tools.requirements.github.get_file", side_effect=get_file):
+        copies = await _read_default_branch("owner/repo", files)
+
+    assert list(copies) == ["requirements/001-a.md", "requirements/002-b.md"]
+    assert copies["requirements/002-b.md"] == ("content of requirements/002-b.md", None)
 
 
 async def test_get_dashboard_reports_no_failed_repos_when_every_repo_was_read(

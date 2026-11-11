@@ -6,9 +6,11 @@ import asyncio
 import base64
 import contextlib
 import contextvars
+import functools
 import json
 import logging
 import re
+import ssl
 import weakref
 from collections.abc import Callable, Iterator
 from typing import Any, Literal, TypedDict
@@ -29,6 +31,14 @@ _ERROR_BODY_CHARS = 500
 AUTOMATED_MARKER = "<!-- lachesis:automated -->"
 
 
+@functools.cache
+def _tls() -> ssl.SSLContext:
+    """The SSL context every client shares: building one per client cost most of a
+    dashboard read's CPU.
+    """
+    return httpx.create_ssl_context()
+
+
 def _headers() -> dict[str, str]:
     return {
         "Authorization": f"Bearer {settings.github_pat}",
@@ -45,7 +55,7 @@ async def list_files(repo: str, path: str, *, branch: str | None = None) -> list
     one-element list (GitHub Contents API returns a dict in that case).
     """
     params = {"ref": branch} if branch else {}
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
@@ -72,7 +82,7 @@ async def get_file(repo: str, path: str, *, branch: str | None = None) -> tuple[
     Pass *branch* to target a specific branch; defaults to the repo's default branch.
     """
     params = {"ref": branch} if branch else {}
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
@@ -110,7 +120,7 @@ async def get_contents(
     inline up to 1 MB. An empty *path* is the repository root.
     """
     params = {"ref": ref} if ref else {}
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{quote(path)}",
             headers=_headers(),
@@ -132,7 +142,7 @@ async def get_contents(
 async def get_raw_file(repo: str, path: str, *, ref: str | None = None) -> bytes:
     """Return the bytes of the file at *path*, including files too large to inline."""
     params = {"ref": ref} if ref else {}
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx.AsyncClient(timeout=30.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/contents/{quote(path)}",
             headers={**_headers(), "Accept": "application/vnd.github.raw+json"},
@@ -162,7 +172,7 @@ async def create_file(
     payload: dict[str, Any] = {"message": message, "content": encoded}
     if branch:
         payload["branch"] = branch
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.put(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
@@ -182,7 +192,7 @@ async def create_file(
 
 async def get_branch_sha(repo: str, branch: str) -> str:
     """Return the HEAD SHA of *branch*. Raises :class:`FileNotFoundError` on 404."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/git/ref/heads/{branch}",
             headers=_headers(),
@@ -203,7 +213,7 @@ async def get_branch_sha(repo: str, branch: str) -> str:
 
 async def create_branch(repo: str, branch_name: str, sha: str) -> None:
     """Create a new branch pointing at *sha*."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/git/refs",
             headers=_headers(),
@@ -223,7 +233,7 @@ async def create_pull_request(
     repo: str, title: str, body: str, head: str, base: str
 ) -> dict[str, Any]:
     """Create a pull request and return ``{number, url, node_id, created_at}``."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/pulls",
             headers=_headers(),
@@ -256,7 +266,7 @@ async def get_pull_request(repo: str, pr_number: int) -> dict[str, Any] | None:
     ``mergeable`` and ``mergeable_state`` are null until GitHub finishes computing
     mergeability in the background, so a null there means "not known yet", not "blocked".
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/pulls/{pr_number}",
             headers=_headers(),
@@ -291,7 +301,7 @@ async def get_pull_request(repo: str, pr_number: int) -> dict[str, Any] | None:
 
 async def _list_open_prs(repo: str) -> list[dict[str, Any]]:
     """Return raw PR objects for all open PRs in *repo* (up to 100)."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/pulls",
             headers=_headers(),
@@ -312,7 +322,7 @@ async def list_open_issues(repo: str) -> list[dict[str, Any]]:
     The /issues endpoint also returns pull requests; those are filtered out, as is
     anything not open whatever the query asked for.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/issues",
             headers=_headers(),
@@ -438,7 +448,7 @@ async def _list_all_issues(repo: str) -> list[IssueSummary]:
     """
     items: list[dict[str, Any]] = []
     gate = _listing_gate()
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
 
         async def fetch(page: int) -> list[dict[str, Any]]:
             async with gate:
@@ -575,7 +585,7 @@ class PullRequestFile(TypedDict):
 
 async def get_pull_request_files(repo: str, pr_number: int) -> list[PullRequestFile]:
     """Return the files changed by *pr_number* (up to 100)."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/pulls/{pr_number}/files",
             headers=_headers(),
@@ -619,7 +629,7 @@ async def get_merge_base(repo: str, pr_number: int) -> tuple[str, str] | None:
     The pair spans the pull request's own change, as its "Files changed" tab shows
     it, whether it is open or merged and however it was merged.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(f"{_BASE_URL}/repos/{repo}/pulls/{pr_number}", headers=_headers())
         if resp.status_code == 404:
             logger.debug("github.get_merge_base 404 repo=%s pr=%s", repo, pr_number)
@@ -658,7 +668,7 @@ async def update_file(
     payload: dict[str, Any] = {"message": message, "content": encoded, "sha": sha}
     if branch:
         payload["branch"] = branch
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.put(
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
             headers=_headers(),
@@ -686,7 +696,7 @@ async def delete_file(
     payload: dict[str, Any] = {"message": message, "sha": sha}
     if branch:
         payload["branch"] = branch
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.request(
             "DELETE",
             f"{_BASE_URL}/repos/{repo}/contents/{path}",
@@ -711,7 +721,7 @@ async def create_issue(
     payload: dict[str, Any] = {"title": title, "body": body}
     if labels:
         payload["labels"] = labels
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/issues",
             headers=_headers(),
@@ -736,7 +746,7 @@ async def create_issue(
 
 async def get_token_login() -> str:
     """Return the login of the account the server's token belongs to: the author's."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(f"{_BASE_URL}/user", headers=_headers())
     if not resp.is_success:
         logger.warning("github.get_token_login failed status=%s", resp.status_code)
@@ -751,7 +761,7 @@ async def get_issue(repo: str, issue_number: int) -> dict[str, Any] | None:
     ``body``, ``assignees`` (list of logins), ``labels`` (list of names),
     ``linked_pr`` (html_url of the linked PR or ``None``), ``url``.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}",
             headers=_headers(),
@@ -788,7 +798,7 @@ async def update_issue(
     Accepted keys in *fields*: ``title``, ``body``, ``state`` (``"open"`` or ``"closed"``).
     Returned keys: ``number``, ``title``, ``url``.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.patch(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}",
             headers=_headers(),
@@ -818,7 +828,7 @@ async def list_issue_comments(repo: str, issue_number: int) -> list[dict[str, An
     Each comment has ``author`` (login), ``created_at``, ``body`` and ``url``.
     """
     items: list[dict[str, Any]] = []
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         page = 1
         while True:
             resp = await http.get(
@@ -863,7 +873,7 @@ async def create_issue_comment(
     """
     if automated:
         body = f"{body}\n\n{AUTOMATED_MARKER}"
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/comments",
             headers=_headers(),
@@ -884,7 +894,7 @@ async def create_issue_comment(
 
 async def add_labels(repo: str, issue_number: int, labels: list[str]) -> None:
     """Add *labels* to an issue or pull request, keeping the labels it already has."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/labels",
             headers=_headers(),
@@ -902,7 +912,7 @@ async def add_labels(repo: str, issue_number: int, labels: list[str]) -> None:
 
 async def remove_label(repo: str, issue_number: int, name: str) -> None:
     """Remove the label *name* from an issue or pull request; a label already gone is fine."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.delete(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/labels/{quote(name, safe='')}",
             headers=_headers(),
@@ -925,7 +935,7 @@ async def ensure_label(repo: str, name: str, color: str) -> None:
 
     *color* is a hex code without the leading ``#``.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/labels",
             headers=_headers(),
@@ -954,7 +964,7 @@ async def add_to_project(project_id: str, issue_node_id: str) -> None:
       }
     }
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             "https://api.github.com/graphql",
             headers=_headers(),
@@ -977,7 +987,7 @@ async def add_to_project(project_id: str, issue_node_id: str) -> None:
 
 async def add_issue_dependency(repo: str, issue_number: int, blocked_by_id: int) -> None:
     """Mark issue_number as blocked by the issue with database id blocked_by_id."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/dependencies/blocked_by",
             headers=_headers(),
@@ -999,7 +1009,7 @@ async def get_issue_dependencies(repo: str, issue_number: int) -> dict[str, Any]
     Returned keys: ``blocked_by`` (list of ints), ``blocking`` (list of ints).
     """
     base = f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/dependencies"
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         blocked_by_resp, blocking_resp = await asyncio.gather(
             http.get(f"{base}/blocked_by", headers=_headers()),
             http.get(f"{base}/blocking", headers=_headers()),
@@ -1041,7 +1051,7 @@ async def list_blocked_by_numbers(repo: str, issue_number: int) -> list[int] | N
     Half the requests of :func:`get_issue_dependencies` for callers that only need
     the blocking direction.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/dependencies/blocked_by",
             headers=_headers(),
@@ -1063,7 +1073,7 @@ async def list_blockers(repo: str, issue_number: int) -> list[dict[str, Any]] | 
     """Return ``[{"number", "state", "closed_at"}]`` for *issue_number*'s blockers, or
     ``None`` on 404. ``closed_at`` is ``None`` for an open blocker.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/issues/{issue_number}/dependencies/blocked_by",
             headers=_headers(),
@@ -1091,7 +1101,7 @@ async def create_repo(name: str, *, description: str, private: bool) -> dict[str
     when the account already has a repository of that name, which GitHub refuses
     before creating anything.
     """
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx.AsyncClient(timeout=30.0, verify=_tls()) as http:
         resp = await http.post(
             f"{_BASE_URL}/user/repos",
             headers=_headers(),
@@ -1120,7 +1130,7 @@ async def create_repo(name: str, *, description: str, private: bool) -> dict[str
 
 async def delete_repo(repo: str) -> None:
     """Delete *repo*. The PAT needs the ``delete_repo`` scope."""
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx.AsyncClient(timeout=30.0, verify=_tls()) as http:
         resp = await http.delete(f"{_BASE_URL}/repos/{repo}", headers=_headers())
     if not resp.is_success:
         logger.warning(
@@ -1139,7 +1149,7 @@ async def get_repo_settings(repo: str) -> dict[str, Any]:
     ``allow_merge_commit`` (bool), ``allow_rebase_merge`` (bool),
     ``delete_branch_on_merge`` (bool), ``default_branch`` (str).
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}",
             headers=_headers(),
@@ -1180,7 +1190,7 @@ async def update_repo_settings(repo: str, changes: dict[str, bool]) -> dict[str,
     Returns the repository as GitHub has it afterwards: GitHub accepts a setting the
     repository's plan lacks without applying it.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.patch(f"{_BASE_URL}/repos/{repo}", headers=_headers(), json=changes)
     _raise_logged(resp, "update_repo_settings", repo)
     return resp.json()  # type: ignore[no-any-return]
@@ -1188,7 +1198,7 @@ async def update_repo_settings(repo: str, changes: dict[str, bool]) -> dict[str,
 
 async def get_branch_protection(repo: str, branch: str) -> dict[str, Any] | None:
     """Return *branch*'s classic branch protection, or ``None`` when it has none."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/branches/{quote(branch, safe='')}/protection",
             headers=_headers(),
@@ -1201,7 +1211,7 @@ async def get_branch_protection(repo: str, branch: str) -> dict[str, Any] | None
 
 async def update_required_reviews(repo: str, branch: str, reviews: dict[str, Any]) -> None:
     """Change the pull request reviews *branch*'s classic branch protection requires."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.patch(
             f"{_BASE_URL}/repos/{repo}/branches/{quote(branch, safe='')}"
             "/protection/required_pull_request_reviews",
@@ -1213,7 +1223,7 @@ async def update_required_reviews(repo: str, branch: str, reviews: dict[str, Any
 
 async def list_branch_rules(repo: str, branch: str) -> list[dict[str, Any]]:
     """Return every ruleset rule in force on *branch*, each naming the ruleset it is from."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/rules/branches/{quote(branch, safe='')}",
             headers=_headers(),
@@ -1226,7 +1236,7 @@ async def list_branch_rules(repo: str, branch: str) -> list[dict[str, Any]]:
 
 
 async def get_ruleset(repo: str, ruleset_id: int) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(f"{_BASE_URL}/repos/{repo}/rulesets/{ruleset_id}", headers=_headers())
     _raise_logged(resp, "get_ruleset", repo)
     return resp.json()  # type: ignore[no-any-return]
@@ -1234,7 +1244,7 @@ async def get_ruleset(repo: str, ruleset_id: int) -> dict[str, Any]:
 
 async def update_ruleset_rules(repo: str, ruleset_id: int, rules: list[dict[str, Any]]) -> None:
     """Replace the rules of the repository's ruleset *ruleset_id*, leaving the rest of it."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.put(
             f"{_BASE_URL}/repos/{repo}/rulesets/{ruleset_id}",
             headers=_headers(),
@@ -1267,7 +1277,7 @@ async def enable_automerge(pr_node_id: str, merge_method: str = "SQUASH") -> Non
       }
     }
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             "https://api.github.com/graphql",
             headers=_headers(),
@@ -1670,7 +1680,7 @@ async def get_issue_activity(repo: str, numbers: list[int]) -> IssueActivity:
     """
     if not numbers:
         return {"facts": {}, "failure": None}
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         issues, absent, failure = await _read_numbers(http, repo, numbers, _issue_activity_query)
         facts = {number: _normalize_issue(node) for number, node in issues.items()}
         unlanded = [
@@ -1773,7 +1783,7 @@ async def list_waiting_issues(repo: str, label: str) -> list[WaitingIssue]:
     One query covers the whole repository, however many issues are waiting.
     """
     owner, _, name = repo.partition("/")
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.post(
             "https://api.github.com/graphql",
             headers=_headers(),
@@ -1833,7 +1843,7 @@ async def get_production_deployment(repo: str, sha: str) -> DeploymentVerdict | 
     retry it was hiding, so the whole answer is withheld instead.
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as http:
+        async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
             resp = await http.get(
                 f"{_BASE_URL}/repos/{repo}/deployments",
                 headers=_headers(),
@@ -1925,7 +1935,7 @@ async def get_scenario_results(repo: str) -> ScenarioResults | None:
     no completed ``scenario-results`` check run for its latest commit, or the one
     it published is not the JSON CI writes.  Any other failed read raises.
     """
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, verify=_tls()) as http:
         resp = await http.get(
             f"{_BASE_URL}/repos/{repo}/commits/main/check-runs",
             headers=_headers(),

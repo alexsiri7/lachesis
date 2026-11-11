@@ -17,6 +17,7 @@ import pytest
 from httpx import ASGITransport
 from pytest_httpx import HTTPXMock
 
+import github
 from auth import current_db_user_id
 from derive import IssueFacts, derive, derive_spec_change
 from groups import Candidate, group_requirements
@@ -33,6 +34,7 @@ from tools.specs import (
 )
 
 _GRAPHQL_URL = "https://api.github.com/graphql"
+_REPOS_URL = "https://api.github.com/repos"
 _NOW = datetime.now(UTC)
 
 
@@ -116,36 +118,47 @@ def _mock_uses_specs(httpx_mock: HTTPXMock, repo: str = "owner/repo") -> None:
     )
 
 
+def _issue_activity(*nodes: dict) -> dict[str, Any]:
+    return {"data": {"repository": {f"i{node['number']}": node for node in nodes}}}
+
+
 def _mock_issue_activity(httpx_mock: HTTPXMock, *nodes: dict) -> None:
-    httpx_mock.add_response(
-        method="POST",
-        url=_GRAPHQL_URL,
-        json={"data": {"repository": {f"i{node['number']}": node for node in nodes}}},
-    )
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, json=_issue_activity(*nodes))
+
+
+def _comments_response(**comments: list[tuple[str, str]]) -> dict[str, Any]:
+    """The comment read for closed issues with nothing merged, keyed ``c<number>``."""
+    return {
+        "data": {
+            "repository": {
+                alias: {
+                    "number": int(alias[1:]),
+                    "comments": {
+                        "nodes": [
+                            {"authorAssociation": association, "body": body}
+                            for association, body in nodes
+                        ]
+                    },
+                }
+                for alias, nodes in comments.items()
+            }
+        }
+    }
 
 
 def _mock_comments(httpx_mock: HTTPXMock, **comments: list[tuple[str, str]]) -> None:
-    """Answer the comment read for closed issues with nothing merged, keyed ``c<number>``."""
-    httpx_mock.add_response(
-        method="POST",
-        url=_GRAPHQL_URL,
-        json={
-            "data": {
-                "repository": {
-                    alias: {
-                        "number": int(alias[1:]),
-                        "comments": {
-                            "nodes": [
-                                {"authorAssociation": association, "body": body}
-                                for association, body in nodes
-                            ]
-                        },
-                    }
-                    for alias, nodes in comments.items()
-                }
-            }
-        },
-    )
+    httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, json=_comments_response(**comments))
+
+
+def _answer_graphql_by_repo(httpx_mock: HTTPXMock, answers: dict[str, list[dict]]) -> None:
+    """Answer each repo's GraphQL reads with its own *answers* in order, however the repos'
+    reads interleave."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        variables = json.loads(request.content)["variables"]
+        return httpx.Response(200, json=answers[f"{variables['owner']}/{variables['name']}"].pop(0))
+
+    httpx_mock.add_callback(answer, method="POST", url=_GRAPHQL_URL, is_reusable=True)
 
 
 def _waiting_node(
@@ -167,10 +180,20 @@ def _waiting_node(
     }
 
 
-def _mock_waiting(httpx_mock: HTTPXMock, *nodes: dict[str, Any]) -> None:
+def _mock_waiting(httpx_mock: HTTPXMock, repo: str, *nodes: dict[str, Any]) -> None:
+    """Answer *repo*'s waiting-on-author search, which runs alongside the repo reads.
+
+    Register it before the responses that match any request, or one of those
+    could answer the search in its place.
+    """
+    owner, _, name = repo.partition("/")
     httpx_mock.add_response(
         method="POST",
         url=_GRAPHQL_URL,
+        match_json={
+            "query": github._WAITING_QUERY,
+            "variables": {"owner": owner, "name": name, "label": "needs-author"},
+        },
         json={"data": {"repository": {"issues": {"nodes": list(nodes)}}}},
     )
 
@@ -852,6 +875,7 @@ async def test_a_spec_change_whose_issues_cannot_be_read_is_unreadable(
         patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
         patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
     ):
+        _mock_waiting(httpx_mock, "owner/specs")
         httpx_mock.add_response(json=[])  # no requirement files
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         httpx_mock.add_response(
@@ -861,7 +885,6 @@ async def test_a_spec_change_whose_issues_cannot_be_read_is_unreadable(
             ]
         )
         httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
-        _mock_waiting(httpx_mock)
 
         result = await get_dashboard()
 
@@ -899,6 +922,7 @@ async def test_get_dashboard_offers_spec_changes_for_landing(
         patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
         patch("tools.requirements.landing.notify_landed", new_callable=AsyncMock) as notify_landed,
     ):
+        _mock_waiting(httpx_mock, "owner/specs")
         httpx_mock.add_response(json=[])  # no requirement files
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         httpx_mock.add_response(
@@ -908,7 +932,6 @@ async def test_get_dashboard_offers_spec_changes_for_landing(
             ]
         )
         _mock_issue_activity(httpx_mock, _issue_node(21, state="CLOSED", merged_pr=31))
-        _mock_waiting(httpx_mock)
 
         result = await get_dashboard()
 
@@ -929,10 +952,10 @@ async def test_the_dashboard_says_when_no_scenario_results_are_published(
         patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
         patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
     ):
+        _mock_waiting(httpx_mock, "owner/specs")
         httpx_mock.add_response(json=[])  # no requirement files
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         httpx_mock.add_response(json=[])  # no issues or spec changes
-        _mock_waiting(httpx_mock)
 
         result = await get_dashboard()
 
@@ -950,6 +973,7 @@ async def test_unreadable_scenario_results_cost_only_the_built_spec_changes(
         patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
         patch("tools.requirements.landing.notify_landed", new_callable=AsyncMock),
     ):
+        _mock_waiting(httpx_mock, "owner/specs")
         httpx_mock.add_response(json=[])  # no requirement files
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         httpx_mock.add_response(
@@ -963,7 +987,6 @@ async def test_unreadable_scenario_results_cost_only_the_built_spec_changes(
         _mock_issue_activity(
             httpx_mock, _issue_node(21, state="CLOSED", merged_pr=31), _issue_node(23)
         )
-        _mock_waiting(httpx_mock)
 
         result = await get_dashboard()
 
@@ -1003,16 +1026,17 @@ async def test_a_question_overnight(httpx_mock: HTTPXMock, signed_in: None) -> N
         patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
         patch("tools.specs.uses_specs", AsyncMock(return_value=False)),
     ):
-        httpx_mock.add_response(json=[])  # no requirement files
-        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         _mock_waiting(
             httpx_mock,
+            "owner/repo",
             _waiting_node(
                 160,
                 labelled_at=marked,
                 comments=((_stamp(2), "Picked this up."), (marked, question)),
             ),
         )
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
 
         result = await get_dashboard()
 
@@ -1036,10 +1060,9 @@ async def test_the_question_is_the_comment_posted_when_the_issue_was_marked(
         patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
         patch("tools.specs.uses_specs", AsyncMock(return_value=False)),
     ):
-        httpx_mock.add_response(json=[])  # no requirement files
-        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         _mock_waiting(
             httpx_mock,
+            "owner/repo",
             _waiting_node(
                 1,
                 labelled_at=_stamp(3),
@@ -1048,6 +1071,8 @@ async def test_the_question_is_the_comment_posted_when_the_issue_was_marked(
             _waiting_node(2, labelled_at=_stamp(5), comments=((_stamp(2), "Only after."),)),
             _waiting_node(3, labelled_at=_stamp(4), comments=()),
         )
+        httpx_mock.add_response(json=[])  # no requirement files
+        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
 
         result = await get_dashboard()
 
@@ -1258,9 +1283,23 @@ async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
             AsyncMock(side_effect=lambda repo: repo == "owner/specs"),
         ),
     ):
-        httpx_mock.add_response(json=[])  # owner/specs has no requirement files
-        httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
+        # The repos are read at the same time, so each answer is matched to its request.
+        question = "Should a parked issue keep its position?"
+        _mock_waiting(
+            httpx_mock,
+            "owner/specs",
+            _waiting_node(160, labelled_at=_stamp(1), comments=((_stamp(1), question),)),
+        )
+        _mock_waiting(httpx_mock, "owner/quiet")
+        _mock_waiting(
+            httpx_mock,
+            "owner/app",
+            _waiting_node(7, labelled_at=_stamp(3), comments=((_stamp(3), "Which?"),)),
+        )
+
+        httpx_mock.add_response(url=f"{_REPOS_URL}/owner/specs/contents/requirements", json=[])
         httpx_mock.add_response(
+            url=re.compile(rf"{re.escape(_REPOS_URL)}/owner/specs/issues\?.*"),
             json=[
                 _issue_item(11, body=_reference(None, "backlog"), labels=("spec-gap",)),
                 _issue_item(12, body=_reference(None, "backlog"), labels=("spec-gap",)),
@@ -1268,23 +1307,35 @@ async def test_morning_check(httpx_mock: HTTPXMock, signed_in: None) -> None:
                 _issue_item(21, body=_reference(20), state="closed"),
                 _spec_change_item(20, merged_at=_stamp(3), repo="owner/specs"),
                 _spec_change_item(30, state="closed", repo="owner/specs"),
-            ]
+            ],
         )
-        _mock_issue_activity(httpx_mock, _issue_node(21, state="CLOSED", merged_pr=22))
+        for repo in ("owner/quiet", "owner/app"):
+            httpx_mock.add_response(
+                url=f"{_REPOS_URL}/{repo}/contents/requirements",
+                json=[{"name": "001-user-auth.md", "path": "requirements/001-user-auth.md"}],
+            )
+            httpx_mock.add_response(
+                url=f"{_REPOS_URL}/{repo}/contents/requirements/001-user-auth.md",
+                json=_file_content(_REQUIREMENT_MD),
+            )
+        httpx_mock.add_response(
+            url=re.compile(rf"{re.escape(_REPOS_URL)}/owner/[a-z]+/pulls\?.*"),
+            json=[],  # list_lachesis_prs → no PRs
+            is_reusable=True,
+        )
 
         stalled = _issue_node(42)
         stalled["updatedAt"] = _stamp(40)
-        _mock_requirement_repo(httpx_mock, stalled)
-        _mock_requirement_repo(httpx_mock, _issue_node(42, state="CLOSED"))
-        _mock_comments(httpx_mock, c42=[])
-
-        question = "Should a parked issue keep its position?"
-        _mock_waiting(
-            httpx_mock, _waiting_node(160, labelled_at=_stamp(1), comments=((_stamp(1), question),))
-        )
-        _mock_waiting(httpx_mock)
-        _mock_waiting(
-            httpx_mock, _waiting_node(7, labelled_at=_stamp(3), comments=((_stamp(3), "Which?"),))
+        _answer_graphql_by_repo(
+            httpx_mock,
+            {
+                "owner/specs": [_issue_activity(_issue_node(21, state="CLOSED", merged_pr=22))],
+                "owner/quiet": [_issue_activity(stalled)],
+                "owner/app": [
+                    _issue_activity(_issue_node(42, state="CLOSED")),
+                    _comments_response(c42=[]),
+                ],
+            },
         )
 
         result = await get_dashboard()
@@ -1321,6 +1372,7 @@ async def test_the_dashboard_filters_on_a_spec_change_only_status(
         patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
         patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
     ):
+        _mock_waiting(httpx_mock, "owner/specs")
         httpx_mock.add_response(json=[])  # no requirement files
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         httpx_mock.add_response(
@@ -1331,7 +1383,6 @@ async def test_the_dashboard_filters_on_a_spec_change_only_status(
             ]
         )
         httpx_mock.add_response(method="POST", url=_GRAPHQL_URL, status_code=500, json={})
-        _mock_waiting(httpx_mock)
 
         result = await get_dashboard(status=status)
 
@@ -1353,10 +1404,10 @@ async def test_a_spec_repository_whose_spec_changes_cannot_be_read_is_incomplete
         patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/specs"}]),
         patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
     ):
+        _mock_waiting(httpx_mock, "owner/specs")
         httpx_mock.add_response(json=[])  # no requirement files
         httpx_mock.add_response(json=[])  # list_lachesis_prs → no PRs
         httpx_mock.add_response(status_code=502)
-        _mock_waiting(httpx_mock)
 
         result = await get_dashboard()
 
@@ -1379,13 +1430,15 @@ async def test_rate_limited_on_one_repository(httpx_mock: HTTPXMock, signed_in: 
         ),
         patch("tools.specs.uses_specs", AsyncMock(return_value=False)),
     ):
+        _mock_waiting(httpx_mock, "owner/first")
+        _mock_waiting(httpx_mock, "owner/second")
         httpx_mock.add_response(
+            url=f"{_REPOS_URL}/owner/first/contents/requirements",
             status_code=403,
             headers={"x-ratelimit-remaining": "0"},
             json={"message": "API rate limit exceeded"},
         )
         _mock_requirement_repo(httpx_mock, _issue_node(42))
-        _mock_waiting(httpx_mock)
         result = await get_dashboard()
 
     assert result["summary"]["failed_repos"] == [{"repo": "owner/first", "cause": "rate_limited"}]

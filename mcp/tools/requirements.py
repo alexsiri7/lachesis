@@ -735,15 +735,21 @@ read from, ``None`` for the default branch.
 """
 
 
+_FILE_READS_IN_FLIGHT = 8
+
+
 async def _read_default_branch(repo: str, files: list[dict[str, Any]]) -> _Copies:
-    """Read every requirement file the default branch lists, in listing order."""
-    copies: _Copies = {}
-    for f in files:
-        if not f["name"].endswith(".md"):
-            continue
-        content, _ = await github.get_file(repo, f["path"])
-        copies[f["path"]] = (content, None)
-    return copies
+    """Read every requirement file the default branch lists, concurrently, in listing order."""
+    paths = [f["path"] for f in files if f["name"].endswith(".md")]
+    limit = asyncio.Semaphore(_FILE_READS_IN_FLIGHT)
+
+    async def read(path: str) -> str:
+        async with limit:
+            content, _ = await github.get_file(repo, path)
+        return content
+
+    contents = await asyncio.gather(*(read(path) for path in paths))
+    return {path: (content, None) for path, content in zip(paths, contents, strict=True)}
 
 
 def _is_pending_edit(branch: str, name: str) -> bool:
@@ -1966,15 +1972,26 @@ class WaitingOnAuthor(NamedTuple):
     unreadable: list[str]
 
 
-async def waiting_on_author(repos: list[str]) -> WaitingOnAuthor:
-    """Return every open ``needs-author`` issue across *repos*, oldest first."""
-    issues: list[dict[str, Any]] = []
-    unreadable: list[str] = []
-    for repo_name in repos:
+async def waiting_on_author(repos: list[str], deadline: float | None = None) -> WaitingOnAuthor:
+    """Return every open ``needs-author`` issue across *repos*, oldest first.
+
+    The repos are searched concurrently; one not searched by *deadline*, an event
+    loop time, counts as unreadable.
+    """
+
+    async def search(repo_name: str) -> list[dict[str, Any]] | None:
         try:
-            waiting = await github.list_waiting_issues(repo_name, _NEEDS_AUTHOR_LABEL)
+            async with asyncio.timeout_at(deadline):
+                return await github.list_waiting_issues(repo_name, _NEEDS_AUTHOR_LABEL)
         except Exception as exc:
             logger.warning("waiting_on_author: could not search %s error=%r", repo_name, exc)
+            return None
+
+    found = await asyncio.gather(*(search(repo_name) for repo_name in repos))
+    issues: list[dict[str, Any]] = []
+    unreadable: list[str] = []
+    for repo_name, waiting in zip(repos, found, strict=True):
+        if waiting is None:
             unreadable.append(repo_name)
             continue
         issues.extend({"repo": repo_name, **issue} for issue in waiting)
@@ -1983,6 +2000,9 @@ async def waiting_on_author(repos: list[str]) -> WaitingOnAuthor:
 
 
 _DASHBOARD_CONCURRENCY = 6
+# The whole call must answer inside the MCP client's timeout: what GitHub has not
+# answered by then is reported as partial, not waited for.
+_DASHBOARD_SECONDS = 25
 
 
 class _DashboardRepo:
@@ -2001,12 +2021,15 @@ class _DashboardRepo:
 
 
 async def _read_dashboard_repo(
-    repo_name: str, status: str | None, include_inactive: bool
-) -> _DashboardRepo:
-    """Read one repository's requirements and spec changes for get_dashboard."""
+    read: _DashboardRepo, status: str | None, include_inactive: bool
+) -> None:
+    """Read one repository's requirements and spec changes for get_dashboard into *read*.
+
+    *read* is the caller's, so a read cut short leaves behind what it had filled in.
+    """
     from .specs import read_spec_progress, scenario_view, spec_change_status, uses_specs
 
-    read = _DashboardRepo(repo_name)
+    repo_name = read.repo
     listed = False
     lachesis_prs: list[dict[str, Any]] = []
     try:
@@ -2071,8 +2094,9 @@ async def _read_dashboard_repo(
         # After the append, so a raise here could not cost the repo its listing
         # under this except's misleading log line. A status filter narrows the
         # candidates, which loses nothing: an unconsidered requirement is never
-        # claimed, so a later unfiltered read still announces it.
-        await landing.notify_landed(repo_name, landing_candidates)
+        # claimed, so a later unfiltered read still announces it. Shielded, so the
+        # call's deadline cannot drop a notification claimed but not yet sent.
+        await asyncio.shield(landing.notify_landed(repo_name, landing_candidates))
     except Exception as exc:
         logger.warning(
             "get_dashboard: failed to fetch requirements from %s error=%r", repo_name, exc
@@ -2080,18 +2104,18 @@ async def _read_dashboard_repo(
         if not listed:
             read.failure = {"repo": repo_name, "cause": github.failure_from_exception(exc)}
     if not listed:
-        return read
+        return
 
     try:
         if not await uses_specs(repo_name):
-            return read
+            return
         progress = await read_spec_progress(repo_name)
     except Exception as exc:
         logger.warning(
             "get_dashboard: failed to read spec changes from %s error=%r", repo_name, exc
         )
         read.incomplete = True
-        return read
+        return
     read.spec_gaps = progress.spec_gaps
     repo_entry["scenario_results"] = scenario_view(
         progress.scenario_results, progress.scenario_results_failure
@@ -2107,8 +2131,7 @@ async def _read_dashboard_repo(
         if status is None and not include_inactive and entry["dropped"]:
             continue
         repo_entry["spec_changes"].append(entry)
-    await landing.notify_landed(repo_name, progress.landing_candidates)
-    return read
+    await asyncio.shield(landing.notify_landed(repo_name, progress.landing_candidates))
 
 
 async def get_dashboard(
@@ -2174,7 +2197,7 @@ async def get_dashboard(
     and that are still open, and whether it is ``due``; and ``capabilities``, each
     capability of a repository that uses specs with when it was ``last_audited``
     (``None`` when never).  Both are ``None`` when the repository's audit history
-    could not be read.
+    could not be read, or was not read before the call's time limit.
 
     ``waiting_on_author`` lists every open issue labelled ``needs-author`` in the
     repos that were listed, oldest first, apart from ``groups`` because these are
@@ -2193,9 +2216,10 @@ async def get_dashboard(
     ``summary.lachesis_fault_count`` gives its size.
 
     ``summary.incomplete_repos`` names the repos whose open-pull-request fetch
-    failed, whose spec changes and spec gaps could not be read, or whose
-    questions waiting on the author could not be searched, and is empty
-    when every repo was read in full.  While it is non-empty
+    failed, whose spec changes and spec gaps could not be read, whose
+    questions waiting on the author could not be searched, or whose read did not
+    finish before the call's time limit, and is empty when every repo was read in
+    full.  While it is non-empty
     every count in ``summary`` is a floor rather than a total — ``total`` and
     ``by_status`` included, since a pull request branch that was not walked
     contributes nothing to them — so a zero there means "none found" only for the
@@ -2218,7 +2242,14 @@ async def get_dashboard(
     ``unlinked_count`` and every ``groups`` count miss it entirely, while ``total``
     and ``by_status`` may still carry the requirements read before it failed.  A repo
     that was listed and then hit a failure afterwards stays out of this list — its
-    listing is intact — and is reported in the logs only.
+    listing is intact — and is reported in the logs only.  A repo not listed before
+    the call's time limit is named here with cause ``transient``.
+
+    The call reads GitHub for at most ``_DASHBOARD_SECONDS`` seconds from when it
+    starts and reports what it did not finish by then, as above, instead of waiting
+    for it.  Settling
+    the open questions comes first and counts against that time; when it runs past
+    it, it finishes after the call returns, and every repo is reported as not read.
 
     ``summary.lower_bound`` is true while either ``incomplete_repos`` or
     ``failed_repos`` is non-empty, saying in one field that the counts are floors.
@@ -2242,28 +2273,46 @@ async def get_dashboard(
     from .audits import audit_history
     from .questions import settle_open_questions
 
-    await settle_open_questions(user_id)
+    deadline = asyncio.get_running_loop().time() + _DASHBOARD_SECONDS
+    try:
+        async with asyncio.timeout_at(deadline):
+            await settle_open_questions(user_id)
+    except TimeoutError:
+        logger.warning("get_dashboard: the open questions were not settled in time")
 
     repos = db.list_repos(user_id)
+    registered = [normalize_repo(repo_row["repo_name"]) for repo_row in repos]
     limit = asyncio.Semaphore(_DASHBOARD_CONCURRENCY)
 
     async def read_one(repo_name: str) -> _DashboardRepo:
-        async with limit:
-            return await _read_dashboard_repo(repo_name, status, include_inactive)
+        read = _DashboardRepo(repo_name)
+        try:
+            # Outside the semaphore, so a repo still waiting for a slot is cut too.
+            async with asyncio.timeout_at(deadline), limit:
+                await _read_dashboard_repo(read, status, include_inactive)
+        except TimeoutError:
+            logger.warning("get_dashboard: %s was not read in time", repo_name)
+            if read.entry is None:
+                read.failure = {"repo": repo_name, "cause": "transient"}
+            else:
+                read.incomplete = True
+        return read
 
     async def read_audits() -> dict[str, dict[str, Any]]:
         try:
-            history = await audit_history(user_id)
+            async with asyncio.timeout_at(deadline):
+                history = await audit_history(user_id)
         except Exception as exc:
             logger.warning("get_dashboard: could not read the audit history error=%r", exc)
             return {}
         return {entry["repo"]: entry for entry in history["repos"]}
 
-    # Repositories are read concurrently, since read one after another a dozen of
-    # them outlast a client's timeout, and merged in registration order below.
-    reads, audits = await asyncio.gather(
-        asyncio.gather(*(read_one(normalize_repo(repo_row["repo_name"])) for repo_row in repos)),
+    # Repositories are read concurrently and against one deadline, and merged in
+    # registration order below: what is not read by then is reported, not waited for.
+    reads, audits, waiting = await asyncio.gather(
+        asyncio.gather(*(read_one(repo_name) for repo_name in registered)),
         read_audits(),
+        waiting_on_author(registered, deadline),
     )
     aggregated: list[dict[str, Any]] = []
     all_candidates: list[groups.Candidate] = []
@@ -2310,15 +2359,16 @@ async def get_dashboard(
     grouped = groups.group_requirements(
         all_candidates, now=datetime.now(UTC), stale_after_days=stale_after_days
     )
-    waiting = await waiting_on_author([listing["repo"] for listing in aggregated])
-    incomplete_repos.extend(set(waiting.unreadable) - set(incomplete_repos))
+    listed = {listing["repo"] for listing in aggregated}
+    waiting_issues = [issue for issue in waiting.issues if issue["repo"] in listed]
+    incomplete_repos.extend((set(waiting.unreadable) & listed) - set(incomplete_repos))
     return {
         "repos": aggregated,
-        "waiting_on_author": waiting.issues,
+        "waiting_on_author": waiting_issues,
         "lachesis_faults": lachesis_faults,
         "groups": grouped,
         "summary": {
-            "waiting_on_author_count": len(waiting.issues),
+            "waiting_on_author_count": len(waiting_issues),
             "lachesis_fault_count": len(lachesis_faults),
             "total": total,
             "by_status": status_counts_out,
