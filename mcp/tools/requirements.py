@@ -2023,12 +2023,10 @@ class _DashboardRepo:
 async def _read_dashboard_repo(
     read: _DashboardRepo, status: str | None, include_inactive: bool
 ) -> None:
-    """Read one repository's requirements and spec changes for get_dashboard into *read*.
+    """Read one repository's requirements listing for get_dashboard into *read*.
 
     *read* is the caller's, so a read cut short leaves behind what it had filled in.
     """
-    from .specs import read_spec_progress, scenario_view, spec_change_status, uses_specs
-
     repo_name = read.repo
     listed = False
     lachesis_prs: list[dict[str, Any]] = []
@@ -2103,9 +2101,16 @@ async def _read_dashboard_repo(
         )
         if not listed:
             read.failure = {"repo": repo_name, "cause": github.failure_from_exception(exc)}
-    if not listed:
-        return
 
+
+async def _read_dashboard_spec_changes(
+    read: _DashboardRepo, repo_entry: dict[str, Any], status: str | None, include_inactive: bool
+) -> None:
+    """Read the spec changes of a repository already listed as *repo_entry* into it and
+    *read*, for get_dashboard."""
+    from .specs import read_spec_progress, scenario_view, spec_change_status, uses_specs
+
+    repo_name = read.repo
     try:
         if not await uses_specs(repo_name):
             return
@@ -2237,13 +2242,13 @@ async def get_dashboard(
 
     ``summary.failed_repos`` names the repos that were not read at all, ``{"repo",
     "cause"}`` each, its cause drawn from the same set as ``unavailable_cause`` less
-    ``issue_missing``, and is empty when every repo contributed.  It is the widest of
-    the three failures: such a repo reached neither ``repos`` nor the grouping, so
-    ``unlinked_count`` and every ``groups`` count miss it entirely, while ``total``
+    ``issue_missing``, or ``deadline``, and is empty when every repo contributed.  It
+    is the widest of the three failures: such a repo reached neither ``repos`` nor the
+    grouping, so ``unlinked_count`` and every ``groups`` count miss it entirely, while ``total``
     and ``by_status`` may still carry the requirements read before it failed.  A repo
     that was listed and then hit a failure afterwards stays out of this list — its
     listing is intact — and is reported in the logs only.  A repo not listed before
-    the call's time limit is named here with cause ``transient``.
+    the call's time limit is named here with cause ``deadline``.
 
     The call reads GitHub for at most ``_DASHBOARD_SECONDS`` seconds from when it
     starts and reports what it did not finish by then, as above, instead of waiting
@@ -2287,13 +2292,18 @@ async def get_dashboard(
     async def read_one(repo_name: str) -> _DashboardRepo:
         read = _DashboardRepo(repo_name)
         try:
-            # Outside the semaphore, so a repo still waiting for a slot is cut too.
-            async with asyncio.timeout_at(deadline), limit:
-                await _read_dashboard_repo(read, status, include_inactive)
+            # Outside the semaphore, so a repo still waiting for a slot is cut too. The
+            # slot bounds the listing's file reads; it is freed before the spec changes,
+            # so a repo reading them never keeps another from being listed.
+            async with asyncio.timeout_at(deadline):
+                async with limit:
+                    await _read_dashboard_repo(read, status, include_inactive)
+                if read.entry is not None:
+                    await _read_dashboard_spec_changes(read, read.entry, status, include_inactive)
         except TimeoutError:
             logger.warning("get_dashboard: %s was not read in time", repo_name)
             if read.entry is None:
-                read.failure = {"repo": repo_name, "cause": "transient"}
+                read.failure = {"repo": repo_name, "cause": "deadline"}
             else:
                 read.incomplete = True
         return read
@@ -2309,11 +2319,13 @@ async def get_dashboard(
 
     # Repositories are read concurrently and against one deadline, and merged in
     # registration order below: what is not read by then is reported, not waited for.
-    reads, audits, waiting = await asyncio.gather(
-        asyncio.gather(*(read_one(repo_name) for repo_name in registered)),
-        read_audits(),
-        waiting_on_author(registered, deadline),
-    )
+    # The audit history and the spec changes read the same whole listings.
+    with github.sharing_listings():
+        reads, audits, waiting = await asyncio.gather(
+            asyncio.gather(*(read_one(repo_name) for repo_name in registered)),
+            read_audits(),
+            waiting_on_author(registered, deadline),
+        )
     aggregated: list[dict[str, Any]] = []
     all_candidates: list[groups.Candidate] = []
     status_counts: Counter[str] = Counter()

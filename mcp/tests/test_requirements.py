@@ -5599,6 +5599,7 @@ async def test_get_dashboard_reads_repos_concurrently_and_lists_them_in_order(
             return_value=[{"repo_name": "owner/first"}, {"repo_name": "owner/second"}],
         ),
         patch("tools.requirements._read_dashboard_repo", side_effect=read),
+        patch("tools.requirements._read_dashboard_spec_changes", new_callable=AsyncMock),
         patch(
             "tools.requirements.waiting_on_author",
             AsyncMock(return_value=MagicMock(issues=[], unreadable=[])),
@@ -5631,12 +5632,92 @@ async def _dashboard_with_a_slow_repo(*, listed_before_hanging: bool) -> dict:
             return_value=[{"repo_name": "owner/slow"}, {"repo_name": "owner/fast"}],
         ),
         patch("tools.requirements._read_dashboard_repo", side_effect=read),
+        patch("tools.requirements._read_dashboard_spec_changes", new_callable=AsyncMock),
         patch(
             "tools.requirements.waiting_on_author",
             AsyncMock(return_value=MagicMock(issues=[], unreadable=[])),
         ),
     ):
         return await get_dashboard()
+
+
+async def test_get_dashboard_frees_a_repos_slot_once_it_is_listed(
+    set_db_user_id: None,
+) -> None:
+    """A repo still reading its spec changes never keeps another from being listed."""
+    from tools import requirements as req_tools
+
+    async def read(
+        read: req_tools._DashboardRepo, status: str | None, include_inactive: bool
+    ) -> None:
+        read.entry = {"repo": read.repo, "requirements": [], "spec_changes": []}
+
+    async def read_spec_changes(
+        read: req_tools._DashboardRepo,
+        repo_entry: dict,
+        status: str | None,
+        include_inactive: bool,
+    ) -> None:
+        if read.repo == "owner/a":
+            await asyncio.Event().wait()
+
+    with (
+        patch("tools.requirements._DASHBOARD_CONCURRENCY", 1),
+        patch("tools.requirements._DASHBOARD_SECONDS", 0.2),
+        patch(
+            "tools.requirements.db.list_repos",
+            return_value=[{"repo_name": "owner/a"}, {"repo_name": "owner/b"}],
+        ),
+        patch("tools.requirements._read_dashboard_repo", side_effect=read),
+        patch("tools.requirements._read_dashboard_spec_changes", side_effect=read_spec_changes),
+        patch(
+            "tools.requirements.waiting_on_author",
+            AsyncMock(return_value=MagicMock(issues=[], unreadable=[])),
+        ),
+    ):
+        result = await get_dashboard()
+
+    summary = result["summary"]
+    assert [repo["repo"] for repo in result["repos"]] == ["owner/a", "owner/b"]
+    assert summary["failed_repos"] == []
+    assert summary["incomplete_repos"] == ["owner/a"]
+
+
+async def test_get_dashboard_lists_each_repo_once(set_db_user_id: None) -> None:
+    """The audit history and the spec changes share one listing of a repository."""
+    from tools import requirements as req_tools
+
+    async def read(
+        read: req_tools._DashboardRepo, status: str | None, include_inactive: bool
+    ) -> None:
+        read.entry = {"repo": read.repo, "requirements": [], "spec_changes": []}
+
+    async def audit_history(user_id: str) -> dict:
+        await req_tools.github.list_all_issues("owner/repo")
+        return {"repos": []}
+
+    async def read_spec_progress(repo: str) -> MagicMock:
+        await req_tools.github.list_all_issues(repo)
+        return MagicMock(spec_gaps={}, landing_candidates=[])
+
+    listing = AsyncMock(return_value=[])
+    with (
+        patch("tools.requirements.db.list_repos", return_value=[{"repo_name": "owner/repo"}]),
+        patch("tools.requirements._read_dashboard_repo", side_effect=read),
+        patch("tools.requirements.github._list_all_issues", listing),
+        patch("tools.audits.audit_history", side_effect=audit_history),
+        patch("tools.specs.uses_specs", AsyncMock(return_value=True)),
+        patch("tools.specs.read_spec_progress", side_effect=read_spec_progress),
+        patch("tools.specs.scenario_view", return_value={}),
+        patch("tools.requirements.landing.notify_landed", new_callable=AsyncMock),
+        patch(
+            "tools.requirements.waiting_on_author",
+            AsyncMock(return_value=MagicMock(issues=[], unreadable=[])),
+        ),
+    ):
+        await get_dashboard()
+
+    listing.assert_awaited_once()
 
 
 async def test_get_dashboard_names_a_repo_not_read_in_time_as_failed(
@@ -5647,7 +5728,7 @@ async def test_get_dashboard_names_a_repo_not_read_in_time_as_failed(
 
     summary = result["summary"]
     assert [repo["repo"] for repo in result["repos"]] == ["owner/fast"]
-    assert summary["failed_repos"] == [{"repo": "owner/slow", "cause": "transient"}]
+    assert summary["failed_repos"] == [{"repo": "owner/slow", "cause": "deadline"}]
     assert summary["incomplete_repos"] == []
     assert summary["lower_bound"] is True
 
@@ -5691,7 +5772,7 @@ async def test_get_dashboard_answers_in_time_while_questions_settle_after_it(
         await asyncio.wait_for(settled.wait(), timeout=1)
 
     assert result["repos"] == []
-    assert result["summary"]["failed_repos"] == [{"repo": "owner/repo", "cause": "transient"}]
+    assert result["summary"]["failed_repos"] == [{"repo": "owner/repo", "cause": "deadline"}]
 
 
 @pytest.mark.parametrize("slow_call", [0, 1], ids=["requirements", "spec_changes"])

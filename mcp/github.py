@@ -411,12 +411,18 @@ def sharing_listings() -> Iterator[None]:
 
     A tool that reads several things derived from whole listings (next_issue reads the
     route's closed issues and the audits' merges) otherwise lists every repository more
-    than once in one call. Each caller still gets a copy of its own.
+    than once in one call. Each caller still gets a copy of its own. A listing still
+    running when the block ends, its callers cut short, is cancelled: nobody can await it
+    any more, and it would hold the listing gate against the next call.
     """
-    token = _shared_listings.set({})
+    shared: dict[str, asyncio.Task[list[IssueSummary]]] = {}
+    token = _shared_listings.set(shared)
     try:
         yield
     finally:
+        for task in shared.values():
+            if not task.done():
+                task.cancel()
         _shared_listings.reset(token)
 
 
