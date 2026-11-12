@@ -125,7 +125,7 @@ A single cross-repository call SHALL place every unit of work in exactly one gro
 
 ### Requirement: Partial results are honest
 
-When GitHub cannot be read for part of the request, the system SHALL name the affected repositories and the cause (rate limited, inaccessible or transient), SHALL mark any count that may be short as a lower bound, and SHALL report unreadable units separately from units whose work has gone wrong.
+When GitHub cannot be read for part of the request, the system SHALL name the affected repositories and the cause (rate limited, inaccessible, transient, or out of time when the request's own time limit ran out first), SHALL mark any count that may be short as a lower bound, and SHALL report unreadable units separately from units whose work has gone wrong.
 
 #### Scenario: Rate limited on one repository
 - GIVEN one registered repository is rate limited

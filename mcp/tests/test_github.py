@@ -1356,6 +1356,33 @@ async def test_list_all_issues_lists_a_repository_once_while_sharing(
     assert sorted(requested) == [1, 1, 2, 2]
 
 
+async def test_sharing_listings_cancels_a_listing_left_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shared listing whose callers were cut short does not outlive the block."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hang(repo: str) -> list[github.IssueSummary]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return []
+
+    monkeypatch.setattr(github, "_list_all_issues", hang)
+    with github.sharing_listings():
+        caller = asyncio.ensure_future(list_all_issues("owner/repo"))
+        await started.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert not cancelled.is_set()
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+
 # ---------------------------------------------------------------------------
 # list_open_issues
 # ---------------------------------------------------------------------------
