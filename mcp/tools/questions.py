@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
 import db
 import github
@@ -344,6 +345,37 @@ async def _all_closed(issues: list[tuple[str, int]]) -> bool:
     return True
 
 
+# Settlement runs on every read of the open questions, so its GitHub reads go out
+# together: one after another, a growing backlog outlasts get_dashboard's deadline.
+_QUESTION_READS_IN_FLIGHT = 8
+
+
+async def _read_each[T](
+    questions: list[dict[str, Any]], read: Callable[[dict[str, Any]], Awaitable[T]]
+) -> list[T | BaseException]:
+    """Run *read* on every question concurrently, in question order; a read that raises gives
+    its exception."""
+    limit = asyncio.Semaphore(_QUESTION_READS_IN_FLIGHT)
+
+    async def bounded(question: dict[str, Any]) -> T:
+        async with limit:
+            return await read(question)
+
+    return await asyncio.gather(*(bounded(q) for q in questions), return_exceptions=True)
+
+
+async def _closed_side(question: dict[str, Any]) -> Literal["blocks", "waits_on"] | None:
+    """Which of the question's issue lists is all closed, its blocked issues read first."""
+    repo = question["repo_name"]
+    if question["blocks"] and await _all_closed([(repo, number) for number in question["blocks"]]):
+        return "blocks"
+    if question["waits_on"] and await _all_closed(
+        [(w["repo"], w["issue"]) for w in question["waits_on"]]
+    ):
+        return "waits_on"
+    return None
+
+
 async def settle_closed_questions(user_id: str) -> list[dict[str, Any]]:
     """Answer each open question whose blocked, or waited-on, issues are all closed.
 
@@ -353,9 +385,10 @@ async def settle_closed_questions(user_id: str) -> list[dict[str, Any]]:
     Either answer has answerer ``system`` and outcome ``none``, and ``needs-author``
     is removed from each issue no other open question still blocks, as
     ``answer_question`` does. A question that blocks no issue and waits on none, or
-    one whose issues are still open or not found, stays open. Called on every read
-    of the open questions, so it never raises: a question that fails is logged and
-    left for the next read.
+    one whose issues are still open or not found, stays open. The questions' issues
+    are read concurrently before any is answered. Called on every read of the open
+    questions, so it never raises: a question that fails is logged and left for the
+    next read.
 
     Returns the questions answered, each with ``released``.
     """
@@ -368,16 +401,18 @@ async def settle_closed_questions(user_id: str) -> list[dict[str, Any]]:
     except Exception:
         logger.warning("settle_closed_questions: could not read the questions", exc_info=True)
         return []
+    sides = await _read_each(waiting, _closed_side)
     settled: list[dict[str, Any]] = []
-    for question in waiting:
+    for question, side in zip(waiting, sides, strict=True):
         repo = question["repo_name"]
         blocks = question["blocks"]
-        waits_on = question["waits_on"]
         try:
-            if blocks and await _all_closed([(repo, number) for number in blocks]):
+            if isinstance(side, BaseException):
+                raise side
+            if side == "blocks":
                 note = _closed_note(blocks)
-            elif waits_on and await _all_closed([(w["repo"], w["issue"]) for w in waits_on]):
-                note = _waited_note(waits_on)
+            elif side == "waits_on":
+                note = _waited_note(question["waits_on"])
                 for number in blocks:
                     await github.create_issue_comment(repo, number, note)
             else:
@@ -424,6 +459,11 @@ def _first_answer(
     )
 
 
+async def _comments_on_blocked(question: dict[str, Any]) -> dict[int, list[dict[str, Any]] | None]:
+    repo = question["repo_name"]
+    return {number: await github.list_issue_comments(repo, number) for number in question["blocks"]}
+
+
 async def take_answers_from_issues(user_id: str) -> list[dict[str, Any]]:
     """Answer each open question the author has answered by commenting on an issue it blocks.
 
@@ -433,7 +473,8 @@ async def take_answers_from_issues(user_id: str) -> list[dict[str, Any]]:
     recorded for another question on that issue is recorded as its answer,
     with answerer ``author`` and outcome ``none``; then ``needs-author`` is removed
     from each issue no other open question still blocks, as ``answer_question``
-    does, without posting the answer again. Called on every read of the open
+    does, without posting the answer again. The blocked issues' comments are read
+    concurrently before any question is answered. Called on every read of the open
     questions, so it never raises: a question that fails is logged and left for the
     next read.
 
@@ -447,13 +488,15 @@ async def take_answers_from_issues(user_id: str) -> list[dict[str, Any]]:
     except Exception:
         logger.warning("take_answers_from_issues: could not read the questions", exc_info=True)
         return []
+    comments_by_question = await _read_each(waiting, _comments_on_blocked)
     answered: list[dict[str, Any]] = []
-    for question in waiting:
+    for question, comments_by_issue in zip(waiting, comments_by_question, strict=True):
         repo = question["repo_name"]
         try:
+            if isinstance(comments_by_issue, BaseException):
+                raise comments_by_issue
             candidates = []
-            for number in question["blocks"]:
-                comments = await github.list_issue_comments(repo, number)
+            for number, comments in comments_by_issue.items():
                 if not comments:
                     continue
                 comment = _first_answer(
