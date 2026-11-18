@@ -1318,6 +1318,48 @@ async def test_a_backlog_of_questions_has_its_comments_read_together() -> None:
     answer.assert_not_called()
 
 
+async def test_a_question_whose_comments_cannot_be_read_is_left_for_the_next_read(
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    asked_at = datetime(2026, 10, 1, tzinfo=UTC)
+    unreadable = {**_blocking(7, [160]), "created_at": asked_at}
+    answerable = {**_blocking(8, [161]), "created_at": asked_at}
+    httpx_mock.add_response(
+        method="GET", url="https://api.github.com/user", json={"login": "the-author"}
+    )
+    httpx_mock.add_response(
+        method="GET", url=f"{_ISSUES_URL}/160/comments?per_page=100&page=1", status_code=500
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{_ISSUES_URL}/161/comments?per_page=100&page=1",
+        json=[
+            {
+                "user": {"login": "the-author"},
+                "created_at": "2026-10-02T00:00:00Z",
+                "body": "Always A.",
+                "html_url": _comment_url(161),
+            }
+        ],
+    )
+    _mock_unlabel(httpx_mock, 161)
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=[unreadable, answerable]),
+        patch("tools.questions.db.answers_on_issue", return_value=set()),
+        patch(
+            "tools.questions.db.answer_question",
+            return_value={**answerable, "released": [161]},
+        ) as answer,
+    ):
+        answered = await take_answers_from_issues("test-uid")
+
+    answer.assert_called_once_with(
+        "test-uid", "alexsiri7/lachesis", 8, "Always A.", "author", "none"
+    )
+    assert [q["id"] for q in answered] == [8]
+    assert "question 7 in alexsiri7/lachesis was not checked" in caplog.text
+
+
 async def test_settling_closed_questions_never_raises_when_the_questions_cannot_be_read() -> None:
     with patch("tools.questions.db.list_open_questions", side_effect=RuntimeError("down")):
         assert await settle_closed_questions("test-uid") == []
