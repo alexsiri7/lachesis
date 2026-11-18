@@ -15,6 +15,7 @@ import notify
 from auth import current_db_user_id
 from tools.questions import (
     _QUESTION_MAX_CHARS,
+    _QUESTION_READS_IN_FLIGHT,
     answer_author,
     answer_question,
     ask_author,
@@ -1262,6 +1263,59 @@ async def test_closed_blocked_issues_settle_a_question_before_its_waited_on_issu
 
     assert answer.call_args.args[3] == "Every issue this question blocked was closed: #161"
     assert [method for method, _ in _requests(httpx_mock)] == ["GET", "DELETE"]
+
+
+class _InFlight:
+    """A GitHub read that holds its call open briefly and records the most at once."""
+
+    def __init__(self, result: object) -> None:
+        self.result = result
+        self.calls = 0
+        self.now = 0
+        self.most = 0
+
+    async def read(self, repo: str, number: int) -> object:
+        self.calls += 1
+        self.now += 1
+        self.most = max(self.most, self.now)
+        await asyncio.sleep(0.01)
+        self.now -= 1
+        return self.result
+
+
+async def test_a_backlog_of_questions_has_its_blocked_issues_read_together() -> None:
+    backlog = [_blocking(question_id, [100 + question_id]) for question_id in range(20)]
+    read = _InFlight({"state": "open"})
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=backlog),
+        patch("tools.questions.github.get_issue", read.read),
+        patch("tools.questions.db.answer_question") as answer,
+    ):
+        assert await settle_closed_questions("test-uid") == []
+
+    assert read.calls == 20
+    assert read.most == _QUESTION_READS_IN_FLIGHT
+    answer.assert_not_called()
+
+
+async def test_a_backlog_of_questions_has_its_comments_read_together() -> None:
+    asked_at = datetime(2026, 10, 1, tzinfo=UTC)
+    backlog = [
+        {**_blocking(question_id, [100 + question_id]), "created_at": asked_at}
+        for question_id in range(20)
+    ]
+    read = _InFlight([])
+    with (
+        patch("tools.questions.db.list_open_questions", return_value=backlog),
+        patch("tools.questions.github.get_token_login", return_value="the-author"),
+        patch("tools.questions.github.list_issue_comments", read.read),
+        patch("tools.questions.db.answer_question") as answer,
+    ):
+        assert await take_answers_from_issues("test-uid") == []
+
+    assert read.calls == 20
+    assert read.most == _QUESTION_READS_IN_FLIGHT
+    answer.assert_not_called()
 
 
 async def test_settling_closed_questions_never_raises_when_the_questions_cannot_be_read() -> None:
